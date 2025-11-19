@@ -366,5 +366,6 @@ Open issues for bugs or enhancement requests. Provide snippet of failing input a
 
 ## Acknowledgments
 Thank you to Siemens Healthineers for supporting this research and to my coworkers who have helped with its development.
-Julian Garcia - for cooperating with this research, and for offering valuable perspective for coding practices.
+- Julian Garcia - for cooperating with this research, and for offering valuable perspective for coding practices.
+
 
