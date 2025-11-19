@@ -263,25 +263,25 @@ High-level relationship visualization between CyberArk entities and inferred ext
 ```mermaid
 ---
 config:
-	layout: elk
+ layout: elk
 ---
 flowchart TD
-    User["fa:fa-user User"] -. SyncsToCyberArkUser<br>(LDAP) .-> CyberArkUser["fa:fa-user CyberArkUser"]
-    Group["fa:fa-user-group Group"] -. SyncsToCyberArkGroup<br>(Directory) .-> CyberArkGroup["fa:fa-user-group CyberArkGroup"]
-    CyberArkAccount["fa:fa-user-secret CyberArkAccount"] -. SyncsToADUser<br>(Domain Match) .-> User
-    CyberArkUser -- CyberArkMemberOf --> CyberArkGroup
-    CyberArkGroup -- CyberArkMemberOf --> CyberArkGroup
-    CyberArkUser == CyberArkHasAccessTo<br>(useAccounts/retrieveAccounts) ==> CyberArkAccount
-    CyberArkGroup == CyberArkHasAccessTo<br>(useAccounts/retrieveAccounts) ==> CyberArkAccount
-    CyberArkUser -. CyberArkCanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArkSafe["fa:fa-vault CyberArkSafe"]
-    CyberArkGroup -. CyberArkCanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArkSafe
-    CyberArkSafe -- CyberArkContains --> CyberArkAccount
-    style User fill:#17E625,stroke:#0B8A14,stroke-width:2px
-    style CyberArkUser fill:#BFD6E3,stroke:#7BA3C0,stroke-width:2px
-    style Group fill:#FFED29,stroke:#CCB900,stroke-width:2px
-    style CyberArkGroup fill:#C8DCC0,stroke:#8FB888,stroke-width:2px
-    style CyberArkAccount fill:#E7C8C8,stroke:#C09999,stroke-width:2px
-    style CyberArkSafe fill:#E8D8B3,stroke:#C0AC7F,stroke-width:2px
+ User["fa:fa-user User"] -. SyncsToCyberArkUser<br>(LDAP) .-> CyberArkUser["fa:fa-user CyberArkUser"]
+ Group["fa:fa-user-group Group"] -. SyncsToCyberArkGroup<br>(Directory) .-> CyberArkGroup["fa:fa-user-group CyberArkGroup"]
+ CyberArkAccount["fa:fa-user-secret CyberArkAccount"] -. SyncsToADUser<br>(Domain Match) .-> User
+ CyberArkUser -- CyberArkMemberOf --> CyberArkGroup
+ CyberArkGroup -- CyberArkMemberOf --> CyberArkGroup
+ CyberArkUser == CyberArkHasAccessTo<br>(useAccounts/retrieveAccounts) ==> CyberArkAccount
+ CyberArkGroup == CyberArkHasAccessTo<br>(useAccounts/retrieveAccounts) ==> CyberArkAccount
+ CyberArkUser -. CyberArkCanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArkSafe["fa:fa-vault CyberArkSafe"]
+ CyberArkGroup -. CyberArkCanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArkSafe
+ CyberArkSafe -- CyberArkContains --> CyberArkAccount
+ style User fill:#17E625,stroke:#0B8A14,stroke-width:2px
+ style CyberArkUser fill:#BFD6E3,stroke:#7BA3C0,stroke-width:2px
+ style Group fill:#FFED29,stroke:#CCB900,stroke-width:2px
+ style CyberArkGroup fill:#C8DCC0,stroke:#8FB888,stroke-width:2px
+ style CyberArkAccount fill:#E7C8C8,stroke:#C09999,stroke-width:2px
+ style CyberArkSafe fill:#E8D8B3,stroke:#C0AC7F,stroke-width:2px
 ```
 
 **Legend:**
@@ -361,4 +361,5 @@ PY
 ```
 
 ### Support
+
 Open issues for bugs or enhancement requests. Provide snippet of failing input and Python version.
