@@ -1,0 +1,32 @@
+{
+  "custom_types": {
+    "CyberArkAccount": {
+      "icon": {
+        "type": "font-awesome",
+        "name": "user-secret",
+        "color": "#E7C8C8"
+      }
+    },
+    "CyberArkGroup": {
+      "icon": {
+        "type": "font-awesome",
+        "name": "user-group",
+        "color": "#C8DCC0"
+      }
+    },
+    "CyberArkSafe": {
+      "icon": {
+        "type": "font-awesome",
+        "name": "vault",
+        "color": "#E8D8B3"
+      }
+    },
+    "CyberArkUser": {
+      "icon": {
+        "type": "font-awesome",
+        "name": "user",
+        "color": "#BFD6E3"
+      }
+    }
+  }
+}

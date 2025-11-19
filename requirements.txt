@@ -1,0 +1,3 @@
+bhopengraph>=0.1.0
+requests>=2.31.0
+certifi>=2024.2.2
