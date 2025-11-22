@@ -10,9 +10,6 @@ Export CyberArk PVWA data (users, groups, safes, accounts and permissions) into 
 - **External AD entity inference**: Automatic detection of relationships to Active Directory
 - **Enriched metadata**: Personal details, vault authorizations, safe permissions, account management status
 - **Safe permission tracking**: Per-user/group safe access with permission details
-- **Dual edge types**: 
-  - `CyberArkHasAccessTo` (User/Group → Account) for direct access
-  - `CyberArkCanGrantAccessTo` (User/Group → Safe) for privilege escalation
 - **External edges preserved**: AD sync relationships stored separately for cross-domain analysis
 - **Modular architecture**: Clean separation for easier maintenance, testing, and extension
 - **Debug logging**: Comprehensive diagnostics for troubleshooting data flow
@@ -367,5 +364,6 @@ Open issues for bugs or enhancement requests. Provide snippet of failing input a
 ## Acknowledgments
 Thank you to Siemens Healthineers for supporting this research and to my coworkers who have helped with its development.
 - Julian Garcia - for cooperating with this research, and for offering valuable perspective for coding practices.
+
 
 
