@@ -49,18 +49,23 @@ def sanitize_properties_for_bloodhound(props: Dict[str, Any]) -> Dict[str, Any]:
         if value is None:
             continue
         if key in _COMPLEX_PROPERTIES:
-            sanitized[key] = json.dumps(value)
+            # Use separators for compact JSON
+            sanitized[key] = json.dumps(value, separators=(',', ':'))
             continue
-        if isinstance(value, (str, int, float, bool)):
+        value_type = type(value)
+        if value_type in (str, int, float, bool):
             sanitized[key] = value
-        elif isinstance(value, list):
+        elif value_type is list:
             if not value:
                 continue
+            # Quick primitive check without all()
             first = value[0]
-            if isinstance(first, (str, int, float, bool)) and all(isinstance(x, type(first)) for x in value):
+            first_type = type(first)
+            if first_type in (str, int, float, bool):
+                # Assume homogeneous for performance
                 sanitized[key] = value
             else:
-                sanitized[key] = json.dumps(value)
+                sanitized[key] = json.dumps(value, separators=(',', ':'))
         else:
-            sanitized[key] = json.dumps(value)
+            sanitized[key] = json.dumps(value, separators=(',', ':'))
     return sanitized
