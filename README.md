@@ -96,6 +96,7 @@ python CyberArkHound.py --help
 - `--test-safe` Narrow scope to a specific safe search term
 - `--quiet` Suppress info/debug logs
 - `--debug` Add verbose debug diagnostics and permission analysis
+- `--log-level` Set logging level: DEBUG, INFO (default), WARNING, ERROR
 
 **Example with debugging:**
 ```pwsh
@@ -314,11 +315,73 @@ After loading, BloodHound will render CyberArk nodes with meaningful icons/color
 - Keep color palette distinct for rapid visual triage (avoid near-duplicate hex codes).
 - Version the file if distributing across teams (e.g., `cyberark_model.v1.json`).
 
-### Logging
-Verbosity controlled by `--quiet` and `--debug`. You can also override log level via environment variable:
+### Logging and Verbosity Control
+
+The tool provides flexible logging control to balance visibility with output volume:
+
+#### Log Levels
+Use `--log-level` to control progress reporting frequency:
+
+**WARNING/ERROR** - Minimal output, only critical messages:
 ```pwsh
-$Env:CYBERARKHOUND_LOG_LEVEL = "INFO"
+python -m cyberarkhound.cli --pvwa ... --log-level WARNING --output export.json --target-domains corp.com
 ```
+- Shows start/end of major phases
+- No intermediate progress updates
+- Best for automated/scheduled runs
+
+**INFO** (default) - Balanced progress updates:
+```pwsh
+python -m cyberarkhound.cli --pvwa ... --log-level INFO --output export.json --target-domains corp.com
+```
+- Progress every 50 users/groups
+- Progress every 20 safes
+- Progress every 100 accounts/members
+- Progress every 100 nodes during export
+- Progress every 500 edges during export
+- Recommended for interactive runs
+
+**DEBUG** - Detailed progress for troubleshooting:
+```pwsh
+python -m cyberarkhound.cli --pvwa ... --log-level DEBUG --output export.json --target-domains corp.com
+```
+- Progress every 10 users/groups
+- Progress every 5 safes
+- Progress every 25 accounts/members/nodes
+- Progress every 100 edges
+- Additional diagnostic information
+- Best for troubleshooting or understanding processing flow
+
+#### Additional Logging Options
+- `--quiet` - Suppress most logging (overrides log-level)
+- `--debug` - Enable permission analysis diagnostics
+- Environment variable override:
+  ```pwsh
+  $Env:CYBERARKHOUND_LOG_LEVEL = "INFO"
+  python -m cyberarkhound.cli --pvwa ... --output export.json --target-domains corp.com
+  ```
+
+#### Example Output (INFO level)
+```
+[2025-11-24 10:15:23] INFO cyberarkhound: Processing 500 users...
+[2025-11-24 10:15:24] INFO cyberarkhound:   Processed 50/500 users (10.0%)
+[2025-11-24 10:15:25] INFO cyberarkhound:   Processed 100/500 users (20.0%)
+...
+[2025-11-24 10:15:30] INFO cyberarkhound:   Processed 500/500 users (100.0%)
+[2025-11-24 10:15:30] INFO cyberarkhound: Processing 3000 accounts...
+[2025-11-24 10:15:35] INFO cyberarkhound:   Processed 100/3000 accounts (3.3%)
+...
+[2025-11-24 10:16:45] INFO cyberarkhound: Writing JSON to file: export.json
+[2025-11-24 10:16:45] INFO cyberarkhound:   Total nodes: 3750, Total edges: 8500
+[2025-11-24 10:16:45] INFO cyberarkhound:   Writing compact JSON format...
+[2025-11-24 10:16:48] INFO cyberarkhound: Export complete! File written successfully.
+```
+
+#### Performance Tips
+- Use `--log-level WARNING` for large environments (10K+ objects) to minimize logging overhead
+- Use `--log-level DEBUG` only when investigating specific issues
+- Progress updates have minimal performance impact but can fill log files in very large environments
+- Compact JSON format is always used (no pretty-printing) for optimal write performance
 
 ### Development
 Module layout:
@@ -364,6 +427,3 @@ Open issues for bugs or enhancement requests. Provide snippet of failing input a
 ## Acknowledgments
 Thank you to Siemens Healthineers for supporting this research and to my coworkers who have helped with its development.
 - Julian Garcia - for cooperating with this research, and for offering valuable perspective for coding practices.
-
-
-

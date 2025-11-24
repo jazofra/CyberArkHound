@@ -117,8 +117,37 @@ def build_opengraph(
     *,
     debug: bool = False,
     verbose: bool = True,
+    log_level: str = "INFO",
 ) -> Tuple[OpenGraph, List[Dict[str, Any]]]:
     logger = get_logger(verbose)
+    
+    # Adjust progress logging frequency based on log level
+    # WARNING: only start/end, INFO: balanced, DEBUG: very detailed
+    if log_level == "WARNING" or log_level == "ERROR":
+        user_interval = max(len(users), 1)
+        group_interval = max(len(groups), 1)
+        safe_interval = max(len(safes), 1)
+        account_interval = max(len(accounts), 1)
+        member_interval = max(len(safe_members), 1)
+        node_interval = 1000
+        edge_interval = 5000
+    elif log_level == "DEBUG":
+        user_interval = 10
+        group_interval = 10
+        safe_interval = 5
+        account_interval = 25
+        member_interval = 25
+        node_interval = 25
+        edge_interval = 100
+    else:  # INFO (default)
+        user_interval = 50
+        group_interval = 50
+        safe_interval = 20
+        account_interval = 100
+        member_interval = 100
+        node_interval = 100
+        edge_interval = 500
+    
     if debug:
         logger.debug("Building OpenGraph (users=%d groups=%d safes=%d accounts=%d)",
                      len(users), len(groups), len(safes), len(accounts))
@@ -170,7 +199,10 @@ def build_opengraph(
     users_by_id: Dict[str, str] = {}
     users_by_username: Dict[str, str] = {}
 
-    for u in users:
+    logger.info("Processing %d users...", len(users))
+    for idx, u in enumerate(users, 1):
+        if idx % user_interval == 0 or idx == len(users):
+            logger.info("  Processed %d/%d users (%.1f%%)", idx, len(users), (idx/len(users))*100)
         username = _get(u, _USER_FIELDS, "username")
         user_dn = _get(u, _USER_FIELDS, "userDN")
         source = norm(_get(u, _USER_FIELDS, "source"))
@@ -259,7 +291,10 @@ def build_opengraph(
     groups_by_id: Dict[str, str] = {}
     groups_by_name: Dict[str, str] = {}
 
-    for g in groups:
+    logger.info("Processing %d groups...", len(groups))
+    for idx, g in enumerate(groups, 1):
+        if idx % group_interval == 0 or idx == len(groups):
+            logger.info("  Processed %d/%d groups (%.1f%%)", idx, len(groups), (idx/len(groups))*100)
         gid_raw = _get(g, _GROUP_FIELDS, "id") or _get(g, _GROUP_FIELDS, "groupName")
         groupname = _get(g, _GROUP_FIELDS, "groupName") or gid_raw
         gid = f"cagroup-{gid_raw or groupname}"
@@ -315,7 +350,10 @@ def build_opengraph(
     safes_by_urlid: Dict[str, str] = {}
     # Track which accounts belong to which safe for permission-based edge creation
     safe_accounts: Dict[str, List[str]] = {}  # safe_id -> [account_ids]
-    for s in safes:
+    logger.info("Processing %d safes...", len(safes))
+    for idx, s in enumerate(safes, 1):
+        if idx % safe_interval == 0 or idx == len(safes):
+            logger.info("  Processed %d/%d safes (%.1f%%)", idx, len(safes), (idx/len(safes))*100)
         safe_name = _get(s, _SAFE_FIELDS, "safeName")
         safe_url_id = _get(s, _SAFE_FIELDS, "safeUrlId")
         sid = f"casafe-{safe_url_id or safe_name}"
@@ -348,7 +386,10 @@ def build_opengraph(
 
     accounts_by_id: Dict[str, bool] = {}
     td_lower = {d.lower() for d in target_domains}
-    for a in accounts:
+    logger.info("Processing %d accounts...", len(accounts))
+    for idx, a in enumerate(accounts, 1):
+        if idx % account_interval == 0 or idx == len(accounts):
+            logger.info("  Processed %d/%d accounts (%.1f%%)", idx, len(accounts), (idx/len(accounts))*100)
         if _get(a, _ACCOUNT_FIELDS, "disabled") or _get(a, _ACCOUNT_FIELDS, "status") == "Archived":
             continue
         aid = f"caaccount-{_get(a, _ACCOUNT_FIELDS, 'id')}"
@@ -422,7 +463,10 @@ def build_opengraph(
     user_safe_permissions: Dict[str, List[Dict[str, Any]]] = {}  # user_node_id -> [{safeName, permissions}]
     group_safe_permissions: Dict[str, List[Dict[str, Any]]] = {}  # group_node_id -> [{safeName, permissions}]
 
-    for sm in safe_members:
+    logger.info("Processing %d safe members...", len(safe_members))
+    for idx, sm in enumerate(safe_members, 1):
+        if idx % member_interval == 0 or idx == len(safe_members):
+            logger.info("  Processed %d/%d safe members (%.1f%%)", idx, len(safe_members), (idx/len(safe_members))*100)
         member_name = sm.get("MemberName") or sm.get("memberName")
         member_type = sm.get("MemberType") or sm.get("memberType") or ""
         safe_name = sm.get("SafeName") or sm.get("safeName")
@@ -578,6 +622,7 @@ def build_opengraph(
                 "attackPath": "Can grant self or others account access permissions"
             })
 
+    logger.info("Processing group memberships...")
     for g in groups:
         gid_raw = _get(g, _GROUP_FIELDS, "id") or _get(g, _GROUP_FIELDS, "groupName")
         groupname = _get(g, _GROUP_FIELDS, "groupName") or gid_raw
@@ -593,6 +638,7 @@ def build_opengraph(
     # Update user and group nodes with safe permissions collected during safe member processing
     from .utils import sanitize_properties_for_bloodhound
     
+    logger.info("Updating %d users with safe permissions...", len(user_safe_permissions))
     for user_node_id, safe_perms in user_safe_permissions.items():
         if user_node_id in node_index:
             # Serialize the safe permissions list (contains dicts)
@@ -606,7 +652,12 @@ def build_opengraph(
             node_index[group_node_id]["properties"]["safePermissions"] = serialized_perms
 
     og = OpenGraph(source_kind="CyberArkBase")
+    logger.info("Creating OpenGraph with %d nodes...", len(node_index))
+    node_count = 0
     for nid, nd in node_index.items():
+        node_count += 1
+        if node_count % node_interval == 0 or node_count == len(node_index):
+            logger.info("  Created %d/%d nodes (%.1f%%)", node_count, len(node_index), (node_count/len(node_index))*100)
         kinds = nd.get("kinds", [])[:3]
         props = nd.get("properties", {})
         
@@ -637,7 +688,12 @@ def build_opengraph(
             clean_props = {str(k): v for k, v in sanitized_props.items()}
             node_obj = Node(id=nid, kinds=kinds, properties=Properties(**clean_props))
         og.add_node(node_obj)
+    logger.info("Adding %d edges to OpenGraph...", len(internal_edges))
+    edge_count = 0
     for e in internal_edges:
+        edge_count += 1
+        if edge_count % edge_interval == 0 or edge_count == len(internal_edges):
+            logger.info("  Added %d/%d edges (%.1f%%)", edge_count, len(internal_edges), (edge_count/len(internal_edges))*100)
         kind = e.get("kind")
         start_val = e.get("start", {}).get("value")
         end_val = e.get("end", {}).get("value")

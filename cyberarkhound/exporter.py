@@ -3,9 +3,20 @@ from typing import Any, Dict, List
 from .utils import sanitize_properties_for_bloodhound, get_logger
 
 
-def export_opengraph_to_bloodhound_json(og: Any, external_edges: List[Dict[str, Any]], output_file: str, *, debug: bool = False, verbose: bool = True) -> Dict[str, Any]:
+def export_opengraph_to_bloodhound_json(og: Any, external_edges: List[Dict[str, Any]], output_file: str, *, debug: bool = False, verbose: bool = True, log_level: str = "INFO") -> Dict[str, Any]:
     logger = get_logger(verbose)
     logger.info("Starting export to BloodHound JSON format")
+
+    # Adjust progress logging frequency based on log level
+    if log_level == "WARNING" or log_level == "ERROR":
+        node_interval = 10000
+        edge_interval = 50000
+    elif log_level == "DEBUG":
+        node_interval = 25
+        edge_interval = 100
+    else:  # INFO (default)
+        node_interval = 100
+        edge_interval = 500
 
     # Extract nodes
     nodes_array: List[Dict[str, Any]] = []
@@ -24,8 +35,8 @@ def export_opengraph_to_bloodhound_json(og: Any, external_edges: List[Dict[str, 
         if isinstance(node, str):
             continue
         
-        # Progress logging every 100 nodes
-        if idx % 100 == 0 or idx == total_nodes:
+        # Progress logging based on log level
+        if idx % node_interval == 0 or idx == total_nodes:
             logger.info("  Processed %d/%d nodes (%.1f%%)", idx, total_nodes, (idx/total_nodes)*100)
         
         node_dict = {
@@ -72,8 +83,8 @@ def export_opengraph_to_bloodhound_json(og: Any, external_edges: List[Dict[str, 
         if isinstance(edge, str):
             continue
         
-        # Progress logging every 500 edges
-        if idx % 500 == 0 or idx == total_internal_edges:
+        # Progress logging based on log level
+        if idx % edge_interval == 0 or idx == total_internal_edges:
             logger.info("  Processed %d/%d edges (%.1f%%)", idx, total_internal_edges, (idx/total_internal_edges)*100)
         
         start_node_value = getattr(edge, 'start_node', None)

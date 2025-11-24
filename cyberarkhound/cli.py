@@ -25,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--insecure", action="store_true", help="Disable SSL verification")
     p.add_argument("--ca-bundle", help="Path to CA bundle file")
     p.add_argument("--debug", action="store_true", help="Enable debug logging")
+    p.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="INFO", help="Set logging level (default: INFO)")
     # Testing / limiting
     t = p.add_argument_group("testing limits")
     t.add_argument("--limit-users", type=int, help="Limit number of users")
@@ -99,10 +100,10 @@ def run(args: argparse.Namespace) -> int:
     try:
         graph, external_edges = build_opengraph(
             users, groups, safes, safe_members, accounts, args.target_domains,
-            debug=args.debug, verbose=not args.quiet
+            debug=args.debug, verbose=not args.quiet, log_level=args.log_level
         )
         export_opengraph_to_bloodhound_json(
-            graph, external_edges, args.output, debug=args.debug, verbose=not args.quiet
+            graph, external_edges, args.output, debug=args.debug, verbose=not args.quiet, log_level=args.log_level
         )
         node_count = len(graph.nodes) if hasattr(graph, 'nodes') else 0
         edge_count = len(graph.edges) if hasattr(graph, 'edges') else 0
