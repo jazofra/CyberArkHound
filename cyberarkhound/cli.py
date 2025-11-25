@@ -3,7 +3,8 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import sys
-from typing import List
+import time
+from typing import List, Dict, Any
 
 from .client import CyberArkClient
 from .graph import build_opengraph
@@ -26,6 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ca-bundle", help="Path to CA bundle file")
     p.add_argument("--debug", action="store_true", help="Enable debug logging")
     p.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="INFO", help="Set logging level (default: INFO)")
+    # Activity tracking
+    a = p.add_argument_group("activity tracking")
+    a.add_argument("--include-activity", action="store_true", help="Include account activity data (creates CyberArkUsedAccount edges)")
+    a.add_argument("--activity-days", type=int, default=3, help="Number of days to look back for activity (default: 3)")
+    a.add_argument("--activity-limit", type=int, default=100, help="Max activities per account (default: 100)")
     # Testing / limiting
     t = p.add_argument_group("testing limits")
     t.add_argument("--limit-users", type=int, help="Limit number of users")
@@ -97,10 +103,33 @@ def run(args: argparse.Namespace) -> int:
                 except Exception as e:  # pragma: no cover network
                     logger.warning("Account detail error %s: %s", acc.get("id"), e)
 
+    # Fetch account activities if requested
+    account_activities: Dict[str, List[Dict[str, Any]]] = {}
+    if args.include_activity and accounts:
+        logger.info("Fetching account activities (last %d days)...", args.activity_days)
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = {executor.submit(client.get_account_activities, a.get("id"), 
+                                      limit=args.activity_limit, days_back=args.activity_days): a 
+                      for a in accounts if a.get("id")}
+            for idx, future in enumerate(concurrent.futures.as_completed(futures), 1):
+                acc = futures[future]
+                acc_id = acc.get("id")
+                try:
+                    activities = future.result()
+                    if activities:
+                        account_activities[acc_id] = activities
+                    if idx % 100 == 0:
+                        logger.info("  Fetched activities for %d/%d accounts", idx, len(accounts))
+                except Exception as e:  # pragma: no cover network
+                    logger.warning("Activity fetch error for %s: %s", acc_id, e)
+        logger.info("Collected activities for %d accounts", len(account_activities))
+
     try:
         graph, external_edges = build_opengraph(
             users, groups, safes, safe_members, accounts, args.target_domains,
-            debug=args.debug, verbose=not args.quiet, log_level=args.log_level
+            debug=args.debug, verbose=not args.quiet, log_level=args.log_level,
+            account_activities=account_activities if args.include_activity else None
         )
         export_opengraph_to_bloodhound_json(
             graph, external_edges, args.output, debug=args.debug, verbose=not args.quiet, log_level=args.log_level

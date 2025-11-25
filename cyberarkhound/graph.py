@@ -6,7 +6,7 @@ entities (e.g., AD users/groups) and are serialized at export time.
 from __future__ import annotations
 import json
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from bhopengraph.OpenGraph import OpenGraph
 from bhopengraph.Node import Node
 from bhopengraph.Edge import Edge
@@ -118,6 +118,7 @@ def build_opengraph(
     debug: bool = False,
     verbose: bool = True,
     log_level: str = "INFO",
+    account_activities: Optional[Dict[str, List[Dict[str, Any]]]] = None,
 ) -> Tuple[OpenGraph, List[Dict[str, Any]]]:
     logger = get_logger(verbose)
     
@@ -651,6 +652,93 @@ def build_opengraph(
             serialized_perms = sanitize_properties_for_bloodhound({"perms": safe_perms}).get("perms")
             node_index[group_node_id]["properties"]["safePermissions"] = serialized_perms
 
+    # Create CyberArkUsedAccount edges from activity data BEFORE adding to OpenGraph
+    if account_activities:
+        logger.info("Processing account activities for %d accounts...", len(account_activities))
+        activity_edge_count = 0
+        
+        if debug:
+            logger.debug("=== CyberArkUsedAccount Edge Creation Debug ===")
+            logger.debug("Total accounts with activities: %d", len(account_activities))
+        
+        for account_id, activities in account_activities.items():
+            account_node_id = f"caaccount-{account_id}"
+            
+            if debug:
+                logger.debug("Processing account: %s (activities: %d)", account_id, len(activities))
+            
+            # Track unique users who used this account
+            user_activity: Dict[str, Dict[str, Any]] = {}  # username -> {last_time, action, count}
+            
+            for activity in activities:
+                username = activity.get("User")  # API returns "User" not "UserName"
+                action = activity.get("Action")
+                activity_date = activity.get("Date")  # Unix timestamp (epoch)
+                
+                # Convert Unix timestamp to string for storage
+                if activity_date:
+                    from datetime import datetime, timezone
+                    try:
+                        activity_time = datetime.fromtimestamp(activity_date, tz=timezone.utc).isoformat()
+                    except (ValueError, OSError):
+                        activity_time = str(activity_date)
+                else:
+                    activity_time = None
+                
+                if debug:
+                    logger.debug("  Activity: User=%s, Action=%s, Date=%s (converted to %s)", 
+                               username, action, activity_date, activity_time)
+                
+                if not username:
+                    if debug:
+                        logger.debug("  Skipping activity - no username")
+                    continue
+                
+                # Track usage per user
+                if username not in user_activity:
+                    user_activity[username] = {
+                        "lastUsedTime": activity_time,
+                        "lastAction": action,
+                        "usageCount": 0
+                    }
+                    if debug:
+                        logger.debug("  New user tracked: %s", username)
+                
+                user_activity[username]["usageCount"] += 1
+                
+                # Update last used time and action if this is more recent
+                if activity_time and (not user_activity[username]["lastUsedTime"] or 
+                                     activity_time > user_activity[username]["lastUsedTime"]):
+                    user_activity[username]["lastUsedTime"] = activity_time
+                    user_activity[username]["lastAction"] = action
+                    if debug:
+                        logger.debug("  Updated %s: lastTime=%s, lastAction=%s", username, activity_time, action)
+            
+            if debug:
+                logger.debug("Account %s: %d unique users found", account_id, len(user_activity))
+            
+            # Create ONE edge per user with their most recent activity
+            for username, usage_data in user_activity.items():
+                user_node_id = users_by_username.get(username) or f"causer-{username}"
+                
+                if debug:
+                    user_exists = username in users_by_username
+                    logger.debug("Creating edge: %s -> %s (user_exists=%s, count=%d, lastTime=%s, lastAction=%s)", 
+                               user_node_id, account_node_id, user_exists, 
+                               usage_data["usageCount"], usage_data["lastUsedTime"], usage_data["lastAction"])
+                
+                add_edge("CyberArkUsedAccount", user_node_id, account_node_id, properties={
+                    "lastUsedTime": usage_data["lastUsedTime"],
+                    "lastActivity": usage_data["lastAction"],
+                    "usageCount": usage_data["usageCount"],
+                    "inferred": False
+                })
+                activity_edge_count += 1
+        
+        logger.info("Created %d CyberArkUsedAccount edges from activity data", activity_edge_count)
+        if debug:
+            logger.debug("===========================================")
+
     og = OpenGraph(source_kind="CyberArkBase")
     logger.info("Creating OpenGraph with %d nodes...", len(node_index))
     node_count = 0
@@ -710,6 +798,7 @@ def build_opengraph(
         edge_obj = Edge(start_node=start_val, end_node=end_val, kind=kind,
                         properties=prop_obj, start_match_by=start_match, end_match_by=end_match)
         og.add_edge(edge_obj)
+    
     if debug:
         logger.debug("Graph build complete: nodes=%d internal_edges=%d external_edges=%d", len(og.nodes), len(internal_edges), len(external_edges))
     return og, external_edges

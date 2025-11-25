@@ -287,6 +287,86 @@ class CyberArkClient:
             return None
         return resp.json()
 
+    def get_account_activities(self, account_id: str, *, limit: int = 100, days_back: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Get recent activities for an account.
+        
+        Parameters
+        ----------
+        account_id: str
+            The account ID to query
+        limit: int
+            Maximum number of activities to return (default: 100)
+        days_back: Optional[int]
+            Number of days to look back (default: None for all activities)
+            Activities are filtered client-side based on the Date field (Unix timestamp)
+            
+        Returns
+        -------
+        List[Dict[str, Any]]
+            List of activity records with fields: User, Action, Date (Unix timestamp), 
+            ActionID, ClientID, Reason, MoreInfo, Alert
+        """
+        url = f"{self.base}/PasswordVault/API/Accounts/{account_id}/Activities"
+        
+        try:
+            resp = self._request_with_retries("GET", url, raise_for_status=True)
+            raw_response = resp.json()
+            activities = raw_response.get("Activities", [])
+            
+            # Debug: Log the raw response structure
+            self.logger.debug("=== Account Activities API Response Debug ===")
+            self.logger.debug("Account ID: %s", account_id)
+            self.logger.debug("Response keys: %s", list(raw_response.keys()))
+            self.logger.debug("Total activities returned: %d", len(activities))
+            if activities:
+                self.logger.debug("First activity sample: %s", json.dumps(activities[0], indent=2, default=str))
+                self.logger.debug("First activity keys: %s", list(activities[0].keys()))
+            self.logger.debug("===========================================")
+            
+            # Filter by time if days_back specified
+            # API returns "Date" as Unix timestamp (epoch seconds)
+            if days_back is not None and activities:
+                from datetime import datetime, timezone, timedelta
+                import time as time_module
+                cutoff_timestamp = time_module.time() - (days_back * 86400)
+                
+                filtered = []
+                for act in activities:
+                    activity_date = act.get("Date")  # Unix timestamp
+                    if activity_date:
+                        try:
+                            # Compare Unix timestamps directly
+                            if activity_date >= cutoff_timestamp:
+                                filtered.append(act)
+                        except Exception:
+                            # If comparison fails, include the activity
+                            filtered.append(act)
+                    else:
+                        # No date, include it
+                        filtered.append(act)
+                
+                activities = filtered
+                self.logger.debug("Filtered to %d activities within last %d days", len(activities), days_back)
+            
+            # Apply limit
+            if limit and len(activities) > limit:
+                activities = activities[:limit]
+            
+            return activities
+        except requests.exceptions.HTTPError as e:  # pragma: no cover network
+            if (
+                hasattr(e, "response")
+                and e.response is not None
+                and e.response.status_code in (404, 403)
+            ):
+                # Account doesn't exist or no permission to view activities
+                self.logger.debug("No activities available for account %s: %s", account_id, e)
+                return []
+            raise
+        except Exception as e:  # pragma: no cover
+            self.logger.warning("Failed to get activities for account %s: %s", account_id, e)
+            return []
+
     def list_users(self, *, limit_count: Optional[int] = None) -> List[Dict[str, Any]]:
         users: List[Dict[str, Any]] = []
         url = f"{self.base}/PasswordVault/API/Users?ExtendedDetails=true"

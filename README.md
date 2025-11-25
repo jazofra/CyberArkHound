@@ -45,6 +45,8 @@ With `Audit Users` authorization, the tool can:
 - `GET /API/safes` - List all safes
 - `GET /API/Safes/{safeUrlId}/Members` - List safe members and permissions
 - `GET /API/Accounts` - List accounts (filtered by safe)
+- `GET /API/Accounts/{accountId}` - Get account details
+- `GET /API/Accounts/{accountId}/Activities` - Get account activity logs (optional, requires `--include-activity`)
 - `GET /API/Users` - List all users
 - `GET /API/UserGroups` - List all groups
 - `GET /API/UserGroups/{groupId}` - Get group details with members
@@ -98,6 +100,11 @@ python CyberArkHound.py --help
 - `--debug` Add verbose debug diagnostics and permission analysis
 - `--log-level` Set logging level: DEBUG, INFO (default), WARNING, ERROR
 
+**Activity Tracking (optional):**
+- `--include-activity` Include account activity data (creates CyberArkUsedAccount edges)
+- `--activity-days` Number of days to look back for activity (default: 3)
+- `--activity-limit` Max activities per account to fetch from API (default: 100)
+
 **Example with debugging:**
 ```pwsh
 python -m cyberarkhound.cli \
@@ -107,6 +114,18 @@ python -m cyberarkhound.cli \
     --output cyberark_export.json \
     --target-domains corp.example.com lab.example.com \
     --debug
+```
+
+**Example with activity tracking:**
+```pwsh
+python -m cyberarkhound.cli \
+    --pvwa https://pvwa.corp.com \
+    --username svc-bloodhound \
+    --password $env:CYBERARK_PASSWORD \
+    --output cyberark_export.json \
+    --target-domains corp.example.com lab.example.com \
+    --include-activity \
+    --activity-days 30
 ```
 
 ### Edge Types and Permission Interpretation
@@ -157,11 +176,68 @@ RETURN u.name, s.safeName
 #### Other Edge Types
 - `CyberArkMemberOf`: User is member of a group
 - `CyberArkContains` (Safe → Account): Safe contains an account
+- `CyberArkUsedAccount` (User → Account): User has actively used/retrieved account (requires `--include-activity`)
 - `SyncsToCyberArkUser`: AD User syncs to CyberArk User (external edge)
 - `SyncsToCyberArkGroup`: AD Group syncs to CyberArk Group (external edge)
 - `SyncsToADUser`: CyberArk Account syncs to AD User (external edge)
 
 **Note**: Permissions like `listAccounts`, `viewAuditLog`, `addAccounts`, `updateAccountContent` do **not** create access edges as they don't allow password retrieval or account usage.
+
+#### CyberArkUsedAccount (User → Account) - Optional
+**Actual account usage** - Tracks when users have actually retrieved or used accounts (not just permission):
+- Created when `--include-activity` flag is used
+- Based on CyberArk activity/audit logs via `/API/Accounts/{accountId}/Activities`
+- Shows real-world account access patterns from the last 3 days (default)
+- Helps identify dormant vs actively used accounts
+- One edge per user-account pair (aggregates multiple activities)
+
+**Pattern**: Edges are created from users to accounts they've actually accessed within the specified time window (`--activity-days`). Multiple activities by the same user are aggregated into a single edge showing the most recent action.
+
+**Edge Properties**:
+- `lastUsedTime`: ISO 8601 timestamp of most recent access (e.g., "2025-11-25T14:32:01+00:00")
+- `lastActivity`: Most recent action performed (e.g., "CPM Verify Password", "RetrievePassword", "ShowPassword")
+- `usageCount`: Total number of times this user accessed this account in the time window
+- `inferred`: false (based on actual audit data)
+
+**Technical Details**:
+- Activities are filtered by Unix timestamp (Date field >= current_time - days * 86400)
+- Only activities within the lookback window are processed
+- If a user performed multiple actions, only the most recent is stored in `lastActivity`
+- The `usageCount` reflects all qualifying activities, not just the latest one
+- Parallel processing used for activity fetching (50 workers by default)
+
+**BloodHound Query Examples:**
+```cypher
+// Find who actually used high-value accounts
+MATCH (u:CyberArkUser)-[r:CyberArkUsedAccount]->(a:CyberArkAccount)
+WHERE a.safeName CONTAINS "prod"
+RETURN u.name, a.name, r.lastUsedTime, r.lastActivity, r.usageCount
+ORDER BY r.lastUsedTime DESC
+
+// Find accounts with access permissions but no actual usage (dormant/unused)
+MATCH (u:CyberArkUser)-[:CyberArkHasAccessTo]->(a:CyberArkAccount)
+WHERE NOT (u)-[:CyberArkUsedAccount]->(a)
+RETURN u.name, a.name, a.safeName
+
+// Find users who accessed accounts they shouldn't have permission for (privilege escalation)
+MATCH (u:CyberArkUser)-[:CyberArkUsedAccount]->(a:CyberArkAccount)
+WHERE NOT (u)-[:CyberArkHasAccessTo]->(a)
+RETURN u.name, a.name
+
+// Find most active users
+MATCH (u:CyberArkUser)-[r:CyberArkUsedAccount]->(a:CyberArkAccount)
+RETURN u.name, COUNT(a) as accountsUsed, SUM(r.usageCount) as totalAccesses
+ORDER BY totalAccesses DESC
+LIMIT 10
+```
+
+**Performance Note**: Activity tracking adds significant API calls (one per account). For large environments (1000+ accounts), expect:
+- Additional 5-15 minutes processing time due to parallel API requests
+- Default lookback is 3 days to balance recency with performance
+- Use `--activity-days 7` or `--activity-days 30` for longer historical analysis
+- Use `--activity-limit` to cap activities fetched per account (default: 100)
+- Activity fetching runs in parallel (50 threads) for optimal performance
+- Can be run separately from initial data collection for incremental updates
 
 ### Node Properties
 
@@ -271,6 +347,7 @@ flowchart TD
  CyberArkGroup -- CyberArkMemberOf --> CyberArkGroup
  CyberArkUser == CyberArkHasAccessTo<br>(useAccounts/retrieveAccounts) ==> CyberArkAccount
  CyberArkGroup == CyberArkHasAccessTo<br>(useAccounts/retrieveAccounts) ==> CyberArkAccount
+ CyberArkUser -.-> |CyberArkUsedAccount<br>(actual usage)| CyberArkAccount
  CyberArkUser -. CyberArkCanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArkSafe["fa:fa-vault CyberArkSafe"]
  CyberArkGroup -. CyberArkCanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArkSafe
  CyberArkSafe -- CyberArkContains --> CyberArkAccount
@@ -284,8 +361,8 @@ flowchart TD
 
 **Legend:**
 - **Solid Lines** (→): Internal CyberArk relationships (membership, containment)
-- **Thick Lines** (⇒): Direct account access edges
-- **Dashed Lines** (⇢): External sync relationships or privilege escalation
+- **Thick Lines** (⇒): Direct account access edges (permission-based)
+- **Dashed Lines** (⇢): External sync relationships, privilege escalation, or actual usage (audit-based)
 
 ### BloodHound Custom Node Definitions
 The file `cyberark_model.json` defines custom node types (icons & colors) for BloodHound via the API Explorer `custom-nodes` endpoint:
