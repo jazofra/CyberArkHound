@@ -347,7 +347,7 @@ flowchart TD
  CyberArkGroup -- CyberArkMemberOf --> CyberArkGroup
  CyberArkUser == CyberArkHasAccessTo<br>(useAccounts/retrieveAccounts) ==> CyberArkAccount
  CyberArkGroup == CyberArkHasAccessTo<br>(useAccounts/retrieveAccounts) ==> CyberArkAccount
- CyberArkUser -.-> |CyberArkUsedAccount<br>(actual usage)| CyberArkAccount
+ CyberArkUser == CyberArkUsedAccount<br>(actual usage) ==> CyberArkAccount
  CyberArkUser -. CyberArkCanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArkSafe["fa:fa-vault CyberArkSafe"]
  CyberArkGroup -. CyberArkCanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArkSafe
  CyberArkSafe -- CyberArkContains --> CyberArkAccount
@@ -503,4 +503,5 @@ Open issues for bugs or enhancement requests. Provide snippet of failing input a
 
 ## Acknowledgments
 Thank you to Siemens Healthineers for supporting this research and to my coworkers who have helped with its development.
+
 - Julian Garcia - for cooperating with this research, and for offering valuable perspective for coding practices.
