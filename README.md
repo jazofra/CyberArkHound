@@ -76,7 +76,7 @@ python -m cyberarkhound.cli \
 	--username api_user \ 
 	--password $Env:CYBERARK_PASSWORD \ 
 	--output export.json \ 
-	--target-domains corp.example.com lab.example.com
+	--target-domain corp.example.com lab.example.com
 ```
 
 Legacy one-file entry point remains available:
@@ -505,3 +505,4 @@ Open issues for bugs or enhancement requests. Provide snippet of failing input a
 Thank you to Siemens Healthineers for supporting this research and to my coworkers who have helped with its development.
 
 - Julian Garcia - for cooperating with this research, and for offering valuable perspective for coding practices.
+
