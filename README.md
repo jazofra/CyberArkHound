@@ -487,14 +487,12 @@ Add new edge types or property mappings inside `graph.py`. Keep transformations 
 
 ### Quick Dry Run (no real data)
 You can perform a structural dry run by mocking empty collections:
-```pwsh
-python - <<'PY'
+```python 
 from cyberarkhound.graph import build_opengraph
 from cyberarkhound.exporter import export_opengraph_to_bloodhound_json
 og, external = build_opengraph([], [], [], [], [], ["example.com"], debug=True)
 export_opengraph_to_bloodhound_json(og, external, "dryrun.json", debug=True)
 print("dryrun.json written")
-PY
 ```
 
 ### Support
@@ -505,4 +503,5 @@ Open issues for bugs or enhancement requests. Provide snippet of failing input a
 Thank you to Siemens Healthineers for supporting this research and to my coworkers who have helped with its development.
 
 - Julian Garcia - for cooperating with this research, and for offering valuable perspective for coding practices.
+
 
