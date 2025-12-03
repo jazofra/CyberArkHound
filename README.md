@@ -106,8 +106,8 @@ With `Audit Users` authorization, the tool can:
 **Build from source:**
 ```pwsh
 # Clone the repository
-git clone <repository-url>
-cd BHE-Scripts
+git clone https://github.com/jazofra/CyberArkHound
+cd CyberArkHound
 
 # Build the binary
 go build -o cyberarkhound.exe ./cmd/cyberarkhound
@@ -117,7 +117,7 @@ go install ./cmd/cyberarkhound
 ```
 
 **Pre-built binaries:**
-Download pre-compiled binaries from the [Releases](https://github.com/your-org/BHE-Scripts/releases) page.
+Download pre-compiled binaries from the [Releases](https://github.com/jazofra/CyberArkHound/releases) page.
 
 #### Python Version (Legacy)
 
@@ -631,4 +631,5 @@ Open issues for bugs or enhancement requests. Provide snippet of failing input a
 
 ## Acknowledgments
 Thank you to Siemens Healthineers for supporting this research and to my coworkers who have helped with its development.
+
 - Julian Garcia - for cooperating with this research, and for offering valuable perspective for coding practices.
