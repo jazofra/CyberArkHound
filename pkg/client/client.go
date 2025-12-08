@@ -561,7 +561,7 @@ func (c *Client) GetGroupDetails(groupID string) (*models.Group, error) {
 }
 
 // ListGroups retrieves all groups with enriched details
-func (c *Client) ListGroups(limitCount *int) ([]models.Group, error) {
+func (c *Client) ListGroups(limitCount *int, concurrency int) ([]models.Group, error) {
 	groupsURL := fmt.Sprintf("%s/PasswordVault/API/UserGroups", c.BaseURL)
 
 	resp, err := c.requestWithRetries("GET", groupsURL, nil, c.ReqTimeout, 3)
@@ -591,8 +591,10 @@ func (c *Client) ListGroups(limitCount *int) ([]models.Group, error) {
 	copy(enrichedGroups, groups)
 
 	// Create a semaphore to limit concurrency
-	concurrencyLimit := 50 // Same default as main workers
-	semaphore := make(chan struct{}, concurrencyLimit)
+	if concurrency <= 0 {
+		concurrency = 50
+	}
+	semaphore := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 
 	for i := range enrichedGroups {

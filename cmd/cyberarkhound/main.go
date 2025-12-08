@@ -113,7 +113,7 @@ func main() {
 	if *limitGroups > 0 {
 		limitGroupsPtr = limitGroups
 	}
-	groups, err := apiClient.ListGroups(limitGroupsPtr)
+	groups, err := apiClient.ListGroups(limitGroupsPtr, *workers)
 	if err != nil {
 		logger.Fatalf("Failed to fetch groups: %v", err)
 	}
