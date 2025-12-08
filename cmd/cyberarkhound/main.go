@@ -9,6 +9,7 @@ import (
 	"github.com/siemens-healthineers/cyberarkhound/pkg/client"
 	"github.com/siemens-healthineers/cyberarkhound/pkg/exporter"
 	"github.com/siemens-healthineers/cyberarkhound/pkg/graph"
+	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
 )
@@ -142,12 +143,12 @@ func main() {
 	}
 
 	// Fetch safe members and accounts
-	var safeMembers []map[string]interface{}
-	var accounts []map[string]interface{}
+	var safeMembers []models.SafeMember
+	var accounts []models.Account
 
 	for idx, safe := range safes {
-		safeName := graph.GetString(safe, "safeName", "")
-		safeURLID := graph.GetString(safe, "safeUrlId", "")
+		safeName := safe.SafeName
+		safeURLID := safe.SafeUrlId
 		logger.Infof("Processing safe %d/%d: '%s'", idx+1, len(safes), safeName)
 
 		// Fetch safe members
@@ -155,22 +156,6 @@ func main() {
 		if err != nil {
 			logger.Warnf("Failed to fetch members for safe '%s': %v", safeName, err)
 			continue
-		}
-
-		// Fix member structure to match Python version (uppercase keys)
-		for _, member := range members {
-			// Add uppercase versions of keys for compatibility
-			if memberName := graph.GetString(member, "memberName", ""); memberName != "" {
-				member["MemberName"] = memberName
-			}
-			if memberType := graph.GetString(member, "memberType", ""); memberType != "" {
-				member["MemberType"] = memberType
-			}
-			member["SafeName"] = safeName
-			member["SafeUrlId"] = safeURLID
-			if perms, ok := member["permissions"].(map[string]interface{}); ok {
-				member["Permissions"] = perms
-			}
 		}
 
 		safeMembers = append(safeMembers, members...)
@@ -190,18 +175,18 @@ func main() {
 		// Fetch detailed info for each account in parallel
 		logger.Infof("Fetching details for %d accounts in safe '%s'...", len(safeAccounts), safeName)
 
-		accountsChan := make(chan map[string]interface{}, len(safeAccounts))
+		accountsChan := make(chan models.Account, len(safeAccounts))
 		var wg sync.WaitGroup
 		semaphore := make(chan struct{}, *workers)
 
 		for _, acc := range safeAccounts {
 			wg.Add(1)
-			go func(acc map[string]interface{}) {
+			go func(acc models.Account) {
 				defer wg.Done()
 				semaphore <- struct{}{}        // Acquire
 				defer func() { <-semaphore }() // Release
 
-				accountID := graph.GetString(acc, "id", "")
+				accountID := acc.ID
 				if accountID == "" {
 					return
 				}
@@ -217,11 +202,11 @@ func main() {
 				}
 
 				// Skip disabled or archived accounts
-				if graph.GetBool(details, "disabled", false) || graph.GetString(details, "status", "") == "Archived" {
+				if details.Disabled || details.Status == "Archived" {
 					return
 				}
 
-				accountsChan <- details
+				accountsChan <- *details
 			}(acc)
 		}
 
@@ -238,14 +223,14 @@ func main() {
 	logger.Infof("Collected %d total accounts", len(accounts))
 
 	// Fetch account activities if requested
-	var accountActivities map[string][]map[string]interface{}
+	var accountActivities map[string][]models.AccountActivity
 	if *includeActivity && len(accounts) > 0 {
 		logger.Infof("Fetching account activities (last %d days)...", *activityDays)
-		accountActivities = make(map[string][]map[string]interface{})
+		accountActivities = make(map[string][]models.AccountActivity)
 
 		activitiesChan := make(chan struct {
 			accountID  string
-			activities []map[string]interface{}
+			activities []models.AccountActivity
 		}, len(accounts))
 
 		var wg sync.WaitGroup
@@ -255,12 +240,12 @@ func main() {
 
 		for _, acc := range accounts {
 			wg.Add(1)
-			go func(acc map[string]interface{}) {
+			go func(acc models.Account) {
 				defer wg.Done()
 				semaphore <- struct{}{}        // Acquire
 				defer func() { <-semaphore }() // Release
 
-				accountID := graph.GetString(acc, "id", "")
+				accountID := acc.ID
 				if accountID == "" {
 					return
 				}
@@ -274,7 +259,7 @@ func main() {
 				if len(activities) > 0 {
 					activitiesChan <- struct {
 						accountID  string
-						activities []map[string]interface{}
+						activities []models.AccountActivity
 					}{accountID, activities}
 				}
 
