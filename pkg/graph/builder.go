@@ -261,7 +261,7 @@ func BuildOpenGraph(
 			"safeNumber":                s.SafeNumber,
 			"description":               s.Description,
 			"location":                  s.Location,
-			"creator":                   s.Creator,
+			"creator":                   s.Creator.Name,
 			"olacEnabled":               s.OlacEnabled,
 			"managingCPM":               s.ManagingCPM,
 			"numberOfVersionsRetention": s.NumberOfVersionsRetention,

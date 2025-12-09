@@ -68,16 +68,22 @@ type GroupMember struct {
 	Username   string `json:"username,omitempty"`
 }
 
+// SafeCreator represents the creator of a safe
+type SafeCreator struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // Safe represents a CyberArk safe
 type Safe struct {
-	SafeUrlId                 string  `json:"safeUrlId"`
-	SafeName                  string  `json:"safeName"`
-	SafeNumber                int     `json:"safeNumber"`
-	Description               string  `json:"description"`
-	Location                  string  `json:"location"`
-	Creator                   string  `json:"creator"`
-	OlacEnabled               bool    `json:"olacEnabled"`
-	ManagingCPM               string  `json:"managingCPM"`
+	SafeUrlId                 string      `json:"safeUrlId"`
+	SafeName                  string      `json:"safeName"`
+	SafeNumber                int         `json:"safeNumber"`
+	Description               string      `json:"description"`
+	Location                  string      `json:"location"`
+	Creator                   SafeCreator `json:"creator"`
+	OlacEnabled               bool        `json:"olacEnabled"`
+	ManagingCPM               string      `json:"managingCPM"`
 	NumberOfVersionsRetention int     `json:"numberOfVersionsRetention"`
 	NumberOfDaysRetention     int     `json:"numberOfDaysRetention"`
 	AutoPurgeEnabled          bool    `json:"autoPurgeEnabled"`
