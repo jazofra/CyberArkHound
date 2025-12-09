@@ -43,6 +43,11 @@ func main() {
 
 	pflag.Parse()
 
+	// Handle leftover arguments as target domains (supports space-separated domains)
+	if len(pflag.Args()) > 0 {
+		*targetDomains = append(*targetDomains, pflag.Args()...)
+	}
+
 	// Validate required flags
 	if *pvwaURL == "" || *username == "" || *password == "" || *outputFile == "" || len(*targetDomains) == 0 {
 		fmt.Fprintf(os.Stderr, "Error: Missing required flags\n\n")
@@ -52,7 +57,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --username string          API username\n")
 		fmt.Fprintf(os.Stderr, "  --password string          API password\n")
 		fmt.Fprintf(os.Stderr, "  --output string            Output JSON file\n")
-		fmt.Fprintf(os.Stderr, "  --target-domains strings   Target AD domains (comma-separated)\n\n")
+		fmt.Fprintf(os.Stderr, "  --target-domains strings   Target AD domains (comma-separated or space-separated)\n\n")
 		pflag.PrintDefaults()
 		os.Exit(1)
 	}
