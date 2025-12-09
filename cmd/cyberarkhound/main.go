@@ -142,85 +142,110 @@ func main() {
 		logger.Infof("Found %d safes matching '%s'", len(safes), *testSafe)
 	}
 
-	// Fetch safe members and accounts
+	// --- Phase 1: Discovery (Parallel Safe Processing) ---
+	logger.Infof("Phase 1: Discovering members and accounts for %d safes...", len(safes))
+
 	var safeMembers []models.SafeMember
-	var accounts []models.Account
+	var skeletonAccounts []models.Account
+	var memberMu sync.Mutex
+	var accountMu sync.Mutex
+
+	safeSemaphore := make(chan struct{}, *workers)
+	var safeWg sync.WaitGroup
 
 	for idx, safe := range safes {
-		safeName := safe.SafeName
-		safeURLID := safe.SafeUrlId
-		logger.Infof("Processing safe %d/%d: '%s'", idx+1, len(safes), safeName)
+		safeWg.Add(1)
+		go func(idx int, safe models.Safe) {
+			defer safeWg.Done()
+			safeSemaphore <- struct{}{}        // Acquire
+			defer func() { <-safeSemaphore }() // Release
 
-		// Fetch safe members
-		members, err := apiClient.ListSafeMembers(safeName, safeURLID)
-		if err != nil {
-			logger.Warnf("Failed to fetch members for safe '%s': %v", safeName, err)
-			continue
-		}
+			// Progress logging (roughly every 10 safes or if few safes)
+			if (idx+1)%10 == 0 || idx+1 == len(safes) {
+				logger.Infof("Processing safe %d/%d: '%s'", idx+1, len(safes), safe.SafeName)
+			}
 
-		safeMembers = append(safeMembers, members...)
+			// Fetch safe members
+			members, err := apiClient.ListSafeMembers(safe.SafeName, safe.SafeUrlId)
+			if err != nil {
+				logger.Warnf("Failed to fetch members for safe '%s': %v", safe.SafeName, err)
+			} else {
+				memberMu.Lock()
+				safeMembers = append(safeMembers, members...)
+				memberMu.Unlock()
+			}
 
-		// Fetch accounts in this safe
-		safeAccounts, err := apiClient.ListAccounts(safeName, safeURLID)
-		if err != nil {
-			logger.Warnf("Failed to fetch accounts for safe '%s': %v", safeName, err)
-			continue
-		}
-
-		if len(safeAccounts) == 0 {
-			logger.Infof("No accounts in safe '%s'", safeName)
-			continue
-		}
-
-		// Fetch detailed info for each account in parallel
-		logger.Infof("Fetching details for %d accounts in safe '%s'...", len(safeAccounts), safeName)
-
-		accountsChan := make(chan models.Account, len(safeAccounts))
-		var wg sync.WaitGroup
-		semaphore := make(chan struct{}, *workers)
-
-		for _, acc := range safeAccounts {
-			wg.Add(1)
-			go func(acc models.Account) {
-				defer wg.Done()
-				semaphore <- struct{}{}        // Acquire
-				defer func() { <-semaphore }() // Release
-
-				accountID := acc.ID
-				if accountID == "" {
-					return
-				}
-
-				details, err := apiClient.GetAccountDetails(accountID)
-				if err != nil {
-					logger.Warnf("Failed to get details for account %s: %v", accountID, err)
-					return
-				}
-
-				if details == nil {
-					return
-				}
-
-				// Skip disabled or archived accounts
-				if details.Disabled || details.Status == "Archived" {
-					return
-				}
-
-				accountsChan <- *details
-			}(acc)
-		}
-
-		// Wait for all goroutines to complete
-		wg.Wait()
-		close(accountsChan)
-
-		// Collect results
-		for account := range accountsChan {
-			accounts = append(accounts, account)
-		}
+			// Fetch accounts list (skeleton)
+			safeAccounts, err := apiClient.ListAccounts(safe.SafeName, safe.SafeUrlId)
+			if err != nil {
+				logger.Warnf("Failed to fetch accounts for safe '%s': %v", safe.SafeName, err)
+			} else if len(safeAccounts) > 0 {
+				accountMu.Lock()
+				skeletonAccounts = append(skeletonAccounts, safeAccounts...)
+				accountMu.Unlock()
+			}
+		}(idx, safe)
 	}
 
-	logger.Infof("Collected %d total accounts", len(accounts))
+	safeWg.Wait()
+	logger.Infof("Phase 1 Complete. Found %d safe members and %d accounts (pre-filter).", len(safeMembers), len(skeletonAccounts))
+
+	// --- Phase 2: Enrichment (Parallel Account Details) ---
+	logger.Infof("Phase 2: Fetching details for %d accounts...", len(skeletonAccounts))
+
+	var accounts []models.Account
+	var accountsMu sync.Mutex
+
+	// Reset processed count for logging
+	processedAccounts := 0
+	var processedMu sync.Mutex
+
+	accountSemaphore := make(chan struct{}, *workers)
+	var accountWg sync.WaitGroup
+
+	for _, acc := range skeletonAccounts {
+		accountWg.Add(1)
+		go func(acc models.Account) {
+			defer accountWg.Done()
+			accountSemaphore <- struct{}{}        // Acquire
+			defer func() { <-accountSemaphore }() // Release
+
+			accountID := acc.ID
+			if accountID == "" {
+				return
+			}
+
+			details, err := apiClient.GetAccountDetails(accountID)
+			if err != nil {
+				logger.Warnf("Failed to get details for account %s: %v", accountID, err)
+				return
+			}
+
+			if details == nil {
+				return
+			}
+
+			// Skip disabled or archived accounts
+			if details.Disabled || details.Status == "Archived" {
+				return
+			}
+
+			accountsMu.Lock()
+			accounts = append(accounts, *details)
+			accountsMu.Unlock()
+
+			processedMu.Lock()
+			processedAccounts++
+			if processedAccounts%100 == 0 {
+				logger.Infof("  Fetched details for %d/%d accounts", processedAccounts, len(skeletonAccounts))
+			}
+			processedMu.Unlock()
+
+		}(acc)
+	}
+
+	accountWg.Wait()
+	logger.Infof("Phase 2 Complete. Collected %d active accounts.", len(accounts))
 
 	// Fetch account activities if requested
 	var accountActivities map[string][]models.AccountActivity
