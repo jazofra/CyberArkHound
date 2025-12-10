@@ -14,7 +14,7 @@ from .utils import get_logger
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="CyberArk to BloodHound OpenGraph exporter")
-    p.add_argument("--pvwa", required=True, help="PVWA base URL")
+    p.add_argument("--pvwa", required=False, help="PVWA base URL (required for on-premise, ignored for ISPSS)")
     p.add_argument("--username", required=True, help="API username")
     p.add_argument("--password", required=True, help="API password (consider using env var CYBERARK_PASSWORD)")
     p.add_argument("--output", required=True, help="Output JSON file")
@@ -38,6 +38,12 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--limit-groups", type=int, help="Limit number of groups")
     t.add_argument("--limit-safes", type=int, help="Limit number of safes")
     t.add_argument("--test-safe", help="Fetch single safe by search term")
+    # ISPSS (Privilege Cloud) authentication
+    i = p.add_argument_group("ISPSS authentication (Privilege Cloud)")
+    i.add_argument("--auth-mode", choices=["cyberark", "ispss"], default="cyberark",
+                   help="Authentication mode: 'cyberark' (on-premise) or 'ispss' (Privilege Cloud)")
+    i.add_argument("--identity-url", default=None,
+                   help="Identity URL override (GovCloud/custom deployments only)")
     return p
 
 
@@ -45,17 +51,48 @@ def run(args: argparse.Namespace) -> int:
     logger = get_logger(not args.quiet)
     verify_value = False if args.insecure else (args.ca_bundle if args.ca_bundle else None)
 
-    client = CyberArkClient(
-        pvwa_url=args.pvwa,
-        username=args.username,
-        password=args.password,
-        auth_timeout=args.auth_timeout,
-        req_timeout=args.req_timeout,
-        verbose=not args.quiet,
-        verify=verify_value,
-    )
+    # Validate args based on auth mode
+    if args.auth_mode == "ispss":
+        if args.pvwa:
+            logger.warning("--pvwa is ignored when using --auth-mode ispss (auto-discovered)")
+        if not args.username or not args.password:
+            logger.error("--username and --password are required for ISPSS authentication")
+            return 1
+    else:
+        if not args.pvwa:
+            logger.error("--pvwa is required for on-premise (cyberark) authentication")
+            return 1
 
-    client.authenticate()
+    # Create client based on auth mode
+    if args.auth_mode == "ispss":
+        from .auth import ISPSSAuthenticator
+        logger.info("Authenticating to CyberArk ISPSS (Privilege Cloud)...")
+        authenticator = ISPSSAuthenticator(
+            username=args.username,
+            password=args.password,
+            identity_url=args.identity_url,
+        )
+        authenticator.authenticate()
+        client = CyberArkClient(
+            authenticator=authenticator,
+            auth_timeout=args.auth_timeout,
+            req_timeout=args.req_timeout,
+            verbose=not args.quiet,
+            verify=verify_value,
+        )
+        client.authenticate()  # Just applies the token to session
+    else:
+        logger.info("Authenticating to CyberArk PVWA (on-premise)...")
+        client = CyberArkClient(
+            pvwa_url=args.pvwa,
+            username=args.username,
+            password=args.password,
+            auth_timeout=args.auth_timeout,
+            req_timeout=args.req_timeout,
+            verbose=not args.quiet,
+            verify=verify_value,
+        )
+        client.authenticate()
 
     logger.info("Target domains: %s", ", ".join(args.target_domains))
 

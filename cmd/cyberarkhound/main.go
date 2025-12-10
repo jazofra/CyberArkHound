@@ -41,6 +41,10 @@ func main() {
 	limitSafes := pflag.Int("limit-safes", 0, "Limit number of safes (0 = no limit)")
 	testSafe := pflag.String("test-safe", "", "Fetch single safe by search term")
 
+	// ISPSS (Privilege Cloud) authentication
+	authMode := pflag.String("auth-mode", "cyberark", "Authentication mode: 'cyberark' (on-premise) or 'ispss' (Privilege Cloud)")
+	identityURL := pflag.String("identity-url", "", "Identity URL override (GovCloud/custom deployments only)")
+
 	pflag.Parse()
 
 	// Handle leftover arguments as target domains (supports space-separated domains)
@@ -48,18 +52,41 @@ func main() {
 		*targetDomains = append(*targetDomains, pflag.Args()...)
 	}
 
-	// Validate required flags
-	if *pvwaURL == "" || *username == "" || *password == "" || *outputFile == "" || len(*targetDomains) == 0 {
-		fmt.Fprintf(os.Stderr, "Error: Missing required flags\n\n")
-		fmt.Fprintf(os.Stderr, "Usage: cyberarkhound [OPTIONS]\n\n")
-		fmt.Fprintf(os.Stderr, "Required flags:\n")
-		fmt.Fprintf(os.Stderr, "  --pvwa string              PVWA base URL\n")
-		fmt.Fprintf(os.Stderr, "  --username string          API username\n")
-		fmt.Fprintf(os.Stderr, "  --password string          API password\n")
-		fmt.Fprintf(os.Stderr, "  --output string            Output JSON file\n")
-		fmt.Fprintf(os.Stderr, "  --target-domains strings   Target AD domains (comma-separated or space-separated)\n\n")
-		pflag.PrintDefaults()
+	// Validate auth mode
+	if *authMode != "cyberark" && *authMode != "ispss" {
+		fmt.Fprintf(os.Stderr, "Error: --auth-mode must be 'cyberark' or 'ispss', got '%s'\n", *authMode)
 		os.Exit(1)
+	}
+
+	// Validate required flags based on auth mode
+	if *authMode == "ispss" {
+		if *pvwaURL != "" {
+			fmt.Fprintf(os.Stderr, "Warning: --pvwa is ignored when using --auth-mode ispss (auto-discovered)\n")
+		}
+		if *username == "" || *password == "" || *outputFile == "" || len(*targetDomains) == 0 {
+			fmt.Fprintf(os.Stderr, "Error: Missing required flags for ISPSS mode\n\n")
+			fmt.Fprintf(os.Stderr, "Required flags for --auth-mode ispss:\n")
+			fmt.Fprintf(os.Stderr, "  --username string          Identity Service User (e.g., user@cyberark.cloud.12345)\n")
+			fmt.Fprintf(os.Stderr, "  --password string          Service user password\n")
+			fmt.Fprintf(os.Stderr, "  --output string            Output JSON file\n")
+			fmt.Fprintf(os.Stderr, "  --target-domains strings   Target AD domains (comma-separated)\n\n")
+			pflag.PrintDefaults()
+			os.Exit(1)
+		}
+	} else {
+		// On-premise mode
+		if *pvwaURL == "" || *username == "" || *password == "" || *outputFile == "" || len(*targetDomains) == 0 {
+			fmt.Fprintf(os.Stderr, "Error: Missing required flags\n\n")
+			fmt.Fprintf(os.Stderr, "Usage: cyberarkhound [OPTIONS]\n\n")
+			fmt.Fprintf(os.Stderr, "Required flags:\n")
+			fmt.Fprintf(os.Stderr, "  --pvwa string              PVWA base URL\n")
+			fmt.Fprintf(os.Stderr, "  --username string          API username\n")
+			fmt.Fprintf(os.Stderr, "  --password string          API password\n")
+			fmt.Fprintf(os.Stderr, "  --output string            Output JSON file\n")
+			fmt.Fprintf(os.Stderr, "  --target-domains strings   Target AD domains (comma-separated or space-separated)\n\n")
+			pflag.PrintDefaults()
+			os.Exit(1)
+		}
 	}
 
 	// Setup logger
@@ -90,13 +117,22 @@ func main() {
 		logger.SetLevel(logrus.WarnLevel)
 	}
 
-	// Create CyberArk client
-	apiClient := client.NewClient(*pvwaURL, *username, *password, *insecure, *caBundle, logger)
+	// Create CyberArk client based on auth mode
+	var apiClient *client.Client
 
-	// Authenticate
-	logger.Info("Authenticating to CyberArk PVWA...")
-	if err := apiClient.Authenticate(); err != nil {
-		logger.Fatalf("Authentication failed: %v", err)
+	if *authMode == "ispss" {
+		logger.Info("Authenticating to CyberArk ISPSS (Privilege Cloud)...")
+		authenticator := client.NewISPSSAuthenticator(*username, *password, *identityURL, logger)
+		if err := authenticator.Authenticate(); err != nil {
+			logger.Fatalf("ISPSS authentication failed: %v", err)
+		}
+		apiClient = client.NewClientWithAuthenticator(authenticator, *insecure, *caBundle, logger)
+	} else {
+		logger.Info("Authenticating to CyberArk PVWA (on-premise)...")
+		apiClient = client.NewClient(*pvwaURL, *username, *password, *insecure, *caBundle, logger)
+		if err := apiClient.Authenticate(); err != nil {
+			logger.Fatalf("Authentication failed: %v", err)
+		}
 	}
 
 	logger.Infof("Target domains: %s", *targetDomains)

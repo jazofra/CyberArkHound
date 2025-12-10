@@ -191,14 +191,72 @@ Legacy one-file entry point:
 python CyberArkHound.py --help
 ```
 
+### Authentication Modes
+
+CyberArkHound supports two authentication modes:
+
+#### On-Premise CyberArk PAM (Default)
+
+```bash
+# Go
+./cyberarkhound --pvwa https://pvwa.example.com \
+    --username admin --password secret \
+    --output output.json --target-domains DOMAIN.COM
+
+# Python
+python3 -m cyberarkhound.cli --pvwa https://pvwa.example.com \
+    --username admin --password secret \
+    --output output.json --target-domains DOMAIN.COM
+```
+
+#### CyberArk Privilege Cloud (ISPSS)
+
+For CyberArk Privilege Cloud (Identity Security Platform Shared Services):
+
+```bash
+# Go
+./cyberarkhound --auth-mode ispss \
+    --username "service-user@cyberark.cloud.12345" \
+    --password "secret" \
+    --output output.json --target-domains DOMAIN.COM
+
+# Python
+python3 -m cyberarkhound.cli --auth-mode ispss \
+    --username "service-user@cyberark.cloud.12345" \
+    --password "secret" \
+    --output output.json --target-domains DOMAIN.COM
+```
+
+**Notes for ISPSS mode:**
+- The `--pvwa` flag is **not required** (PVWA URL is auto-discovered from tenant)
+- Use an **Identity Service User** account (not interactive Identity User with MFA)
+- The service user must have appropriate permissions in CyberArk (e.g., "Audit Users")
+- Username format: `username@cyberark.cloud.XXXXX` where XXXXX is your tenant identifier
+
+#### GovCloud / Custom Identity URL
+
+For government cloud or custom Identity deployments, override the Identity URL:
+
+```bash
+./cyberarkhound --auth-mode ispss \
+    --username "service-user@cyberark.cloud.12345" \
+    --password "secret" \
+    --identity-url "https://custom.id.cyberark.cloud" \
+    --output output.json --target-domains DOMAIN.COM
+```
+
 ### Command-Line Arguments
 
 **Required:**
-- `--pvwa` Base PVWA URL (e.g., https://pvwa.example.com)
-- `--username` API username
+- `--pvwa` Base PVWA URL (e.g., https://pvwa.example.com) - required for on-premise, ignored for ISPSS
+- `--username` API username (for ISPSS: `user@cyberark.cloud.XXXXX`)
 - `--password` API password (consider using environment variable)
 - `--output` Destination JSON file for BloodHound import
 - `--target-domains` One or more AD domain names (comma-separated) used to link accounts to AD users
+
+**Authentication:**
+- `--auth-mode` Authentication mode: `cyberark` (default, on-premise) or `ispss` (Privilege Cloud)
+- `--identity-url` Identity URL override for GovCloud/custom deployments (ISPSS only)
 
 **Optional:**
 - `--workers` Concurrency for parallel operations (default: 50, recommended: 100-200 for large environments)

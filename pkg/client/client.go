@@ -39,6 +39,8 @@ type Client struct {
 	RetryMaxBackoff     time.Duration
 	RetryMultiplier     float64
 	RetryJitter         float64
+	isISPSS             bool          // True if using ISPSS auth (affects Authorization header)
+	Authenticator       Authenticator // Optional: delegated auth strategy
 }
 
 // NewClient creates a new CyberArk API client
@@ -67,6 +69,37 @@ func NewClient(baseURL, username, password string, insecure bool, caBundle strin
 		RetryMaxBackoff:     60 * time.Second,
 		RetryMultiplier:     2.0,
 		RetryJitter:         0.2,
+	}
+}
+
+// NewClientWithAuthenticator creates a client using a pre-configured authenticator.
+// Use this for ISPSS authentication where the authenticator handles auth and URL discovery.
+func NewClientWithAuthenticator(authenticator Authenticator, insecure bool, caBundle string, logger *logrus.Logger) *Client {
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: insecure,
+		},
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     90 * time.Second,
+	}
+
+	return &Client{
+		BaseURL:  authenticator.GetBaseURL(),
+		Token:    authenticator.GetToken(),
+		HTTPClient: &http.Client{
+			Transport: transport,
+			Timeout:   360 * time.Second,
+		},
+		Logger:              logger,
+		AuthTimeout:         360 * time.Second,
+		ReqTimeout:          360 * time.Second,
+		RetryInitialBackoff: 1 * time.Second,
+		RetryMaxBackoff:     60 * time.Second,
+		RetryMultiplier:     2.0,
+		RetryJitter:         0.2,
+		isISPSS:             authenticator.IsISPSS(),
+		Authenticator:       authenticator,
 	}
 }
 
@@ -105,7 +138,11 @@ func (c *Client) requestWithRetries(method, urlPath string, body interface{}, ti
 			req.Header.Set("Content-Type", "application/json")
 		}
 		if c.Token != "" {
-			req.Header.Set("Authorization", c.Token)
+			if c.isISPSS {
+				req.Header.Set("Authorization", "Bearer "+c.Token)
+			} else {
+				req.Header.Set("Authorization", c.Token)
+			}
 		}
 
 		// Don't set per-request context timeout - use HTTP client's timeout instead
@@ -175,6 +212,18 @@ func (c *Client) requestWithRetries(method, urlPath string, body interface{}, ti
 
 // Authenticate logs into the CyberArk PVWA API
 func (c *Client) Authenticate() error {
+	// If using delegated authenticator, use it
+	if c.Authenticator != nil {
+		if err := c.Authenticator.Authenticate(); err != nil {
+			return err
+		}
+		c.Token = c.Authenticator.GetToken()
+		c.BaseURL = c.Authenticator.GetBaseURL()
+		c.isISPSS = c.Authenticator.IsISPSS()
+		c.Logger.Infof("Authenticated via %T", c.Authenticator)
+		return nil
+	}
+
 	authURL := fmt.Sprintf("%s/PasswordVault/API/Auth/CyberArk/Logon", c.BaseURL)
 	payload := map[string]string{
 		"username": c.Username,

@@ -6,7 +6,10 @@ from __future__ import annotations
 import json
 import random
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+
+if TYPE_CHECKING:
+    from .auth import Authenticator
 from urllib.parse import quote
 import requests
 
@@ -51,9 +54,9 @@ class CyberArkClient:
 
     def __init__(
         self,
-        pvwa_url: str,
-        username: str,
-        password: str,
+        pvwa_url: Optional[str] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
         auth_timeout: int = 360,
         req_timeout: int = 360,
         verbose: bool = True,
@@ -62,13 +65,23 @@ class CyberArkClient:
         retry_max_backoff: float = 60.0,
         retry_multiplier: float = 2.0,
         retry_jitter: float = 0.2,
+        authenticator: Optional["Authenticator"] = None,
     ) -> None:
-        if not pvwa_url or not pvwa_url.startswith(("http://", "https://")):
-            raise ValueError("pvwa_url must start with http:// or https://")
-        if not username or not password:
-            raise ValueError("username and password are required")
-        
-        self.base = pvwa_url.rstrip("/")
+        # Store authenticator reference
+        self.authenticator = authenticator
+        self._is_ispss = authenticator.is_ispss() if authenticator else False
+
+        # Set base URL from authenticator or parameter
+        if authenticator:
+            self.base = authenticator.get_base_url()
+            if not self.base:
+                raise ValueError("Authenticator must provide base URL after authentication")
+        else:
+            if not pvwa_url or not pvwa_url.startswith(("http://", "https://")):
+                raise ValueError("pvwa_url must start with http:// or https://")
+            if not username or not password:
+                raise ValueError("username and password are required")
+            self.base = pvwa_url.rstrip("/")
         self.session = requests.Session()
         self.username = username
         self.password = password
@@ -180,6 +193,18 @@ class CyberArkClient:
     # API endpoints
     # ------------------------------------------------------------------
     def authenticate(self) -> None:
+        # If using delegated authenticator (ISPSS), get token from it
+        if self.authenticator:
+            # For ISPSS, authenticator.authenticate() was already called
+            # Just retrieve the token
+            self.token = self.authenticator.get_token()
+            self.base = self.authenticator.get_base_url()
+            self._is_ispss = self.authenticator.is_ispss()
+            self._apply_auth_header()
+            self.logger.info("Using token from authenticator")
+            return
+
+        # On-premise authentication
         url = f"{self.base}/PasswordVault/API/Auth/CyberArk/Logon"
         resp = self._request_with_retries(
             "POST",
@@ -199,8 +224,16 @@ class CyberArkClient:
                 or json.dumps(token_value)
             )
         self.token = str(token_value)
-        self.session.headers.update({"Authorization": self.token})
+        self._apply_auth_header()
         self.logger.info("Authenticated successfully")
+
+    def _apply_auth_header(self) -> None:
+        """Apply authentication header with correct format based on auth type."""
+        if self.token:
+            if self._is_ispss:
+                self.session.headers.update({"Authorization": f"Bearer {self.token}"})
+            else:
+                self.session.headers.update({"Authorization": self.token})
 
     def list_safes(
         self, *, limit_count: Optional[int] = None, search: Optional[str] = None
