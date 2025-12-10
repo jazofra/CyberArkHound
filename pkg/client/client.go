@@ -13,8 +13,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
 	"github.com/sirupsen/logrus"
 )
 
@@ -291,8 +293,8 @@ func (c *Client) Logoff() error {
 }
 
 // ListSafes retrieves all safes with pagination
-func (c *Client) ListSafes(limitCount *int, search *string) ([]map[string]interface{}, error) {
-	safes := make([]map[string]interface{}, 0)
+func (c *Client) ListSafes(limitCount *int, search *string) ([]models.Safe, error) {
+	safes := make([]models.Safe, 0)
 	limit := SafePageLimit
 	offset := 0
 
@@ -308,7 +310,7 @@ func (c *Client) ListSafes(limitCount *int, search *string) ([]map[string]interf
 		}
 
 		var data struct {
-			Value []map[string]interface{} `json:"value"`
+			Value []models.Safe `json:"value"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 			resp.Body.Close()
@@ -335,8 +337,8 @@ func (c *Client) ListSafes(limitCount *int, search *string) ([]map[string]interf
 }
 
 // ListSafeMembers retrieves all members of a safe
-func (c *Client) ListSafeMembers(safeName, safeURLID string) ([]map[string]interface{}, error) {
-	members := make([]map[string]interface{}, 0)
+func (c *Client) ListSafeMembers(safeName, safeURLID string) ([]models.SafeMember, error) {
+	members := make([]models.SafeMember, 0)
 	limit := 1000
 	offset := 0
 	safeNameEncoded := url.PathEscape(safeName)
@@ -351,7 +353,7 @@ func (c *Client) ListSafeMembers(safeName, safeURLID string) ([]map[string]inter
 		}
 
 		var data struct {
-			Value []map[string]interface{} `json:"value"`
+			Value []models.SafeMember `json:"value"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 			resp.Body.Close()
@@ -372,8 +374,8 @@ func (c *Client) ListSafeMembers(safeName, safeURLID string) ([]map[string]inter
 }
 
 // ListAccounts retrieves all accounts in a safe
-func (c *Client) ListAccounts(safeName, safeURLID string) ([]map[string]interface{}, error) {
-	accounts := make([]map[string]interface{}, 0)
+func (c *Client) ListAccounts(safeName, safeURLID string) ([]models.Account, error) {
+	accounts := make([]models.Account, 0)
 	limit := 1000
 	offset := 0
 	filterValue := fmt.Sprintf("safeName eq %s", safeName)
@@ -388,7 +390,7 @@ func (c *Client) ListAccounts(safeName, safeURLID string) ([]map[string]interfac
 		}
 
 		var data struct {
-			Value []map[string]interface{} `json:"value"`
+			Value []models.Account `json:"value"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 			resp.Body.Close()
@@ -409,7 +411,7 @@ func (c *Client) ListAccounts(safeName, safeURLID string) ([]map[string]interfac
 }
 
 // GetAccountDetails retrieves detailed information about an account
-func (c *Client) GetAccountDetails(accountID string) (map[string]interface{}, error) {
+func (c *Client) GetAccountDetails(accountID string) (*models.Account, error) {
 	accountURL := fmt.Sprintf("%s/PasswordVault/API/Accounts/%s", c.BaseURL, accountID)
 
 	resp, err := c.requestWithRetries("GET", accountURL, nil, c.ReqTimeout, 3)
@@ -426,16 +428,16 @@ func (c *Client) GetAccountDetails(accountID string) (map[string]interface{}, er
 		return nil, nil
 	}
 
-	var account map[string]interface{}
+	var account models.Account
 	if err := json.NewDecoder(resp.Body).Decode(&account); err != nil {
 		return nil, fmt.Errorf("failed to decode account details: %w", err)
 	}
 
-	return account, nil
+	return &account, nil
 }
 
 // GetAccountActivities retrieves recent activities for an account
-func (c *Client) GetAccountActivities(accountID string, limit int, daysBack *int) ([]map[string]interface{}, error) {
+func (c *Client) GetAccountActivities(accountID string, limit int, daysBack *int) ([]models.AccountActivity, error) {
 	activitiesURL := fmt.Sprintf("%s/PasswordVault/API/Accounts/%s/Activities", c.BaseURL, accountID)
 
 	resp, err := c.requestWithRetries("GET", activitiesURL, nil, c.ReqTimeout, 3)
@@ -443,15 +445,15 @@ func (c *Client) GetAccountActivities(accountID string, limit int, daysBack *int
 		// 404 or 403 means no activities available
 		if resp != nil && (resp.StatusCode == 404 || resp.StatusCode == 403) {
 			c.Logger.Debugf("No activities available for account %s", accountID)
-			return []map[string]interface{}{}, nil
+			return []models.AccountActivity{}, nil
 		}
 		c.Logger.Warnf("Failed to get activities for account %s: %v", accountID, err)
-		return []map[string]interface{}{}, nil
+		return []models.AccountActivity{}, nil
 	}
 	defer resp.Body.Close()
 
 	var rawResponse struct {
-		Activities []map[string]interface{} `json:"Activities"`
+		Activities []models.AccountActivity `json:"Activities"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&rawResponse); err != nil {
 		return nil, fmt.Errorf("failed to decode activities response: %w", err)
@@ -463,18 +465,13 @@ func (c *Client) GetAccountActivities(accountID string, limit int, daysBack *int
 	// Filter by time if daysBack specified
 	if daysBack != nil && *daysBack > 0 && len(activities) > 0 {
 		cutoffTimestamp := float64(time.Now().Unix()) - float64(*daysBack*86400)
-		filtered := make([]map[string]interface{}, 0)
+		filtered := make([]models.AccountActivity, 0)
 
 		for _, act := range activities {
-			dateVal, ok := act["Date"]
-			if !ok {
-				filtered = append(filtered, act)
-				continue
-			}
-
-			// Handle both float64 and int representations
 			var activityDate float64
-			switch v := dateVal.(type) {
+
+			// Handle potentially different types for Date
+			switch v := act.Date.(type) {
 			case float64:
 				activityDate = v
 			case int:
@@ -482,6 +479,7 @@ func (c *Client) GetAccountActivities(accountID string, limit int, daysBack *int
 			case int64:
 				activityDate = float64(v)
 			default:
+				// If we can't parse the date, include it to be safe
 				filtered = append(filtered, act)
 				continue
 			}
@@ -504,7 +502,7 @@ func (c *Client) GetAccountActivities(accountID string, limit int, daysBack *int
 }
 
 // ListUsers retrieves all users
-func (c *Client) ListUsers(limitCount *int) ([]map[string]interface{}, error) {
+func (c *Client) ListUsers(limitCount *int) ([]models.User, error) {
 	usersURL := fmt.Sprintf("%s/PasswordVault/API/Users?ExtendedDetails=true", c.BaseURL)
 
 	resp, err := c.requestWithRetries("GET", usersURL, nil, c.ReqTimeout, 3)
@@ -519,8 +517,8 @@ func (c *Client) ListUsers(limitCount *int) ([]map[string]interface{}, error) {
 	defer resp.Body.Close()
 
 	var data struct {
-		Users []map[string]interface{} `json:"Users"`
-		Value []map[string]interface{} `json:"value"`
+		Users []models.User `json:"Users"`
+		Value []models.User `json:"value"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, fmt.Errorf("failed to decode users response: %w", err)
@@ -540,7 +538,7 @@ func (c *Client) ListUsers(limitCount *int) ([]map[string]interface{}, error) {
 }
 
 // GetGroupDetails retrieves detailed information about a group
-func (c *Client) GetGroupDetails(groupID string) (map[string]interface{}, error) {
+func (c *Client) GetGroupDetails(groupID string) (*models.Group, error) {
 	if groupID == "" {
 		return nil, nil
 	}
@@ -554,16 +552,16 @@ func (c *Client) GetGroupDetails(groupID string) (map[string]interface{}, error)
 	}
 	defer resp.Body.Close()
 
-	var details map[string]interface{}
+	var details models.Group
 	if err := json.NewDecoder(resp.Body).Decode(&details); err != nil {
 		return nil, fmt.Errorf("failed to decode group details: %w", err)
 	}
 
-	return details, nil
+	return &details, nil
 }
 
 // ListGroups retrieves all groups with enriched details
-func (c *Client) ListGroups(limitCount *int) ([]map[string]interface{}, error) {
+func (c *Client) ListGroups(limitCount *int, concurrency int) ([]models.Group, error) {
 	groupsURL := fmt.Sprintf("%s/PasswordVault/API/UserGroups", c.BaseURL)
 
 	resp, err := c.requestWithRetries("GET", groupsURL, nil, c.ReqTimeout, 3)
@@ -573,7 +571,7 @@ func (c *Client) ListGroups(limitCount *int) ([]map[string]interface{}, error) {
 	defer resp.Body.Close()
 
 	var data struct {
-		Value []map[string]interface{} `json:"value"`
+		Value []models.Group `json:"value"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, fmt.Errorf("failed to decode groups response: %w", err)
@@ -585,36 +583,58 @@ func (c *Client) ListGroups(limitCount *int) ([]map[string]interface{}, error) {
 		groups = groups[:*limitCount]
 	}
 
-	// Enrich groups with details
-	enriched := make([]map[string]interface{}, 0, len(groups))
-	for _, g := range groups {
-		groupID := ""
-		// Try to get ID as string first
-		if id, ok := g["id"].(string); ok {
-			groupID = id
-		} else if id, ok := g["id"].(float64); ok {
-			// Handle numeric IDs (JSON numbers are float64)
-			groupID = fmt.Sprintf("%.0f", id)
-		} else if id, ok := g["id"].(int); ok {
-			groupID = fmt.Sprintf("%d", id)
-		} else if name, ok := g["groupName"].(string); ok {
-			// Fall back to groupName if id is not available
-			groupID = name
-		}
+	c.Logger.Infof("Enriching %d groups in parallel...", len(groups))
 
-		if groupID != "" {
-			details, _ := c.GetGroupDetails(groupID)
-			if details != nil {
-				// Merge details into group
-				for k, v := range details {
-					g[k] = v
+	// Parallel enrichment
+	// Create a buffered channel for results
+	enrichedGroups := make([]models.Group, len(groups))
+	copy(enrichedGroups, groups)
+
+	// Create a semaphore to limit concurrency
+	if concurrency <= 0 {
+		concurrency = 50
+	}
+	semaphore := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+
+	for i := range enrichedGroups {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			semaphore <- struct{}{}        // Acquire
+			defer func() { <-semaphore }() // Release
+
+			g := &enrichedGroups[idx]
+			groupID := ""
+
+			// Try to get ID as string first
+			// ID in models.Group is interface{} because it can be int or string in JSON
+			if idStr, ok := g.ID.(string); ok {
+				groupID = idStr
+			} else if idFloat, ok := g.ID.(float64); ok {
+				groupID = fmt.Sprintf("%.0f", idFloat)
+			} else if idInt, ok := g.ID.(int); ok {
+				groupID = fmt.Sprintf("%d", idInt)
+			} else if g.GroupName != "" {
+				// Fall back to groupName if id is not available
+				groupID = g.GroupName
+			}
+
+			if groupID != "" {
+				details, err := c.GetGroupDetails(groupID)
+				if err == nil && details != nil {
+					// Merge details into group
+					// We just overwrite the struct with the detailed version,
+					// assuming GetGroupDetails returns a superset or complete object.
+					// Note: attributes from 'g' (the list item) should be present in 'details'
+					enrichedGroups[idx] = *details
 				}
 			}
-		}
-
-		enriched = append(enriched, g)
+		}(i)
 	}
 
-	c.Logger.Infof("Collected %d groups (enriched)", len(enriched))
-	return enriched, nil
+	wg.Wait()
+
+	c.Logger.Infof("Collected %d groups (enriched)", len(enrichedGroups))
+	return enrichedGroups, nil
 }

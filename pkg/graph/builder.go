@@ -4,18 +4,19 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
 	"github.com/sirupsen/logrus"
 )
 
 // BuildOpenGraph converts CyberArk API data into BloodHound OpenGraph format
 func BuildOpenGraph(
-	users []map[string]interface{},
-	groups []map[string]interface{},
-	safes []map[string]interface{},
-	safeMembers []map[string]interface{},
-	accounts []map[string]interface{},
+	users []models.User,
+	groups []models.Group,
+	safes []models.Safe,
+	safeMembers []models.SafeMember,
+	accounts []models.Account,
 	targetDomains []string,
-	accountActivities map[string][]map[string]interface{},
+	accountActivities map[string][]models.AccountActivity,
 	logger *logrus.Logger,
 	debug bool,
 	logLevel string,
@@ -63,78 +64,67 @@ func BuildOpenGraph(
 			logger.Infof("  Processed %d/%d users (%.1f%%)", idx+1, len(users), float64(idx+1)/float64(len(users))*100)
 		}
 
-		username := GetString(u, "username", "")
-		if username == "" {
+		if u.Username == "" {
 			continue
 		}
 
-		userDN := GetString(u, "userDN", "")
-		source := strings.ToLower(GetString(u, "source", ""))
-		isLDAP := strings.Contains(source, "ldap") || userDN != ""
+		source := strings.ToLower(u.Source)
+		isLDAP := strings.Contains(source, "ldap") || u.UserDN != ""
 
-		caNodeID := fmt.Sprintf("causer-%s", username)
-
-		// Extract personal details
-		personalDetails := GetMap(u, "personalDetails")
+		caNodeID := fmt.Sprintf("causer-%s", u.Username)
 
 		// Serialize vault authorization if complex
-		vaultAuth := GetSlice(u, "vaultAuthorization")
-		var vaultAuthSerialized interface{} = vaultAuth
-		if len(vaultAuth) > 0 {
-			if _, ok := vaultAuth[0].(map[string]interface{}); ok {
+		var vaultAuthSerialized interface{} = u.VaultAuthorization
+		if len(u.VaultAuthorization) > 0 {
+			if _, ok := u.VaultAuthorization[0].(map[string]interface{}); ok {
 				// Complex structure, serialize
-				vaultAuthSerialized = SanitizeProperties(map[string]interface{}{"auth": vaultAuth})["auth"]
+				vaultAuthSerialized = SanitizeProperties(map[string]interface{}{"auth": u.VaultAuthorization})["auth"]
 			}
 		}
 
 		// Create user node
 		props := map[string]interface{}{
 			"id":                           caNodeID,
-			"name":                         username,
-			"userId":                       GetString(u, "id", ""),
+			"name":                         u.Username,
+			"userId":                       fmt.Sprintf("%v", u.ID),
 			"isLDAPSynced":                 isLDAP,
-			"enabled":                      GetBool(u, "enabled", true),
-			"suspended":                    GetBool(u, "suspended", false),
-			"distinguishedName":            userDN,
-			"authorizedInterfaces":         GetSlice(u, "authorizedInterfaces"),
-			"componentUser":                GetBool(u, "componentUser", false),
+			"enabled":                      u.Enabled,
+			"suspended":                    u.Suspended,
+			"distinguishedName":            u.UserDN,
+			"authorizedInterfaces":         u.AuthorizedInterfaces,
+			"componentUser":                u.ComponentUser,
 			"source":                       source,
-			"userType":                     GetString(u, "userType", ""),
-			"location":                     GetString(u, "location", ""),
+			"userType":                     u.UserType,
+			"location":                     u.Location,
 			"vaultAuthorization":           vaultAuthSerialized,
-			"allowedAuthenticationMethods": GetSlice(u, "allowedAuthenticationMethods"),
-			"firstName":                    GetString(personalDetails, "firstName", ""),
-			"middleName":                   GetString(personalDetails, "middleName", ""),
-			"lastName":                     GetString(personalDetails, "lastName", ""),
-			"email":                        GetString(personalDetails, "email", ""),
-			"businessEmail":                GetString(personalDetails, "businessEmail", ""),
-			"homeEmail":                    GetString(personalDetails, "homeEmail", ""),
-			"businessPhone":                GetString(personalDetails, "businessPhone", ""),
-			"homePhone":                    GetString(personalDetails, "homePhone", ""),
-			"mobilePhone":                  GetString(personalDetails, "mobilePhone", ""),
-			"faxNumber":                    GetString(personalDetails, "faxNumber", ""),
-			"street":                       GetString(personalDetails, "street", ""),
-			"city":                         GetString(personalDetails, "city", ""),
-			"state":                        GetString(personalDetails, "state", ""),
-			"zip":                          GetString(personalDetails, "zip", ""),
-			"country":                      GetString(personalDetails, "country", ""),
-			"title":                        GetString(personalDetails, "title", ""),
-			"organization":                 GetString(personalDetails, "organization", ""),
-			"department":                   GetString(personalDetails, "department", ""),
-			"profession":                   GetString(personalDetails, "profession", ""),
+			"allowedAuthenticationMethods": u.AllowedAuthenticationMethods,
+			"firstName":                    u.PersonalDetails.FirstName,
+			"middleName":                   u.PersonalDetails.MiddleName,
+			"lastName":                     u.PersonalDetails.LastName,
+			"email":                        u.PersonalDetails.Email,
+			"businessEmail":                u.PersonalDetails.BusinessEmail,
+			"homeEmail":                    u.PersonalDetails.HomeEmail,
+			"businessPhone":                u.PersonalDetails.BusinessPhone,
+			"homePhone":                    u.PersonalDetails.HomePhone,
+			"mobilePhone":                  u.PersonalDetails.MobilePhone,
+			"faxNumber":                    u.PersonalDetails.FaxNumber,
+			"street":                       u.PersonalDetails.Street,
+			"city":                         u.PersonalDetails.City,
+			"state":                        u.PersonalDetails.State,
+			"zip":                          u.PersonalDetails.Zip,
+			"country":                      u.PersonalDetails.Country,
+			"title":                        u.PersonalDetails.Title,
+			"organization":                 u.PersonalDetails.Organization,
+			"department":                   u.PersonalDetails.Department,
+			"profession":                   u.PersonalDetails.Profession,
 			"safePermissions":              []interface{}{}, // Will be populated later
 		}
 
 		// Extract group membership
-		groupsMembership := GetMapSlice(u, "groupsMembership")
-		groupNames := make([]string, 0, len(groupsMembership))
-		for _, gm := range groupsMembership {
-			groupName := GetString(gm, "groupName", "")
-			if groupName == "" {
-				groupName = GetString(gm, "name", "")
-			}
-			if groupName != "" {
-				groupNames = append(groupNames, groupName)
+		groupNames := make([]string, 0, len(u.GroupsMembership))
+		for _, gm := range u.GroupsMembership {
+			if gm.GroupName != "" {
+				groupNames = append(groupNames, gm.GroupName)
 			}
 		}
 		props["groupsMembership"] = groupNames
@@ -146,35 +136,31 @@ func BuildOpenGraph(
 		})
 
 		// Track user
-		userID := GetString(u, "id", "")
+		userID := fmt.Sprintf("%v", u.ID)
 		if userID != "" {
 			usersByID[userID] = caNodeID
 		}
-		usersByUsername[username] = caNodeID
+		usersByUsername[u.Username] = caNodeID
 
 		// Add MemberOf edges
-		for _, gm := range groupsMembership {
-			groupName := GetString(gm, "groupName", "")
-			if groupName == "" {
-				groupName = GetString(gm, "name", "")
-			}
-			if groupName != "" {
-				og.AddEdge("CyberArkMemberOf", caNodeID, fmt.Sprintf("cagroup-%s", groupName),
+		for _, gm := range u.GroupsMembership {
+			if gm.GroupName != "" {
+				og.AddEdge("CyberArkMemberOf", caNodeID, fmt.Sprintf("cagroup-%s", gm.GroupName),
 					"id", "id", map[string]interface{}{"source": "userDetails"}, false)
 			}
 		}
 
 		// Add SyncsToCyberArkUser edge if LDAP synced
-		if isLDAP && userDN != "" {
-			domain := ParseDomainFromDN(userDN)
+		if isLDAP && u.UserDN != "" {
+			domain := ParseDomainFromDN(u.UserDN)
 			if domain != "" {
-				adUserName := fmt.Sprintf("%s@%s", strings.ToUpper(username), strings.ToUpper(domain))
+				adUserName := fmt.Sprintf("%s@%s", strings.ToUpper(u.Username), strings.ToUpper(domain))
 				og.AddEdge("SyncsToCyberArkUser", adUserName, caNodeID,
 					"name", "id", map[string]interface{}{
 						"inferred": true,
 						"source":   "LDAP",
 						"domain":   domain,
-						"userDN":   userDN,
+						"userDN":   u.UserDN,
 					}, true)
 			}
 		}
@@ -187,8 +173,8 @@ func BuildOpenGraph(
 			logger.Infof("  Processed %d/%d groups (%.1f%%)", idx+1, len(groups), float64(idx+1)/float64(len(groups))*100)
 		}
 
-		groupID := GetString(g, "id", "")
-		groupName := GetString(g, "groupName", "")
+		groupID := fmt.Sprintf("%v", g.ID)
+		groupName := g.GroupName
 		if groupName == "" {
 			groupName = groupID
 		}
@@ -197,18 +183,14 @@ func BuildOpenGraph(
 		}
 
 		caGroupID := fmt.Sprintf("cagroup-%s", groupName)
-
-		groupDN := GetString(g, "dn", "")
-		directory := GetString(g, "directory", "")
-		isDirectorySynced := directory != "" || groupDN != ""
+		isDirectorySynced := g.Directory != "" || g.DN != ""
 
 		// Extract members
-		members := GetMapSlice(g, "members")
-		memberNames := make([]string, 0, len(members))
-		for _, m := range members {
-			memberName := GetString(m, "memberName", "")
+		memberNames := make([]string, 0, len(g.Members))
+		for _, m := range g.Members {
+			memberName := m.MemberName
 			if memberName == "" {
-				memberName = GetString(m, "username", "")
+				memberName = m.Username
 			}
 			if memberName != "" {
 				memberNames = append(memberNames, memberName)
@@ -219,12 +201,12 @@ func BuildOpenGraph(
 			"id":                caGroupID,
 			"name":              groupName,
 			"groupId":           groupID,
-			"groupType":         GetString(g, "groupType", ""),
+			"groupType":         g.GroupType,
 			"isDirectorySynced": isDirectorySynced,
-			"directory":         directory,
-			"distinguishedName": groupDN,
-			"location":          GetString(g, "location", ""),
-			"description":       GetString(g, "description", ""),
+			"directory":         g.Directory,
+			"distinguishedName": g.DN,
+			"location":          g.Location,
+			"description":       g.Description,
 			"memberCount":       len(memberNames),
 			"members":           memberNames,
 			"safePermissions":   []interface{}{}, // Will be populated later
@@ -243,8 +225,8 @@ func BuildOpenGraph(
 		groupsByName[groupName] = caGroupID
 
 		// Add SyncsToCyberArkGroup edge if directory synced
-		if isDirectorySynced && groupDN != "" {
-			domain := ParseDomainFromDN(groupDN)
+		if isDirectorySynced && g.DN != "" {
+			domain := ParseDomainFromDN(g.DN)
 			if domain != "" {
 				adGroupName := fmt.Sprintf("%s@%s", strings.ToUpper(groupName), strings.ToUpper(domain))
 				og.AddEdge("SyncsToCyberArkGroup", adGroupName, caGroupID,
@@ -252,7 +234,7 @@ func BuildOpenGraph(
 						"inferred": true,
 						"source":   "LDAP",
 						"domain":   domain,
-						"groupDN":  groupDN,
+						"groupDN":  g.DN,
 					}, true)
 			}
 		}
@@ -265,30 +247,29 @@ func BuildOpenGraph(
 			logger.Infof("  Processed %d/%d safes (%.1f%%)", idx+1, len(safes), float64(idx+1)/float64(len(safes))*100)
 		}
 
-		safeName := GetString(s, "safeName", "")
-		if safeName == "" {
+		if s.SafeName == "" {
 			continue
 		}
 
-		safeNodeID := fmt.Sprintf("casafe-%s", safeName)
+		safeNodeID := fmt.Sprintf("casafe-%s", s.SafeName)
 
 		props := map[string]interface{}{
 			"id":                        safeNodeID,
-			"name":                      safeName,
-			"safeName":                  safeName,
-			"safeUrlId":                 GetString(s, "safeUrlId", ""),
-			"safeNumber":                GetInt(s, "safeNumber", 0),
-			"description":               GetString(s, "description", ""),
-			"location":                  GetString(s, "location", ""),
-			"creator":                   GetString(s, "creator", ""),
-			"olacEnabled":               GetBool(s, "olacEnabled", false),
-			"managingCPM":               GetString(s, "managingCPM", ""),
-			"numberOfVersionsRetention": GetInt(s, "numberOfVersionsRetention", 0),
-			"numberOfDaysRetention":     GetInt(s, "numberOfDaysRetention", 0),
-			"autoPurgeEnabled":          GetBool(s, "autoPurgeEnabled", false),
-			"creationTime":              GetFloat64(s, "creationTime", 0),
-			"lastModificationTime":      GetFloat64(s, "lastModificationTime", 0),
-			"isExpiredMembershipEnable": GetBool(s, "isExpiredMembershipEnable", false),
+			"name":                      s.SafeName,
+			"safeName":                  s.SafeName,
+			"safeUrlId":                 s.SafeUrlId,
+			"safeNumber":                s.SafeNumber,
+			"description":               s.Description,
+			"location":                  s.Location,
+			"creator":                   s.Creator.Name,
+			"olacEnabled":               s.OlacEnabled,
+			"managingCPM":               s.ManagingCPM,
+			"numberOfVersionsRetention": s.NumberOfVersionsRetention,
+			"numberOfDaysRetention":     s.NumberOfDaysRetention,
+			"autoPurgeEnabled":          s.AutoPurgeEnabled,
+			"creationTime":              s.CreationTime,
+			"lastModificationTime":      s.LastModificationTime,
+			"isExpiredMembershipEnable": s.IsExpiredMembershipEnable,
 		}
 
 		og.MergeNode(&Node{
@@ -297,7 +278,7 @@ func BuildOpenGraph(
 			Properties: SanitizeProperties(props),
 		})
 
-		safesByName[safeName] = safeNodeID
+		safesByName[s.SafeName] = safeNodeID
 	}
 
 	// Process Accounts
@@ -310,47 +291,42 @@ func BuildOpenGraph(
 			logger.Infof("  Processed %d/%d accounts (%.1f%%)", idx+1, len(accounts), float64(idx+1)/float64(len(accounts))*100)
 		}
 
-		accountID := GetString(a, "id", "")
-		if accountID == "" {
+		if a.ID == "" {
 			continue
 		}
 
-		safeName := GetString(a, "safeName", "")
-		userName := GetString(a, "userName", "")
-		address := GetString(a, "address", "")
-
-		accountNodeID := fmt.Sprintf("caaccount-%s", accountID)
+		accountNodeID := fmt.Sprintf("caaccount-%s", a.ID)
 
 		props := map[string]interface{}{
 			"id":                         accountNodeID,
-			"name":                       fmt.Sprintf("%s@%s", userName, address),
-			"accountId":                  accountID,
-			"userName":                   userName,
-			"address":                    address,
-			"platformId":                 GetString(a, "platformId", ""),
-			"safeName":                   safeName,
-			"safeUrlId":                  GetString(a, "safeUrlId", ""),
-			"secretType":                 GetString(a, "secretType", ""),
-			"status":                     GetString(a, "status", ""),
-			"disabled":                   GetBool(a, "disabled", false),
-			"createdTime":                GetFloat64(a, "createdTime", 0),
-			"lastModifiedTime":           GetFloat64(a, "lastModifiedTime", 0),
-			"lastVerifiedTime":           GetFloat64(a, "lastVerifiedTime", 0),
-			"lastReconciledTime":         GetFloat64(a, "lastReconciledTime", 0),
-			"categoryModificationTime":   GetFloat64(a, "categoryModificationTime", 0),
-			"automaticManagementEnabled": GetBool(a, "automaticManagementEnabled", false),
-			"manualManagementReason":     GetString(a, "manualManagementReason", ""),
-			"lastModifiedBy":             GetString(a, "lastModifiedBy", ""),
+			"name":                       fmt.Sprintf("%s@%s", a.UserName, a.Address),
+			"accountId":                  a.ID,
+			"userName":                   a.UserName,
+			"address":                    a.Address,
+			"platformId":                 a.PlatformID,
+			"safeName":                   a.SafeName,
+			"safeUrlId":                  a.SafeUrlId,
+			"secretType":                 a.SecretType,
+			"status":                     a.Status,
+			"disabled":                   a.Disabled,
+			"createdTime":                a.CreatedTime,
+			"lastModifiedTime":           a.LastModifiedTime,
+			"lastVerifiedTime":           a.LastVerifiedTime,
+			"lastReconciledTime":         a.LastReconciledTime,
+			"categoryModificationTime":   a.CategoryModificationTime,
+			"automaticManagementEnabled": a.AutomaticManagementEnabled,
+			"manualManagementReason":     a.ManualManagementReason,
+			"lastModifiedBy":             a.LastModifiedBy,
 		}
 
 		// Add platform account properties if present
-		if platformProps := GetMap(a, "platformAccountProperties"); len(platformProps) > 0 {
-			props["platformAccountProperties"] = SanitizeProperties(map[string]interface{}{"props": platformProps})["props"]
+		if len(a.PlatformAccountProperties) > 0 {
+			props["platformAccountProperties"] = SanitizeProperties(map[string]interface{}{"props": a.PlatformAccountProperties})["props"]
 		}
 
 		// Add secret management if present
-		if secretMgmt := GetMap(a, "secretManagement"); len(secretMgmt) > 0 {
-			props["secretManagement"] = SanitizeProperties(map[string]interface{}{"mgmt": secretMgmt})["mgmt"]
+		if len(a.SecretManagement) > 0 {
+			props["secretManagement"] = SanitizeProperties(map[string]interface{}{"mgmt": a.SecretManagement})["mgmt"]
 		}
 
 		og.MergeNode(&Node{
@@ -359,28 +335,28 @@ func BuildOpenGraph(
 			Properties: SanitizeProperties(props),
 		})
 
-		accountsByID[accountID] = accountNodeID
+		accountsByID[a.ID] = accountNodeID
 
 		// Track accounts by safe
-		if safeName != "" {
-			accountsBySafe[safeName] = append(accountsBySafe[safeName], accountNodeID)
+		if a.SafeName != "" {
+			accountsBySafe[a.SafeName] = append(accountsBySafe[a.SafeName], accountNodeID)
 
 			// Add CyberArkContains edge (Safe -> Account)
-			safeNodeID := fmt.Sprintf("casafe-%s", safeName)
+			safeNodeID := fmt.Sprintf("casafe-%s", a.SafeName)
 			og.AddEdge("CyberArkContains", safeNodeID, accountNodeID,
 				"id", "id", nil, false)
 		}
 
 		// Add SyncsToADUser edge if applicable
-		if userName != "" && address != "" {
+		if a.UserName != "" && a.Address != "" {
 			for _, domain := range targetDomains {
 				domainLower := strings.ToLower(domain)
-				addressLower := strings.ToLower(address)
+				addressLower := strings.ToLower(a.Address)
 
 				// Only create SyncsToADUser if address exactly matches the target domain
 				// If address contains subdomain (e.g., computer.domain.com), it's a computer account, not a user
 				if addressLower == domainLower {
-					adUserName := fmt.Sprintf("%s@%s", strings.ToUpper(userName), strings.ToUpper(domain))
+					adUserName := fmt.Sprintf("%s@%s", strings.ToUpper(a.UserName), strings.ToUpper(domain))
 					og.AddEdge("SyncsToADUser", accountNodeID, adUserName,
 						"id", "name", map[string]interface{}{
 							"inferred": true,
@@ -405,11 +381,7 @@ func BuildOpenGraph(
 			logger.Infof("  Processed %d/%d safe members (%.1f%%)", idx+1, len(safeMembers), float64(idx+1)/float64(len(safeMembers))*100)
 		}
 
-		memberName := GetString(sm, "MemberName", "")
-		memberType := GetString(sm, "MemberType", "")
-		safeName := GetString(sm, "SafeName", "")
-
-		if memberName == "" || safeName == "" {
+		if sm.MemberName == "" || sm.SafeName == "" {
 			continue
 		}
 
@@ -417,37 +389,34 @@ func BuildOpenGraph(
 		var memberNodeID string
 		var isMemberGroup bool
 
-		if strings.ToLower(memberType) == "group" {
-			memberNodeID = groupsByName[memberName]
+		if strings.ToLower(sm.MemberType) == "group" {
+			memberNodeID = groupsByName[sm.MemberName]
 			isMemberGroup = true
 		} else {
-			memberNodeID = usersByUsername[memberName]
+			memberNodeID = usersByUsername[sm.MemberName]
 			isMemberGroup = false
 		}
 
 		if memberNodeID == "" {
 			// Member not found, create placeholder
 			if isMemberGroup {
-				memberNodeID = fmt.Sprintf("cagroup-%s", memberName)
+				memberNodeID = fmt.Sprintf("cagroup-%s", sm.MemberName)
 			} else {
-				memberNodeID = fmt.Sprintf("causer-%s", memberName)
+				memberNodeID = fmt.Sprintf("causer-%s", sm.MemberName)
 			}
 		}
 
-		safeNodeID := safesByName[safeName]
+		safeNodeID := safesByName[sm.SafeName]
 		if safeNodeID == "" {
-			safeNodeID = fmt.Sprintf("casafe-%s", safeName)
+			safeNodeID = fmt.Sprintf("casafe-%s", sm.SafeName)
 		}
-
-		// Extract permissions
-		permissions := GetMap(sm, "Permissions")
 
 		// Normalize permission names
 		normalizedPerms := make(map[string]bool)
 		matchedPermNames := make([]string, 0)
 		matchedPermParams := make(map[string]interface{})
 
-		for permKey, permVal := range permissions {
+		for permKey, permVal := range sm.Permissions {
 			normKey := NormPermName(permKey)
 			if normKey == "" {
 				continue
@@ -486,7 +455,7 @@ func BuildOpenGraph(
 
 		// Store safe permission details for node properties
 		safePermDetail := map[string]interface{}{
-			"safeName":             safeName,
+			"safeName":             sm.SafeName,
 			"permissions":          matchedPermNames,
 			"permissionParameters": matchedPermParams,
 			"hasDirectAccess":      hasDirectAccess,
@@ -502,11 +471,11 @@ func BuildOpenGraph(
 		// Create edges based on permissions
 		if hasDirectAccess {
 			// Create edges to each account in the safe
-			accountsInSafe := accountsBySafe[safeName]
+			accountsInSafe := accountsBySafe[sm.SafeName]
 			for _, accountNodeID := range accountsInSafe {
 				og.AddEdge("CyberArkHasAccessTo", memberNodeID, accountNodeID,
 					"id", "id", map[string]interface{}{
-						"safeName":    safeName,
+						"safeName":    sm.SafeName,
 						"permissions": matchedPermNames,
 						"inferred":    false,
 					}, false)
@@ -560,9 +529,18 @@ func BuildOpenGraph(
 			userActivity := make(map[string]map[string]interface{}) // username -> {lastUsedTime, lastAction, usageCount}
 
 			for _, activity := range activities {
-				username := GetString(activity, "User", "")
-				action := GetString(activity, "Action", "")
-				activityDate := GetFloat64(activity, "Date", 0)
+				username := activity.User
+				action := activity.Action
+
+				var activityDate float64
+				switch v := activity.Date.(type) {
+				case float64:
+					activityDate = v
+				case int:
+					activityDate = float64(v)
+				case int64:
+					activityDate = float64(v)
+				}
 
 				// Convert Unix timestamp to ISO 8601
 				var activityTime string
