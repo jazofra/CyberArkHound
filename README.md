@@ -198,7 +198,7 @@ python CyberArkHound.py --help
 - `--username` API username
 - `--password` API password (consider using environment variable)
 - `--output` Destination JSON file for BloodHound import
-- `--target-domains` One or more AD domain names (comma-separated) used to link accounts to AD users
+- `--target-domains` One or more AD domain names used to link accounts to AD users. Supports both comma-separated values (e.g., `domain1.com,domain2.com`) and space-separated values (e.g., `domain1.com domain2.com`).
 
 **Optional:**
 - `--workers` Concurrency for parallel operations (default: 50, recommended: 100-200 for large environments)
@@ -548,7 +548,7 @@ python -m cyberarkhound.cli --pvwa ... --log-level DEBUG --output export.json --
 The Go implementation offers significant performance improvements over the Python version:
 
 | Metric | Python | Go | Improvement |
-|--------|--------|----|-----------| 
+|--------|--------|----|-----------|
 | Processing Speed | Baseline | **5-10x faster** | Concurrent processing, compiled code |
 | Memory Usage | Baseline | **50-70% less** | Efficient memory management, no GC overhead |
 | Binary Size | ~50MB (with venv) | **~15MB** | Single compiled binary |
@@ -633,4 +633,3 @@ Open issues for bugs or enhancement requests. Provide snippet of failing input a
 Thank you to Siemens Healthineers for supporting this research and to my coworkers who have helped with its development.
 
 - Julian Garcia - for cooperating with this research, and for offering valuable perspective for coding practices.
-
