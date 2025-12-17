@@ -71,7 +71,7 @@ func BuildOpenGraph(
 		source := strings.ToLower(u.Source)
 		isLDAP := strings.Contains(source, "ldap") || u.UserDN != ""
 
-		caNodeID := fmt.Sprintf("causer-%s", u.Username)
+		caNodeID := strings.ToUpper(fmt.Sprintf("causer-%s", u.Username))
 
 		// Serialize vault authorization if complex
 		var vaultAuthSerialized interface{} = u.VaultAuthorization
@@ -145,7 +145,7 @@ func BuildOpenGraph(
 		// Add MemberOf edges
 		for _, gm := range u.GroupsMembership {
 			if gm.GroupName != "" {
-				og.AddEdge("CyberArkMemberOf", caNodeID, fmt.Sprintf("cagroup-%s", gm.GroupName),
+				og.AddEdge("CyberArkMemberOf", caNodeID, strings.ToUpper(fmt.Sprintf("cagroup-%s", gm.GroupName)),
 					"id", "id", map[string]interface{}{"source": "userDetails"}, false)
 			}
 		}
@@ -182,7 +182,7 @@ func BuildOpenGraph(
 			continue
 		}
 
-		caGroupID := fmt.Sprintf("cagroup-%s", groupName)
+		caGroupID := strings.ToUpper(fmt.Sprintf("cagroup-%s", groupName))
 		isDirectorySynced := g.Directory != "" || g.DN != ""
 
 		// Extract members
@@ -251,7 +251,7 @@ func BuildOpenGraph(
 			continue
 		}
 
-		safeNodeID := fmt.Sprintf("casafe-%s", s.SafeName)
+		safeNodeID := strings.ToUpper(fmt.Sprintf("casafe-%s", s.SafeName))
 
 		props := map[string]interface{}{
 			"id":                        safeNodeID,
@@ -295,7 +295,7 @@ func BuildOpenGraph(
 			continue
 		}
 
-		accountNodeID := fmt.Sprintf("caaccount-%s", a.ID)
+		accountNodeID := strings.ToUpper(fmt.Sprintf("caaccount-%s", a.ID))
 
 		props := map[string]interface{}{
 			"id":                         accountNodeID,
@@ -342,7 +342,7 @@ func BuildOpenGraph(
 			accountsBySafe[a.SafeName] = append(accountsBySafe[a.SafeName], accountNodeID)
 
 			// Add CyberArkContains edge (Safe -> Account)
-			safeNodeID := fmt.Sprintf("casafe-%s", a.SafeName)
+			safeNodeID := strings.ToUpper(fmt.Sprintf("casafe-%s", a.SafeName))
 			og.AddEdge("CyberArkContains", safeNodeID, accountNodeID,
 				"id", "id", nil, false)
 		}
@@ -400,15 +400,15 @@ func BuildOpenGraph(
 		if memberNodeID == "" {
 			// Member not found, create placeholder
 			if isMemberGroup {
-				memberNodeID = fmt.Sprintf("cagroup-%s", sm.MemberName)
+				memberNodeID = strings.ToUpper(fmt.Sprintf("cagroup-%s", sm.MemberName))
 			} else {
-				memberNodeID = fmt.Sprintf("causer-%s", sm.MemberName)
+				memberNodeID = strings.ToUpper(fmt.Sprintf("causer-%s", sm.MemberName))
 			}
 		}
 
 		safeNodeID := safesByName[sm.SafeName]
 		if safeNodeID == "" {
-			safeNodeID = fmt.Sprintf("casafe-%s", sm.SafeName)
+			safeNodeID = strings.ToUpper(fmt.Sprintf("casafe-%s", sm.SafeName))
 		}
 
 		// Normalize permission names
@@ -518,7 +518,7 @@ func BuildOpenGraph(
 		for accountID, activities := range accountActivities {
 			accountNodeID := accountsByID[accountID]
 			if accountNodeID == "" {
-				accountNodeID = fmt.Sprintf("caaccount-%s", accountID)
+				accountNodeID = strings.ToUpper(fmt.Sprintf("caaccount-%s", accountID))
 			}
 
 			if debug {
@@ -596,7 +596,7 @@ func BuildOpenGraph(
 			for username, usageData := range userActivity {
 				userNodeID := usersByUsername[username]
 				if userNodeID == "" {
-					userNodeID = fmt.Sprintf("causer-%s", username)
+					userNodeID = strings.ToUpper(fmt.Sprintf("causer-%s", username))
 				}
 
 				if debug {
