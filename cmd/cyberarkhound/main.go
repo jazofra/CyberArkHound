@@ -198,7 +198,9 @@ func main() {
 	// --- Phase 2: Enrichment (Parallel Account Details) ---
 	logger.Infof("Phase 2: Fetching details for %d accounts...", len(skeletonAccounts))
 
-	var accounts []models.Account
+	// Bolt Optimization: Pre-allocate slice capacity to avoid resizing overhead
+	// models.Account is a value type, so resizing involves copying the struct (approx 200-300 bytes)
+	accounts := make([]models.Account, 0, len(skeletonAccounts))
 	var accountsMu sync.Mutex
 
 	// Reset processed count for logging

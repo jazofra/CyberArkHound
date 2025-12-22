@@ -51,11 +51,12 @@ func BuildOpenGraph(
 	}
 
 	// Track users and groups for lookups
-	usersByID := make(map[string]string)
-	usersByUsername := make(map[string]string)
-	groupsByID := make(map[string]string)
-	groupsByName := make(map[string]string)
-	safesByName := make(map[string]string)
+	// Bolt Optimization: Pre-allocate maps to reduce resizing allocations
+	usersByID := make(map[string]string, len(users))
+	usersByUsername := make(map[string]string, len(users))
+	groupsByID := make(map[string]string, len(groups))
+	groupsByName := make(map[string]string, len(groups))
+	safesByName := make(map[string]string, len(safes))
 
 	// Process Users
 	logger.Infof("Processing %d users...", len(users))
@@ -282,8 +283,8 @@ func BuildOpenGraph(
 	}
 
 	// Process Accounts
-	accountsBySafe := make(map[string][]string) // safeName -> []accountNodeIDs
-	accountsByID := make(map[string]string)     // accountID -> accountNodeID
+	accountsBySafe := make(map[string][]string)             // safeName -> []accountNodeIDs
+	accountsByID := make(map[string]string, len(accounts))  // accountID -> accountNodeID
 
 	logger.Infof("Processing %d accounts...", len(accounts))
 	for idx, a := range accounts {
