@@ -198,7 +198,8 @@ func main() {
 	// --- Phase 2: Enrichment (Parallel Account Details) ---
 	logger.Infof("Phase 2: Fetching details for %d accounts...", len(skeletonAccounts))
 
-	var accounts []models.Account
+	// Pre-allocate slice with capacity equal to skeleton accounts to avoid re-allocations
+	accounts := make([]models.Account, 0, len(skeletonAccounts))
 	var accountsMu sync.Mutex
 
 	// Reset processed count for logging
