@@ -21,6 +21,7 @@ func main() {
 	password := pflag.String("password", "", "API password (required)")
 	outputFile := pflag.String("output", "", "Output JSON file (required)")
 	targetDomains := pflag.StringSlice("target-domains", []string{}, "Target AD domain(s) for SyncsToADUser edges (required)")
+	parseSAMAccountName := pflag.Bool("parse-samaccountname", false, "Parse sAMAccountName/GID from LDAP distinguishedName CN for SyncsToCyberArkUser edges (optional)")
 
 	workers := pflag.Int("workers", 50, "Concurrent workers for account detail retrieval")
 
@@ -100,6 +101,9 @@ func main() {
 	}
 
 	logger.Infof("Target domains: %s", *targetDomains)
+	if *parseSAMAccountName {
+		logger.Info("Enabled: parse sAMAccountName from distinguishedName CN for SyncsToCyberArkUser edges")
+	}
 
 	// Fetch users
 	logger.Info("Fetching users...")
@@ -323,6 +327,7 @@ func main() {
 		safeMembers,
 		accounts,
 		*targetDomains,
+		*parseSAMAccountName,
 		accountActivities,
 		logger,
 		*debug,

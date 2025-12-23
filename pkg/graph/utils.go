@@ -133,6 +133,47 @@ func ParseDomainFromDN(dn string) string {
 	return strings.ToLower(strings.Join(parts, "."))
 }
 
+// ParseSAMAccountNameFromDN attempts to derive a sAMAccountName-like identifier from a DN.
+//
+// In some environments, the CN RDN is formatted like: "Lastname Firstname gid" where the last
+// whitespace-separated token is the user's GID/sAMAccountName (e.g. "CN=Ortiz Jon z0052twm,...").
+// If no suitable token can be derived, it returns an empty string.
+func ParseSAMAccountNameFromDN(dn string) string {
+	if dn == "" {
+		return ""
+	}
+
+	// Extract CN value from the RDN (best-effort; does not fully handle escaped commas).
+	re := regexp.MustCompile(`(?i)(?:^|,)\s*CN=([^,]+)`)
+	match := re.FindStringSubmatch(dn)
+	if len(match) < 2 {
+		return ""
+	}
+
+	cn := strings.TrimSpace(match[1])
+	if cn == "" {
+		return ""
+	}
+
+	parts := strings.Fields(cn)
+	if len(parts) == 0 {
+		return ""
+	}
+
+	candidate := strings.TrimSpace(parts[len(parts)-1])
+	if candidate == "" || strings.Contains(candidate, "@") {
+		return ""
+	}
+
+	// Keep it conservative: alphanumerics plus common account separators.
+	valid := regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	if !valid.MatchString(candidate) {
+		return ""
+	}
+
+	return candidate
+}
+
 // NormPermName normalizes permission name
 func NormPermName(p string) string {
 	if p == "" {

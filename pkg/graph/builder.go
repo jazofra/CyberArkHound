@@ -16,6 +16,7 @@ func BuildOpenGraph(
 	safeMembers []models.SafeMember,
 	accounts []models.Account,
 	targetDomains []string,
+	parseSAMAccountNameFromDN bool,
 	accountActivities map[string][]models.AccountActivity,
 	logger *logrus.Logger,
 	debug bool,
@@ -154,13 +155,21 @@ func BuildOpenGraph(
 		if isLDAP && u.UserDN != "" {
 			domain := ParseDomainFromDN(u.UserDN)
 			if domain != "" {
-				adUserName := fmt.Sprintf("%s@%s", strings.ToUpper(u.Username), strings.ToUpper(domain))
+				adKey := u.Username
+				if parseSAMAccountNameFromDN {
+					if sam := ParseSAMAccountNameFromDN(u.UserDN); sam != "" {
+					adKey = sam
+					}
+				}
+
+				adUserName := fmt.Sprintf("%s@%s", strings.ToUpper(adKey), strings.ToUpper(domain))
 				og.AddEdge("SyncsToCyberArkUser", adUserName, caNodeID,
 					"name", "id", map[string]interface{}{
 						"inferred": true,
 						"source":   "LDAP",
 						"domain":   domain,
 						"userDN":   u.UserDN,
+						"adKey":    adKey,
 					}, true)
 			}
 		}
