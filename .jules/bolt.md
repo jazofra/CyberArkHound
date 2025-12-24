@@ -1,0 +1,3 @@
+## 2024-05-23 - Map Pre-allocation Impact
+**Learning:** Pre-allocating maps in Go using known slice lengths (e.g., `make(map[string]string, len(users))`) is a low-effort optimization that avoids repeated map resizing. In `pkg/graph/builder.go`, this applies to lookup maps and the main `OpenGraph` structure. While the CPU time improvement in micro-benchmarks might be small (~0.5%), it significantly reduces memory churn and GC pressure for large datasets.
+**Action:** Always check for `make(map[...])` without capacity hints when the number of elements is known or can be estimated. Implement `NewWithCapacity` constructors for complex structs that contain large maps or slices.
