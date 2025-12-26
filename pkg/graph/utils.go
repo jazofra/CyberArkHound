@@ -53,6 +53,17 @@ func NewOpenGraph(logger *logrus.Logger) *OpenGraph {
 	}
 }
 
+// NewOpenGraphWithCapacity creates a new OpenGraph with pre-allocated capacity
+func NewOpenGraphWithCapacity(nodeCapacity, edgeCapacity int, logger *logrus.Logger) *OpenGraph {
+	return &OpenGraph{
+		Nodes:         make(map[string]*Node, nodeCapacity),
+		InternalEdges: make([]*Edge, 0, edgeCapacity),
+		ExternalEdges: make([]*Edge, 0),
+		EdgeSet:       make(map[string]bool, edgeCapacity),
+		Logger:        logger,
+	}
+}
+
 // MergeNode adds or merges a node into the graph
 func (og *OpenGraph) MergeNode(node *Node) {
 	existing, exists := og.Nodes[node.ID]
