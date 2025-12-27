@@ -21,7 +21,17 @@ func BuildOpenGraph(
 	debug bool,
 	logLevel string,
 ) (*OpenGraph, error) {
-	og := NewOpenGraph(logger)
+	// Estimate graph capacity to reduce reallocations
+	// Nodes: sum of all input entities
+	estimatedNodes := len(users) + len(groups) + len(safes) + len(accounts)
+
+	// Edges: heuristic based on typical relationships
+	// - 2 edges per safe member (HasAccessTo/CanGrantAccessTo + potential membership edge)
+	// - 1 edge per account (Contains)
+	// - 1 edge per user (SyncsTo + MemberOf)
+	estimatedEdges := len(safeMembers)*2 + len(accounts) + len(users)
+
+	og := NewOpenGraphWithCapacity(logger, estimatedNodes, estimatedEdges)
 
 	// Determine logging intervals based on log level
 	var userInterval, groupInterval, safeInterval, accountInterval, memberInterval int
