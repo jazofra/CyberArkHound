@@ -21,7 +21,12 @@ func BuildOpenGraph(
 	debug bool,
 	logLevel string,
 ) (*OpenGraph, error) {
-	og := NewOpenGraph(logger)
+	// Estimate graph capacity
+	nodeCount := len(users) + len(groups) + len(safes) + len(accounts)
+	// Heuristic: safe members drive most edges (roughly 2 edges per member: MemberOf, HasAccessTo/CanGrantAccessTo)
+	edgeCount := len(safeMembers) * 2
+
+	og := NewOpenGraphWithCapacity(logger, nodeCount, edgeCount)
 
 	// Determine logging intervals based on log level
 	var userInterval, groupInterval, safeInterval, accountInterval, memberInterval int
