@@ -44,11 +44,16 @@ type OpenGraph struct {
 
 // NewOpenGraph creates a new OpenGraph
 func NewOpenGraph(logger *logrus.Logger) *OpenGraph {
+	return NewOpenGraphWithCapacity(logger, 0, 0)
+}
+
+// NewOpenGraphWithCapacity creates a new OpenGraph with pre-allocated capacity
+func NewOpenGraphWithCapacity(logger *logrus.Logger, nodeCapacity, edgeCapacity int) *OpenGraph {
 	return &OpenGraph{
-		Nodes:         make(map[string]*Node),
-		InternalEdges: make([]*Edge, 0),
+		Nodes:         make(map[string]*Node, nodeCapacity),
+		InternalEdges: make([]*Edge, 0, edgeCapacity),
 		ExternalEdges: make([]*Edge, 0),
-		EdgeSet:       make(map[string]bool),
+		EdgeSet:       make(map[string]bool, edgeCapacity),
 		Logger:        logger,
 	}
 }
@@ -159,7 +164,7 @@ func SanitizeProperties(props map[string]interface{}) map[string]interface{} {
 		"matchedPermissionParameters": true,
 	}
 
-	sanitized := make(map[string]interface{})
+	sanitized := make(map[string]interface{}, len(props))
 
 	for key, value := range props {
 		if value == nil {
