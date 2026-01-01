@@ -159,7 +159,9 @@ func SanitizeProperties(props map[string]interface{}) map[string]interface{} {
 		"matchedPermissionParameters": true,
 	}
 
-	sanitized := make(map[string]interface{})
+	// Pre-allocate map with capacity equal to input size to avoid resizing
+	// This improves performance in hot loops where this function is called frequently
+	sanitized := make(map[string]interface{}, len(props))
 
 	for key, value := range props {
 		if value == nil {
