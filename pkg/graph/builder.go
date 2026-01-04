@@ -21,7 +21,13 @@ func BuildOpenGraph(
 	debug bool,
 	logLevel string,
 ) (*OpenGraph, error) {
-	og := NewOpenGraph(logger)
+	// Estimate graph capacity
+	nodeCount := len(users) + len(groups) + len(safes) + len(accounts)
+	// Heuristic: Each safe member creates at least one edge, plus potential escalation edges
+	// + edges for account membership + sync edges. 2x is a safe upper bound estimate.
+	edgeCount := len(safeMembers) * 2
+
+	og := NewOpenGraphWithCapacity(logger, nodeCount, edgeCount)
 
 	// Determine logging intervals based on log level
 	var userInterval, groupInterval, safeInterval, accountInterval, memberInterval int
@@ -51,11 +57,11 @@ func BuildOpenGraph(
 	}
 
 	// Track users and groups for lookups
-	usersByID := make(map[string]string)
-	usersByUsername := make(map[string]string)
-	groupsByID := make(map[string]string)
-	groupsByName := make(map[string]string)
-	safesByName := make(map[string]string)
+	usersByID := make(map[string]string, len(users))
+	usersByUsername := make(map[string]string, len(users))
+	groupsByID := make(map[string]string, len(groups))
+	groupsByName := make(map[string]string, len(groups))
+	safesByName := make(map[string]string, len(safes))
 
 	// Process Users
 	logger.Infof("Processing %d users...", len(users))
@@ -282,8 +288,8 @@ func BuildOpenGraph(
 	}
 
 	// Process Accounts
-	accountsBySafe := make(map[string][]string) // safeName -> []accountNodeIDs
-	accountsByID := make(map[string]string)     // accountID -> accountNodeID
+	accountsBySafe := make(map[string][]string, len(safes)) // safeName -> []accountNodeIDs (bounded by safe count)
+	accountsByID := make(map[string]string, len(accounts))  // accountID -> accountNodeID
 
 	logger.Infof("Processing %d accounts...", len(accounts))
 	for idx, a := range accounts {
@@ -373,8 +379,8 @@ func BuildOpenGraph(
 	logger.Infof("Processing %d safe members...", len(safeMembers))
 
 	// Track safe permissions for user/group nodes
-	userSafePerms := make(map[string][]map[string]interface{})
-	groupSafePerms := make(map[string][]map[string]interface{})
+	userSafePerms := make(map[string][]map[string]interface{}, len(users))
+	groupSafePerms := make(map[string][]map[string]interface{}, len(groups))
 
 	for idx, sm := range safeMembers {
 		if (idx+1)%memberInterval == 0 || idx+1 == len(safeMembers) {

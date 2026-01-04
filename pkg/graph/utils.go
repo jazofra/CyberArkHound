@@ -44,11 +44,24 @@ type OpenGraph struct {
 
 // NewOpenGraph creates a new OpenGraph
 func NewOpenGraph(logger *logrus.Logger) *OpenGraph {
+	return NewOpenGraphWithCapacity(logger, 0, 0)
+}
+
+// NewOpenGraphWithCapacity creates a new OpenGraph with pre-allocated capacity
+func NewOpenGraphWithCapacity(logger *logrus.Logger, nodeCount, edgeCount int) *OpenGraph {
+	// Ensure non-negative capacity
+	if nodeCount < 0 {
+		nodeCount = 0
+	}
+	if edgeCount < 0 {
+		edgeCount = 0
+	}
+
 	return &OpenGraph{
-		Nodes:         make(map[string]*Node),
-		InternalEdges: make([]*Edge, 0),
-		ExternalEdges: make([]*Edge, 0),
-		EdgeSet:       make(map[string]bool),
+		Nodes:         make(map[string]*Node, nodeCount),
+		InternalEdges: make([]*Edge, 0, edgeCount),
+		ExternalEdges: make([]*Edge, 0, edgeCount/10), // Estimate external edges as 10% of internal
+		EdgeSet:       make(map[string]bool, edgeCount),
 		Logger:        logger,
 	}
 }
