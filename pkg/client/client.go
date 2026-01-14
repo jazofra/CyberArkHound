@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -32,6 +33,7 @@ type Client struct {
 	Password            string
 	AuthTimeout         time.Duration
 	ReqTimeout          time.Duration
+	SafePageLimit       int
 	Token               string
 	HTTPClient          *http.Client
 	Logger              *logrus.Logger
@@ -63,6 +65,7 @@ func NewClient(baseURL, username, password string, insecure bool, caBundle strin
 		Logger:              logger,
 		AuthTimeout:         360 * time.Second,
 		ReqTimeout:          360 * time.Second,
+		SafePageLimit:       SafePageLimit,
 		RetryInitialBackoff: 1 * time.Second,
 		RetryMaxBackoff:     60 * time.Second,
 		RetryMultiplier:     2.0,
@@ -295,7 +298,10 @@ func (c *Client) Logoff() error {
 // ListSafes retrieves all safes with pagination
 func (c *Client) ListSafes(limitCount *int, search *string) ([]models.Safe, error) {
 	safes := make([]models.Safe, 0)
-	limit := SafePageLimit
+	limit := c.SafePageLimit
+	if limit <= 0 {
+		limit = SafePageLimit
+	}
 	offset := 0
 
 	for {
@@ -306,6 +312,19 @@ func (c *Client) ListSafes(limitCount *int, search *string) ([]models.Safe, erro
 
 		resp, err := c.requestWithRetries("GET", safeURL, nil, c.ReqTimeout, 3)
 		if err != nil {
+			// PVWA can be very slow to build large pages of safes; if we timed out,
+			// automatically reduce the page size and retry the same offset.
+			if (errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "Client.Timeout exceeded")) && limit > 50 {
+				newLimit := limit / 2
+				if newLimit < 50 {
+					newLimit = 50
+				}
+				if newLimit != limit {
+					c.Logger.Warnf("ListSafes timed out at offset=%d limit=%d, retrying with limit=%d", offset, limit, newLimit)
+					limit = newLimit
+					continue
+				}
+			}
 			return nil, fmt.Errorf("failed to list safes: %w", err)
 		}
 
@@ -329,7 +348,7 @@ func (c *Client) ListSafes(limitCount *int, search *string) ([]models.Safe, erro
 			break
 		}
 
-		offset += limit
+		offset += len(data.Value)
 	}
 
 	c.Logger.Infof("Collected %d safes", len(safes))

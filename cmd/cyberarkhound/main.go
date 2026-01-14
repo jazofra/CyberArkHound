@@ -5,6 +5,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/siemens-healthineers/cyberarkhound/pkg/client"
 	"github.com/siemens-healthineers/cyberarkhound/pkg/exporter"
@@ -30,6 +31,9 @@ func main() {
 	caBundle := pflag.String("ca-bundle", "", "Path to CA bundle file")
 	debug := pflag.Bool("debug", false, "Enable debug logging")
 	logLevel := pflag.String("log-level", "INFO", "Set logging level: DEBUG, INFO, WARNING, ERROR")
+	requestTimeout := pflag.Duration("request-timeout", 360*time.Second, "HTTP request timeout (e.g. 10m, 600s)")
+	authTimeout := pflag.Duration("auth-timeout", 360*time.Second, "Authentication timeout (e.g. 2m, 120s)")
+	safePageLimit := pflag.Int("safe-page-limit", client.SafePageLimit, "Safes page size for /API/safes pagination (lower can help slow PVWA)")
 
 	// Activity tracking flags
 	includeActivity := pflag.Bool("include-activity", false, "Include account activity data (creates CyberArkUsedAccount edges)")
@@ -93,6 +97,10 @@ func main() {
 
 	// Create CyberArk client
 	apiClient := client.NewClient(*pvwaURL, *username, *password, *insecure, *caBundle, logger)
+	apiClient.ReqTimeout = *requestTimeout
+	apiClient.AuthTimeout = *authTimeout
+	apiClient.SafePageLimit = *safePageLimit
+	apiClient.HTTPClient.Timeout = apiClient.ReqTimeout
 
 	// Authenticate
 	logger.Info("Authenticating to CyberArk PVWA...")
