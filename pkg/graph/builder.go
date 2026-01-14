@@ -306,9 +306,17 @@ func BuildOpenGraph(
 
 		accountNodeID := strings.ToUpper(fmt.Sprintf("caaccount-%s", a.ID))
 
+		accountName := a.UserName
+		if accountName == "" {
+			accountName = a.Name
+		}
+		if accountName == "" {
+			accountName = a.ID
+		}
+
 		props := map[string]interface{}{
 			"id":                         accountNodeID,
-			"name":                       fmt.Sprintf("%s@%s", a.UserName, a.Address),
+			"name":                       accountName,
 			"accountId":                  a.ID,
 			"userName":                   a.UserName,
 			"address":                    a.Address,
