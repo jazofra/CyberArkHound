@@ -317,6 +317,7 @@ func BuildOpenGraph(
 		if accountName == "" {
 			accountName = a.ID
 		}
+		accountName = StripAfterAt(accountName)
 
 		props := map[string]interface{}{
 			"id":                         accountNodeID,
@@ -373,6 +374,10 @@ func BuildOpenGraph(
 
 		// Add SyncsToADUser edge if applicable
 		if a.UserName != "" && a.Address != "" {
+			adKey := StripAfterAt(a.UserName)
+			if adKey == "" {
+				continue
+			}
 			for _, domain := range targetDomains {
 				domainLower := strings.ToLower(domain)
 				addressLower := strings.ToLower(a.Address)
@@ -380,7 +385,7 @@ func BuildOpenGraph(
 				// Only create SyncsToADUser if address exactly matches the target domain
 				// If address contains subdomain (e.g., computer.domain.com), it's a computer account, not a user
 				if addressLower == domainLower {
-					adUserName := fmt.Sprintf("%s@%s", strings.ToUpper(a.UserName), strings.ToUpper(domain))
+					adUserName := fmt.Sprintf("%s@%s", strings.ToUpper(adKey), strings.ToUpper(domain))
 					og.AddEdge("SyncsToADUser", accountNodeID, adUserName,
 						"id", "name", map[string]interface{}{
 							"inferred": true,
