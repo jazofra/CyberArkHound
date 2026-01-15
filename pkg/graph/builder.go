@@ -17,12 +17,16 @@ func BuildOpenGraph(
 	accounts []models.Account,
 	targetDomains []string,
 	parseSAMAccountNameFromDN bool,
+	pvwaTag string,
 	accountActivities map[string][]models.AccountActivity,
 	logger *logrus.Logger,
 	debug bool,
 	logLevel string,
 ) (*OpenGraph, error) {
 	og := NewOpenGraph(logger)
+	if pvwaTag == "" {
+		pvwaTag = "PVWA"
+	}
 
 	// Determine logging intervals based on log level
 	var userInterval, groupInterval, safeInterval, accountInterval, memberInterval int
@@ -72,7 +76,7 @@ func BuildOpenGraph(
 		source := strings.ToLower(u.Source)
 		isLDAP := strings.Contains(source, "ldap") || u.UserDN != ""
 
-		caNodeID := strings.ToUpper(fmt.Sprintf("causer-%s", u.Username))
+		caNodeID := strings.ToUpper(fmt.Sprintf("causer-%s-%s", u.Username, pvwaTag))
 
 		// Serialize vault authorization if complex
 		var vaultAuthSerialized interface{} = u.VaultAuthorization
@@ -146,7 +150,7 @@ func BuildOpenGraph(
 		// Add MemberOf edges
 		for _, gm := range u.GroupsMembership {
 			if gm.GroupName != "" {
-				og.AddEdge("CyberArkMemberOf", caNodeID, strings.ToUpper(fmt.Sprintf("cagroup-%s", gm.GroupName)),
+				og.AddEdge("CyberArkMemberOf", caNodeID, strings.ToUpper(fmt.Sprintf("cagroup-%s-%s", gm.GroupName, pvwaTag)),
 					"id", "id", map[string]interface{}{"source": "userDetails"}, false)
 			}
 		}
@@ -158,7 +162,7 @@ func BuildOpenGraph(
 				adKey := u.Username
 				if parseSAMAccountNameFromDN {
 					if sam := ParseSAMAccountNameFromDN(u.UserDN); sam != "" {
-					adKey = sam
+						adKey = sam
 					}
 				}
 
@@ -191,7 +195,7 @@ func BuildOpenGraph(
 			continue
 		}
 
-		caGroupID := strings.ToUpper(fmt.Sprintf("cagroup-%s", groupName))
+		caGroupID := strings.ToUpper(fmt.Sprintf("cagroup-%s-%s", groupName, pvwaTag))
 		isDirectorySynced := g.Directory != "" || g.DN != ""
 
 		// Extract members
@@ -260,7 +264,7 @@ func BuildOpenGraph(
 			continue
 		}
 
-		safeNodeID := strings.ToUpper(fmt.Sprintf("casafe-%s", s.SafeName))
+		safeNodeID := strings.ToUpper(fmt.Sprintf("casafe-%s-%s", s.SafeName, pvwaTag))
 
 		props := map[string]interface{}{
 			"id":                        safeNodeID,
@@ -304,7 +308,7 @@ func BuildOpenGraph(
 			continue
 		}
 
-		accountNodeID := strings.ToUpper(fmt.Sprintf("caaccount-%s", a.ID))
+		accountNodeID := strings.ToUpper(fmt.Sprintf("caaccount-%s-%s", a.ID, pvwaTag))
 
 		accountName := a.UserName
 		if accountName == "" {
@@ -359,7 +363,10 @@ func BuildOpenGraph(
 			accountsBySafe[a.SafeName] = append(accountsBySafe[a.SafeName], accountNodeID)
 
 			// Add CyberArkContains edge (Safe -> Account)
-			safeNodeID := strings.ToUpper(fmt.Sprintf("casafe-%s", a.SafeName))
+			safeNodeID := safesByName[a.SafeName]
+			if safeNodeID == "" {
+				safeNodeID = strings.ToUpper(fmt.Sprintf("casafe-%s-%s", a.SafeName, pvwaTag))
+			}
 			og.AddEdge("CyberArkContains", safeNodeID, accountNodeID,
 				"id", "id", nil, false)
 		}
@@ -417,15 +424,15 @@ func BuildOpenGraph(
 		if memberNodeID == "" {
 			// Member not found, create placeholder
 			if isMemberGroup {
-				memberNodeID = strings.ToUpper(fmt.Sprintf("cagroup-%s", sm.MemberName))
+				memberNodeID = strings.ToUpper(fmt.Sprintf("cagroup-%s-%s", sm.MemberName, pvwaTag))
 			} else {
-				memberNodeID = strings.ToUpper(fmt.Sprintf("causer-%s", sm.MemberName))
+				memberNodeID = strings.ToUpper(fmt.Sprintf("causer-%s-%s", sm.MemberName, pvwaTag))
 			}
 		}
 
 		safeNodeID := safesByName[sm.SafeName]
 		if safeNodeID == "" {
-			safeNodeID = strings.ToUpper(fmt.Sprintf("casafe-%s", sm.SafeName))
+			safeNodeID = strings.ToUpper(fmt.Sprintf("casafe-%s-%s", sm.SafeName, pvwaTag))
 		}
 
 		// Normalize permission names
@@ -535,7 +542,7 @@ func BuildOpenGraph(
 		for accountID, activities := range accountActivities {
 			accountNodeID := accountsByID[accountID]
 			if accountNodeID == "" {
-				accountNodeID = strings.ToUpper(fmt.Sprintf("caaccount-%s", accountID))
+				accountNodeID = strings.ToUpper(fmt.Sprintf("caaccount-%s-%s", accountID, pvwaTag))
 			}
 
 			if debug {
@@ -613,7 +620,7 @@ func BuildOpenGraph(
 			for username, usageData := range userActivity {
 				userNodeID := usersByUsername[username]
 				if userNodeID == "" {
-					userNodeID = strings.ToUpper(fmt.Sprintf("causer-%s", username))
+					userNodeID = strings.ToUpper(fmt.Sprintf("causer-%s-%s", username, pvwaTag))
 				}
 
 				if debug {
