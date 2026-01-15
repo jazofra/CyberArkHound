@@ -50,12 +50,10 @@ The resulting `cyberark_export.json` file can be directly imported into BloodHou
 - **Debug logging**: Comprehensive diagnostics for troubleshooting data flow
 
 ### CyberArk User Permissions Required
-To successfully ingest data from CyberArk PVWA, the API user needs specific vault authorizations:
-The user running this tool must have the **Audit Users** vault authorization. This built-in authorization grants:
-- Read access to all users and groups in the vault
-- Read access to all safes and their members
-- Read access to all accounts (without retrieving passwords)
-- View safe member permissions
+To successfully ingest data from CyberArk PVWA, the API user needs specific vault authorizations, the user running this tool must have the **Audit Users** vault authorization which provides read access to all users and groups in the vault.
+The users requires 'list' and 'View Safe members' permissions on all safes within CyberArk, either directly or through group membership which will allow the user to view all accounts and safes within CyberArk.
+
+Alternativly the user can be a member of local CyberArk vault group 'Auditors', this will grant the user read only access to all safes, accounts and groups. However the permission to view the session (PSM) recordings which is not advisable
 
 #### Recommended Setup
 Create a dedicated service account for BloodHound data collection:
@@ -64,16 +62,24 @@ Create a dedicated service account for BloodHound data collection:
 2. **Grant Vault Authorization**: `Audit Users`
 3. **Authentication Method**: CyberArk authentication (LDAP/RADIUS also supported)
 4. **User Type**: EPVUser (non-LDAP) or Directory User
+5. **Safe Permissions**: The user needs to be a member of all the safes in the environment or a member of a group that is a member to all the safes in CyberArk. Permissions required are 'list' and 'View Safe Members'
+6. **Store this account within CyberArk**: to ensure it is rotated as per CyberArk policies
+7. **Retrieve the credential using CCP/CP**: if CCP/CP is used within the environment, use this to retreive the credetial as and when required
 
-#### What the Tool Can Access
+#### What the Tool Can view
 With `Audit Users` authorization, the tool can:
-- ✅ List all safes in the vault
-- ✅ List all safe members and their permissions
-- ✅ List all accounts in safes (metadata only)
 - ✅ List all vault users and groups
 - ✅ View user group memberships
+
+With 'list' and 'View Safe Members' on each safe, the tool can:
+- ✅ List all accounts in safes (no credentials)
+- ✅ List all safes in the vault
+- ✅ List all safe members and their permissions
+  
+#### What the Tool can not do:
 - ❌ **Cannot** retrieve or view account passwords
 - ❌ **Cannot** modify any vault objects
+- ❌ **Cannot** modify platform application settings
 
 #### API Endpoints Used
 - `POST /API/Auth/CyberArk/Logon` - Authentication
@@ -94,6 +100,7 @@ With `Audit Users` authorization, the tool can:
 - Rotate credentials periodically
 - Monitor API usage via PVWA audit logs
 - Consider IP restrictions for the service account
+- Adding the user to the 'Auditors' groups is easy to provide required perms but grants too much access
 
 ### Installation
 
@@ -633,4 +640,5 @@ Open issues for bugs or enhancement requests. Provide snippet of failing input a
 Thank you to Siemens Healthineers for supporting this research and to my coworkers who have helped with its development.
 
 - Julian Garcia - for cooperating with this research, and for offering valuable perspective for coding practices.
+
 
