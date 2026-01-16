@@ -360,6 +360,7 @@ LIMIT 10
 
 #### CyberArkAccount Properties
 - **Identity**: `accountId`, `userName`, `platformId`, `address`
+- **BloodHound name**: `name` (set to `userName` to avoid collisions with AD user names in OpenGraph matching)
 - **Safe**: `safeName`, `safeUrlId`
 - **Status**: `status`, `disabled`, `secretType`
 - **Management**: `automaticManagementEnabled`, `manualManagementReason`
@@ -369,12 +370,14 @@ LIMIT 10
 
 ### Output
 The resulting JSON structure follows BloodHound OpenGraph schema:
+
+Note: CyberArk node `id` values are namespaced with a 4-character PVWA tag derived from `--pvwa` (e.g., `causer-jdoe-APVA`) to avoid collisions when ingesting multiple PVWA instances.
 ```json
 {
   "graph": {
     "nodes": [
       {
-        "id": "causer-jdoe",
+        "id": "causer-jdoe-APVA",
         "kinds": ["CyberArkUser", "CyberArkBase"],
         "properties": {
           "name": "jdoe",
@@ -386,7 +389,7 @@ The resulting JSON structure follows BloodHound OpenGraph schema:
         }
       },
       {
-        "id": "caaccount-12345",
+        "id": "caaccount-12345-APVA",
         "kinds": ["CyberArkAccount", "CyberArkBase"],
         "properties": {
           "name": "prod-db-admin",
@@ -400,11 +403,11 @@ The resulting JSON structure follows BloodHound OpenGraph schema:
     "edges": [
       {
         "kind": "CyberArkHasAccessTo",
-        "start": "causer-jdoe",
-        "end": "caaccount-12345",
+        "start": "causer-jdoe-APVA",
+        "end": "caaccount-12345-APVA",
         "properties": {
           "matchedPermissionNames": ["useAccounts", "retrieveAccounts"],
-          "via": "casafe-Production",
+          "via": "casafe-Production-APVA",
           "viaSafeName": "Production"
         }
       }

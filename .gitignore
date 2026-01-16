@@ -1,0 +1,46 @@
+# Secrets / certs
+*.crt
+*.key
+*.pfx
+
+# JSON artifacts
+*.json
+
+# Debug artifacts
+*_debug
+*_debug.*
+__debug_bin*
+_debug_bin*
+
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go build artifacts
+*.test
+*.out
+*.prof
+*.pprof
+*.trace
+*.coverprofile
+coverage*.txt
+coverage*.out
+cover*.out
+
+# Common local build output dirs
+/bin/
+/dist/
+/build/
+/tmp/
+
+# Archives
+*.7z
+*.zip
+
+# Editor config
+/.vscode/
+
+# Export output
+/export/

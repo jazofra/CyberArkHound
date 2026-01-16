@@ -95,6 +95,9 @@ func main() {
 		logger.SetLevel(logrus.WarnLevel)
 	}
 
+	pvwaTag := graph.PVWATagFromArg(*pvwaURL)
+	logger.Infof("PVWA tag: %s", pvwaTag)
+
 	// Create CyberArk client
 	apiClient := client.NewClient(*pvwaURL, *username, *password, *insecure, *caBundle, logger)
 	apiClient.ReqTimeout = *requestTimeout
@@ -336,6 +339,7 @@ func main() {
 		accounts,
 		*targetDomains,
 		*parseSAMAccountName,
+		pvwaTag,
 		accountActivities,
 		logger,
 		*debug,
