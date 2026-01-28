@@ -129,8 +129,11 @@ def export_opengraph_to_bloodhound_json(og: Any, external_edges: List[Dict[str, 
         edges_array.append(edge_dict)
 
     # Build final structure
-    output_json = {"graph": {"nodes": nodes_array, "edges": edges_array}}
-    
+    output_json = {
+        "metadata": {"source_kind": "CyberArkBase"},
+        "graph": {"edges": edges_array, "nodes": nodes_array},
+    }
+
     # Write to file with progress indicator
     logger.info("Writing JSON to file: %s", output_file)
     logger.info("  Total nodes: %d, Total edges: %d", len(nodes_array), len(edges_array))

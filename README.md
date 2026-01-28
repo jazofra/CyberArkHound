@@ -381,6 +381,9 @@ The resulting JSON structure follows BloodHound OpenGraph schema:
 Note: CyberArk node `id` values are namespaced with a 4-character PVWA tag derived from `--pvwa` (e.g., `causer-jdoe-APVA`) to avoid collisions when ingesting multiple PVWA instances.
 ```json
 {
+  "metadata": {
+    "source_kind": "CyberArkBase"
+  },
   "graph": {
     "nodes": [
       {
@@ -426,6 +429,7 @@ Note: CyberArk node `id` values are namespaced with a 4-character PVWA tag deriv
 **External edges** (AD sync relationships) are included in the same structure with `match_by` metadata for cross-domain correlation.
 ```json
 {
+	"metadata": { "source_kind": "CyberArkBase" },
 	"graph": {
 		"nodes": [ { "id": "...", "kinds": ["CyberArkUser"], "properties": {"name": "..."} } ],
 		"edges": [ { "kind": "CyberArkHasAccessTo", "start": {"value": "...", "match_by": "id"}, "end": {"value": "...", "match_by": "id"} } ]

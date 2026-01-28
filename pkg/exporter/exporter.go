@@ -11,6 +11,20 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+type bloodhoundMetadata struct {
+	SourceKind string `json:"source_kind"`
+}
+
+type bloodhoundGraph struct {
+	Edges []map[string]interface{} `json:"edges"`
+	Nodes []map[string]interface{} `json:"nodes"`
+}
+
+type bloodhoundOutput struct {
+	Metadata bloodhoundMetadata `json:"metadata"`
+	Graph    bloodhoundGraph    `json:"graph"`
+}
+
 // ExportToBloodHoundJSON exports the OpenGraph to BloodHound JSON format
 func ExportToBloodHoundJSON(og *graph.OpenGraph, outputFile string, logger *logrus.Logger, debug bool, logLevel string) error {
 	logger.Info("Starting export to BloodHound JSON format")
@@ -112,10 +126,13 @@ func ExportToBloodHoundJSON(og *graph.OpenGraph, outputFile string, logger *logr
 	allEdges := append(edgesArray, externalEdgesArray...)
 
 	// Create the final structure
-	output := map[string]interface{}{
-		"graph": map[string]interface{}{
-			"nodes": nodesArray,
-			"edges": allEdges,
+	output := bloodhoundOutput{
+		Metadata: bloodhoundMetadata{
+			SourceKind: "CyberArkBase",
+		},
+		Graph: bloodhoundGraph{
+			Edges: allEdges,
+			Nodes: nodesArray,
 		},
 	}
 
