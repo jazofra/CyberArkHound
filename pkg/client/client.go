@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -73,6 +74,13 @@ func NewClient(baseURL, username, password string, insecure bool, caBundle strin
 	}
 }
 
+func (c *Client) throttleVariableDuration(backoff time.Duration) {
+	jitter := 1.0 + (rand.Float64()*2-1)*c.RetryJitter
+	sleepTime := time.Duration(math.Min(float64(backoff)*jitter, float64(c.RetryMaxBackoff)))
+	c.Logger.Debugf("Sleeping %.2fs before retry.", sleepTime.Seconds())
+	time.Sleep(sleepTime)
+}
+
 // requestWithRetries executes HTTP request with retry logic
 func (c *Client) requestWithRetries(method, urlPath string, body interface{}, timeout time.Duration, maxRetries int) (*http.Response, error) {
 	attempt := 0
@@ -120,17 +128,8 @@ func (c *Client) requestWithRetries(method, urlPath string, body interface{}, ti
 				return nil, fmt.Errorf("max retries reached: %w", err)
 			}
 
-			jitter := 1.0 + (rand.Float64()*2-1)*c.RetryJitter
-			sleepTime := time.Duration(float64(backoff) * jitter)
-			if sleepTime > c.RetryMaxBackoff {
-				sleepTime = c.RetryMaxBackoff
-			}
-			c.Logger.Debugf("Sleeping %.2fs before retry", sleepTime.Seconds())
-			time.Sleep(sleepTime)
-			backoff = time.Duration(float64(backoff) * c.RetryMultiplier)
-			if backoff > c.RetryMaxBackoff {
-				backoff = c.RetryMaxBackoff
-			}
+			// Wait but don't increase backoff duration
+			c.throttleVariableDuration(backoff)
 			continue
 		}
 
@@ -149,13 +148,19 @@ func (c *Client) requestWithRetries(method, urlPath string, body interface{}, ti
 			// Don't count re-auth attempts against main retry counter
 			attempt--
 
-			jitter := 1.0 + (rand.Float64()*2-1)*c.RetryJitter
-			sleepTime := time.Duration(float64(backoff) * jitter)
-			if sleepTime > c.RetryMaxBackoff {
-				sleepTime = c.RetryMaxBackoff
-			}
-			c.Logger.Debugf("Sleeping %.2fs before retry after re-auth", sleepTime.Seconds())
-			time.Sleep(sleepTime)
+			// wait but don't increase backoff duration
+			c.throttleVariableDuration(backoff)
+			continue
+		}
+
+		if resp.StatusCode == 429 {
+			resp.Body.Close()
+
+			c.throttleVariableDuration(backoff)
+			backoff = time.Duration(math.Min(float64(backoff)*c.RetryMultiplier, float64(c.RetryMaxBackoff)))
+
+			// Don't count HTTP 429 Too Many Requests against main retry counter
+			attempt--
 			continue
 		}
 
