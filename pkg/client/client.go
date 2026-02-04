@@ -402,7 +402,7 @@ func (c *Client) ListAccounts(safeName, safeURLID string) ([]models.Account, err
 	accounts := make([]models.Account, 0)
 	limit := 1000
 	offset := 0
-	filterValue := fmt.Sprintf("safeName eq %s", safeName)
+	filterValue := fmt.Sprintf("safeName eq \"%s\"", safeName)
 
 	for {
 		accountURL := fmt.Sprintf("%s/PasswordVault/API/Accounts?limit=%d&offset=%d&filter=%s",
