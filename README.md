@@ -280,6 +280,7 @@ RETURN u.name, s.safeName
 - `SyncsToCyberArkUser`: AD User syncs to CyberArk User (external edge)
 - `SyncsToCyberArkGroup`: AD Group syncs to CyberArk Group (external edge)
 - `SyncsToADUser`: CyberArk Account syncs to AD User (external edge)
+- `CyberArkCanConnect` : CyberArk Account can connect to AD Computer (external edge)
 
 **Note**: Permissions like `listAccounts`, `viewAuditLog`, `addAccounts`, `updateAccountContent` do **not** create access edges as they don't allow password retrieval or account usage.
 
@@ -436,7 +437,7 @@ Note: CyberArk node `id` values are namespaced with a 4-character PVWA tag deriv
 	}
 }
 ```
-External edges (SyncsToCyberArkUser / Group / ADUser) are included with `match_by` set to `name` where appropriate.
+External edges (SyncsToCyberArkUser / SyncsToCyberArkGroup / SyncsToADUser / CyberArkCanConnect) are included with `match_by` set to `name` where appropriate.
 
 ### Data Flow Diagram
 High-level relationship visualization between CyberArk entities and inferred external AD objects:
@@ -450,6 +451,7 @@ flowchart TD
  User["fa:fa-user User"] -. SyncsToCyberArkUser<br>(LDAP) .-> CyberArkUser["fa:fa-user CyberArkUser"]
  Group["fa:fa-user-group Group"] -. SyncsToCyberArkGroup<br>(Directory) .-> CyberArkGroup["fa:fa-user-group CyberArkGroup"]
  CyberArkAccount["fa:fa-user-secret CyberArkAccount"] -. SyncsToADUser<br>(Domain Match) .-> User
+ CyberArkAccount -. CyberArkCanConnect<br>(Domain Match) .-> Computer["fa:fa-computer Computer"]
  CyberArkUser -- CyberArkMemberOf --> CyberArkGroup
  CyberArkGroup -- CyberArkMemberOf --> CyberArkGroup
  CyberArkUser == CyberArkHasAccessTo<br>(useAccounts/retrieveAccounts) ==> CyberArkAccount
@@ -459,6 +461,7 @@ flowchart TD
  CyberArkGroup -. CyberArkCanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArkSafe
  CyberArkSafe -- CyberArkContains --> CyberArkAccount
  style User fill:#17E625,stroke:#0B8A14,stroke-width:2px
+ style Computer fill:#FCAEA3,stroke:DF7E71,stroke-widthg:2px
  style CyberArkUser fill:#BFD6E3,stroke:#7BA3C0,stroke-width:2px
  style Group fill:#FFED29,stroke:#CCB900,stroke-width:2px
  style CyberArkGroup fill:#C8DCC0,stroke:#8FB888,stroke-width:2px

@@ -372,7 +372,7 @@ func BuildOpenGraph(
 				"id", "id", nil, false)
 		}
 
-		// Add SyncsToADUser edge if applicable
+		// Add SyncsToADUser and CyberArkCanConnect edges if applicable
 		if a.UserName != "" && a.Address != "" {
 			adKey := StripAfterAt(a.UserName)
 			if adKey == "" {
@@ -393,6 +393,22 @@ func BuildOpenGraph(
 							"domain":   domain,
 						}, true)
 					break
+					// Create CyberArkCanConnect edge from CyberArkUser to AD Computer if address is a subdomain of the target domain
+				} else if strings.HasSuffix(addressLower, "."+domainLower) {
+					adHostname := StripAfterDot(a.Address)
+					adComputerName := fmt.Sprintf("%s.%s", strings.ToUpper(adHostname), strings.ToUpper(domain))
+
+					// Check if computer name matches the address (prevents the computer.sub.domain.com case)
+					if strings.ToLower(adComputerName) == addressLower {
+						og.AddEdge("CyberArkCanConnect", accountNodeID, adComputerName,
+							"id", "name", map[string]interface{}{
+								"inferred":  true,
+								"source":    "CyberArk",
+								"domain":    domain,
+								"localUser": adKey,
+							}, true)
+						break
+					}
 				}
 			}
 		}

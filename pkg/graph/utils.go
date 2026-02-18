@@ -202,6 +202,19 @@ func StripAfterAt(s string) string {
 	return s
 }
 
+// StripAfterDot returns the part of s before '.' (if present), after trimming spaces.
+// If '.' is the first character, it returns the trimmed input unchanged.
+func StripAfterDot(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+	if idx := strings.IndexByte(s, '.'); idx > 0 {
+		return s[:idx]
+	}
+	return s
+}
+
 // SanitizeProperties removes nil values and serializes complex objects for BloodHound
 func SanitizeProperties(props map[string]interface{}) map[string]interface{} {
 	complexProperties := map[string]bool{
