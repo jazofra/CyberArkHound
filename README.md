@@ -44,6 +44,9 @@ The resulting `cyberark_export.json` file can be directly imported into BloodHou
 - **LDAP/Directory sync tracking**: Identify synced vs local users and groups
 - **External AD entity inference**: Automatic detection of relationships to Active Directory
 - **Account activity tracking**: Optional CyberArkUsedAccount edges showing actual usage patterns
+- **Linked account chain analysis**: Optional CyberArkLinkedTo edges mapping logon/reconcile/enable account dependencies for credential chain traversal
+- **Safe creator and CPM tracking**: CyberArkCreated and CyberArkManagedBy edges showing who created and manages each safe
+- **Platform-based grouping**: Optional CyberArkPlatform nodes and CyberArkUsesPlatform edges for shared attack surface analysis
 - **Enriched metadata**: Personal details, vault authorizations, safe permissions, account management status
 - **Safe permission tracking**: Per-user/group safe access with permission details
 - **External edges preserved**: AD sync relationships stored separately for cross-domain analysis
@@ -88,6 +91,8 @@ With 'list' and 'View Safe Members' on each safe, the tool can:
 - `GET /API/Accounts` - List accounts (filtered by safe)
 - `GET /API/Accounts/{accountId}` - Get account details
 - `GET /API/Accounts/{accountId}/Activities` - Get account activity logs (optional, requires `--include-activity`)
+- `GET /API/Accounts/{accountId}/LinkedAccounts` - Get linked accounts: logon, reconcile, enable (optional, requires `--include-linked-accounts`)
+- `GET /API/Platforms/Targets` - List target platforms (optional, requires `--include-platforms`)
 - `GET /API/Users` - List all users
 - `GET /API/UserGroups` - List all groups
 - `GET /API/UserGroups/{groupId}` - Get group details with members
@@ -222,6 +227,10 @@ python CyberArkHound.py --help
 - `--activity-days` Number of days to look back for activity (default: 3)
 - `--activity-limit` Max activities per account to fetch from API (default: 100)
 
+**Linked Accounts & Platforms:**
+- `--include-linked-accounts` Include linked account data (creates CyberArkLinkedTo edges for logon/reconcile/enable account chains)
+- `--include-platforms` Include platform data (creates CyberArkPlatform nodes and CyberArkUsesPlatform edges)
+
 **Testing/Development:**
 - `--limit-users` Limit number of users to process (0 = no limit)
 - `--limit-groups` Limit number of groups to process (0 = no limit)
@@ -277,6 +286,10 @@ RETURN u.name, s.safeName
 - `CyberArkMemberOf`: User is member of a group
 - `CyberArkContains` (Safe → Account): Safe contains an account
 - `CyberArkUsedAccount` (User → Account): User has actively used/retrieved account (requires `--include-activity`)
+- `CyberArkCreated` (User → Safe): User created the safe (always emitted)
+- `CyberArkManagedBy` (CPM User → Safe): CPM component manages the safe (always emitted)
+- `CyberArkLinkedTo` (Account → Account): Linked logon/reconcile/enable account chain (requires `--include-linked-accounts`)
+- `CyberArkUsesPlatform` (Account → Platform): Account uses a specific platform (requires `--include-platforms`)
 - `SyncsToCyberArkUser`: AD User syncs to CyberArk User (external edge)
 - `SyncsToCyberArkGroup`: AD Group syncs to CyberArk Group (external edge)
 - `SyncsToADUser`: CyberArk Account syncs to AD User (external edge)
@@ -339,6 +352,108 @@ LIMIT 10
 - Activity fetching runs in parallel (50 threads) for optimal performance
 - Can be run separately from initial data collection for incremental updates
 
+#### CyberArkLinkedTo (Account → Account) - Optional
+**Linked account dependencies** - Maps credential chains where one account depends on another for logon, reconciliation, or enablement:
+- Created when `--include-linked-accounts` flag is used
+- Based on CyberArk linked accounts via `/API/Accounts/{accountId}/LinkedAccounts`
+- Link types: `logon` (ExtraPassID=1), `enable` (ExtraPassID=2), `reconcile` (ExtraPassID=3)
+- Critical for attack path analysis: compromising a logon account gives access to all accounts that depend on it
+
+**Edge Properties**:
+- `linkType`: Type of link — `logon`, `enable`, `reconcile`, or `unknown`
+- `linkName`: Name of the linked account relationship
+- `safeName`: Safe containing the linked account
+
+**BloodHound Query Examples:**
+```cypher
+// Find all accounts that depend on a specific logon account
+MATCH (logon:CyberArkAccount {name: "svc-logon"})<-[r:CyberArkLinkedTo {linkType: "logon"}]-(a:CyberArkAccount)
+RETURN a.name, a.safeName
+
+// Find credential chains: accounts linked through logon accounts
+MATCH path = (a:CyberArkAccount)-[:CyberArkLinkedTo*1..3]->(target:CyberArkAccount)
+RETURN path
+
+// Find all reconcile account dependencies
+MATCH (a:CyberArkAccount)-[r:CyberArkLinkedTo {linkType: "reconcile"}]->(reconciler:CyberArkAccount)
+RETURN a.name, reconciler.name, reconciler.safeName
+
+// Attack path: user with access to a logon account can reach all dependent accounts
+MATCH (u:CyberArkUser)-[:CyberArkHasAccessTo]->(logon:CyberArkAccount)<-[:CyberArkLinkedTo {linkType: "logon"}]-(dependent:CyberArkAccount)
+RETURN u.name, logon.name, COLLECT(dependent.name) as dependentAccounts
+```
+
+**Performance Note**: Linked account fetching adds one API call per account. Runs in parallel (50 workers by default).
+
+#### CyberArkCreated (User → Safe)
+**Safe creator relationship** - Shows which user created each safe:
+- Always emitted (no extra API calls — uses existing `Safe.Creator` field)
+- Useful for understanding implicit access and ownership
+
+**Edge Properties**:
+- `creatorId`: The vault user ID of the creator
+
+**BloodHound Query Examples:**
+```cypher
+// Find all safes created by a user
+MATCH (u:CyberArkUser)-[:CyberArkCreated]->(s:CyberArkSafe)
+RETURN u.name, s.safeName
+
+// Find who created production safes
+MATCH (u:CyberArkUser)-[:CyberArkCreated]->(s:CyberArkSafe)
+WHERE s.safeName CONTAINS "prod"
+RETURN u.name, s.safeName
+
+// Find users who created safes AND can grant access to them
+MATCH (u:CyberArkUser)-[:CyberArkCreated]->(s:CyberArkSafe)
+WHERE (u)-[:CyberArkCanGrantAccessTo]->(s)
+RETURN u.name, s.safeName
+```
+
+#### CyberArkManagedBy (CPM User → Safe)
+**CPM management relationship** - Shows which CPM component manages password rotation for each safe:
+- Always emitted (no extra API calls — uses existing `Safe.ManagingCPM` field)
+- CPM accounts have privileged access to manage and rotate passwords
+
+**BloodHound Query Examples:**
+```cypher
+// Find all safes managed by a specific CPM
+MATCH (cpm:CyberArkUser)-[:CyberArkManagedBy]->(s:CyberArkSafe)
+WHERE cpm.name CONTAINS "CPM"
+RETURN cpm.name, COLLECT(s.safeName) as managedSafes
+
+// Find safes without CPM management (unmanaged passwords)
+MATCH (s:CyberArkSafe)
+WHERE NOT ()-[:CyberArkManagedBy]->(s)
+RETURN s.safeName
+
+// Find all accounts reachable through a CPM's managed safes
+MATCH (cpm:CyberArkUser)-[:CyberArkManagedBy]->(s:CyberArkSafe)-[:CyberArkContains]->(a:CyberArkAccount)
+RETURN cpm.name, COUNT(a) as accountCount
+```
+
+#### CyberArkUsesPlatform (Account → Platform) - Optional
+**Platform association** - Shows which platform configuration each account uses:
+- Created when `--include-platforms` flag is used
+- Creates `CyberArkPlatform` nodes from `/API/Platforms/Targets`
+- Accounts sharing a platform share configuration, policies, and potential vulnerabilities
+
+**BloodHound Query Examples:**
+```cypher
+// Find all accounts using a specific platform
+MATCH (a:CyberArkAccount)-[:CyberArkUsesPlatform]->(p:CyberArkPlatform {name: "WinServerLocal"})
+RETURN a.name, a.safeName
+
+// Find platforms with the most accounts (highest blast radius)
+MATCH (a:CyberArkAccount)-[:CyberArkUsesPlatform]->(p:CyberArkPlatform)
+RETURN p.name, p.systemType, COUNT(a) as accountCount
+ORDER BY accountCount DESC
+
+// Find inactive platforms still in use
+MATCH (a:CyberArkAccount)-[:CyberArkUsesPlatform]->(p:CyberArkPlatform {active: false})
+RETURN p.name, COUNT(a) as accountsOnInactivePlatform
+```
+
 ### Node Properties
 
 #### CyberArkUser Properties
@@ -374,6 +489,11 @@ LIMIT 10
 - **Timestamps**: `createdTime`, `lastModifiedTime`, `lastVerifiedTime`, `lastReconciledTime`, `categoryModificationTime`
 - **CPM**: `lastModifiedBy`
 - **Extended**: `platformAccountProperties` (JSON), `secretManagement` (JSON)
+
+#### CyberArkPlatform Properties (requires `--include-platforms`)
+- **Identity**: `platformId`, `name`
+- **Configuration**: `systemType`, `active`
+- **Metadata**: `description`
 
 ### Output
 The resulting JSON structure follows BloodHound OpenGraph schema:
@@ -458,18 +578,23 @@ flowchart TD
  CyberArkUser -. CyberArkCanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArkSafe["fa:fa-vault CyberArkSafe"]
  CyberArkGroup -. CyberArkCanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArkSafe
  CyberArkSafe -- CyberArkContains --> CyberArkAccount
+ CyberArkUser -. CyberArkCreated .-> CyberArkSafe
+ CyberArkUser -. CyberArkManagedBy<br>(CPM) .-> CyberArkSafe
+ CyberArkAccount -. CyberArkLinkedTo<br>(logon/reconcile/enable) .-> CyberArkAccount
+ CyberArkAccount -- CyberArkUsesPlatform --> CyberArkPlatform["fa:fa-server CyberArkPlatform"]
  style User fill:#17E625,stroke:#0B8A14,stroke-width:2px
  style CyberArkUser fill:#BFD6E3,stroke:#7BA3C0,stroke-width:2px
  style Group fill:#FFED29,stroke:#CCB900,stroke-width:2px
  style CyberArkGroup fill:#C8DCC0,stroke:#8FB888,stroke-width:2px
  style CyberArkAccount fill:#E7C8C8,stroke:#C09999,stroke-width:2px
  style CyberArkSafe fill:#E8D8B3,stroke:#C0AC7F,stroke-width:2px
+ style CyberArkPlatform fill:#D4B8D9,stroke:#A98CB3,stroke-width:2px
 ```
 
 **Legend:**
-- **Solid Lines** (→): Internal CyberArk relationships (membership, containment)
-- **Thick Lines** (⇒): Direct account access edges (permission-based)
-- **Dashed Lines** (⇢): External sync relationships, privilege escalation, or actual usage (audit-based)
+- **Solid Lines** (→): Internal CyberArk relationships (membership, containment, platform)
+- **Thick Lines** (⇒): Direct account access edges (permission-based or actual usage)
+- **Dashed Lines** (⇢): External sync relationships, privilege escalation, linked accounts, creator/CPM management
 
 ### BloodHound Custom Node Definitions
 The file `cyberark_model.json` defines custom node types (icons & colors) for BloodHound via the API Explorer `custom-nodes` endpoint:
@@ -477,10 +602,11 @@ The file `cyberark_model.json` defines custom node types (icons & colors) for Bl
 ```json
 {
 	"custom_types": {
-		"CyberArkAccount": {"icon": {"type": "font-awesome", "name": "user-secret", "color": "#E7C8C8"}},
-		"CyberArkGroup":   {"icon": {"type": "font-awesome", "name": "user-group",  "color": "#C8DCC0"}},
-		"CyberArkSafe":    {"icon": {"type": "font-awesome", "name": "vault",       "color": "#E8D8B3"}},
-		"CyberArkUser":    {"icon": {"type": "font-awesome", "name": "user",        "color": "#BFD6E3"}}
+		"CyberArkAccount":  {"icon": {"type": "font-awesome", "name": "user-secret", "color": "#E7C8C8"}},
+		"CyberArkGroup":    {"icon": {"type": "font-awesome", "name": "user-group",  "color": "#C8DCC0"}},
+		"CyberArkSafe":     {"icon": {"type": "font-awesome", "name": "vault",       "color": "#E8D8B3"}},
+		"CyberArkUser":     {"icon": {"type": "font-awesome", "name": "user",        "color": "#BFD6E3"}},
+		"CyberArkPlatform": {"icon": {"type": "font-awesome", "name": "server",      "color": "#D4B8D9"}}
 	}
 }
 ```
