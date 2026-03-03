@@ -525,6 +525,73 @@ func (c *Client) GetAccountActivities(accountID string, limit int, daysBack *int
 	return activities, nil
 }
 
+// GetLinkedAccounts retrieves the linked accounts for an account (logon, reconcile, enable)
+func (c *Client) GetLinkedAccounts(accountID string) ([]models.LinkedAccount, error) {
+	linkedURL := fmt.Sprintf("%s/PasswordVault/API/Accounts/%s/LinkedAccounts", c.BaseURL, accountID)
+
+	resp, err := c.requestWithRetries("GET", linkedURL, nil, c.ReqTimeout, 3)
+	if err != nil {
+		// 404 or 403 means no linked accounts available
+		if resp != nil && (resp.StatusCode == 404 || resp.StatusCode == 403) {
+			c.Logger.Debugf("No linked accounts available for account %s", accountID)
+			return []models.LinkedAccount{}, nil
+		}
+		c.Logger.Debugf("Failed to get linked accounts for account %s: %v", accountID, err)
+		return []models.LinkedAccount{}, nil
+	}
+	defer resp.Body.Close()
+
+	var linked []models.LinkedAccount
+	if err := json.NewDecoder(resp.Body).Decode(&linked); err != nil {
+		// Try alternate response shape: some versions wrap in an object
+		return []models.LinkedAccount{}, nil
+	}
+
+	c.Logger.Debugf("Account %s: fetched %d linked accounts", accountID, len(linked))
+	return linked, nil
+}
+
+// ListPlatforms retrieves all target platforms
+func (c *Client) ListPlatforms() ([]models.Platform, error) {
+	platforms := make([]models.Platform, 0)
+	limit := 500
+	offset := 0
+
+	for {
+		platformURL := fmt.Sprintf("%s/PasswordVault/API/Platforms/Targets?limit=%d&offset=%d",
+			c.BaseURL, limit, offset)
+
+		resp, err := c.requestWithRetries("GET", platformURL, nil, c.ReqTimeout, 3)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list platforms: %w", err)
+		}
+
+		var data struct {
+			Platforms []models.Platform `json:"Platforms"`
+			Value     []models.Platform `json:"value"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("failed to decode platforms response: %w", err)
+		}
+		resp.Body.Close()
+
+		page := data.Platforms
+		if len(page) == 0 {
+			page = data.Value
+		}
+		platforms = append(platforms, page...)
+
+		if len(page) < limit {
+			break
+		}
+		offset += len(page)
+	}
+
+	c.Logger.Infof("Collected %d platforms", len(platforms))
+	return platforms, nil
+}
+
 // ListUsers retrieves all users
 func (c *Client) ListUsers(limitCount *int) ([]models.User, error) {
 	usersURL := fmt.Sprintf("%s/PasswordVault/API/Users?ExtendedDetails=true", c.BaseURL)

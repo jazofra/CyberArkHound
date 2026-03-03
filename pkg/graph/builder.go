@@ -19,6 +19,8 @@ func BuildOpenGraph(
 	parseSAMAccountNameFromDN bool,
 	pvwaTag string,
 	accountActivities map[string][]models.AccountActivity,
+	platforms []models.Platform,
+	linkedAccounts map[string][]models.LinkedAccount,
 	logger *logrus.Logger,
 	debug bool,
 	logLevel string,
@@ -51,8 +53,8 @@ func BuildOpenGraph(
 	}
 
 	if debug {
-		logger.Debugf("Building OpenGraph (users=%d groups=%d safes=%d accounts=%d)",
-			len(users), len(groups), len(safes), len(accounts))
+		logger.Debugf("Building OpenGraph (users=%d groups=%d safes=%d accounts=%d platforms=%d)",
+			len(users), len(groups), len(safes), len(accounts), len(platforms))
 	}
 
 	// Track users and groups for lookups
@@ -292,6 +294,58 @@ func BuildOpenGraph(
 		})
 
 		safesByName[s.SafeName] = safeNodeID
+
+		// CyberArkCreated edge (User → Safe) — safe creator relationship
+		if s.Creator.Name != "" {
+			creatorNodeID := usersByUsername[s.Creator.Name]
+			if creatorNodeID == "" {
+				creatorNodeID = strings.ToUpper(fmt.Sprintf("causer-%s-%s", s.Creator.Name, pvwaTag))
+			}
+			og.AddEdge("CyberArkCreated", creatorNodeID, safeNodeID,
+				"id", "id", map[string]interface{}{
+					"creatorId": s.Creator.ID,
+				}, false)
+		}
+
+		// CyberArkManagedBy edge (CPM User → Safe) — CPM management relationship
+		if s.ManagingCPM != "" {
+			cpmNodeID := usersByUsername[s.ManagingCPM]
+			if cpmNodeID == "" {
+				cpmNodeID = strings.ToUpper(fmt.Sprintf("causer-%s-%s", s.ManagingCPM, pvwaTag))
+			}
+			og.AddEdge("CyberArkManagedBy", cpmNodeID, safeNodeID,
+				"id", "id", nil, false)
+		}
+	}
+
+	// Process Platforms (if provided)
+	platformsByID := make(map[string]string) // platformID (string) -> platformNodeID
+	if len(platforms) > 0 {
+		logger.Infof("Processing %d platforms...", len(platforms))
+		for _, p := range platforms {
+			pid := p.General.ID
+			if pid == "" {
+				continue
+			}
+			platformNodeID := strings.ToUpper(fmt.Sprintf("caplatform-%s-%s", pid, pvwaTag))
+
+			props := map[string]interface{}{
+				"id":          platformNodeID,
+				"name":        p.General.Name,
+				"platformId":  pid,
+				"systemType":  p.General.SystemType,
+				"active":      p.General.Active,
+				"description": p.General.Description,
+			}
+
+			og.MergeNode(&Node{
+				ID:         platformNodeID,
+				Kinds:      []string{"CyberArkPlatform", "CyberArkBase"},
+				Properties: SanitizeProperties(props),
+			})
+
+			platformsByID[pid] = platformNodeID
+		}
 	}
 
 	// Process Accounts
@@ -358,6 +412,14 @@ func BuildOpenGraph(
 		})
 
 		accountsByID[a.ID] = accountNodeID
+
+		// CyberArkUsesPlatform edge (Account → Platform)
+		if a.PlatformID != "" {
+			if platformNodeID, ok := platformsByID[a.PlatformID]; ok {
+				og.AddEdge("CyberArkUsesPlatform", accountNodeID, platformNodeID,
+					"id", "id", nil, false)
+			}
+		}
 
 		// Track accounts by safe
 		if a.SafeName != "" {
@@ -649,6 +711,50 @@ func BuildOpenGraph(
 		if debug {
 			logger.Debug("===========================================")
 		}
+	}
+
+	// Process Linked Accounts (if provided)
+	if linkedAccounts != nil && len(linkedAccounts) > 0 {
+		logger.Infof("Processing linked accounts for %d accounts...", len(linkedAccounts))
+		linkedEdgeCount := 0
+
+		for accountID, links := range linkedAccounts {
+			sourceNodeID := accountsByID[accountID]
+			if sourceNodeID == "" {
+				sourceNodeID = strings.ToUpper(fmt.Sprintf("caaccount-%s-%s", accountID, pvwaTag))
+			}
+
+			for _, link := range links {
+				targetNodeID := accountsByID[link.AccountID]
+				if targetNodeID == "" && link.AccountID != "" {
+					targetNodeID = strings.ToUpper(fmt.Sprintf("caaccount-%s-%s", link.AccountID, pvwaTag))
+				}
+				if targetNodeID == "" {
+					continue
+				}
+
+				// Map ExtraPassID to human-readable link type
+				linkType := "unknown"
+				switch link.ExtraPassID {
+				case 1:
+					linkType = "logon"
+				case 2:
+					linkType = "enable"
+				case 3:
+					linkType = "reconcile"
+				}
+
+				og.AddEdge("CyberArkLinkedTo", sourceNodeID, targetNodeID,
+					"id", "id", map[string]interface{}{
+						"linkType": linkType,
+						"linkName": link.Name,
+						"safeName": link.SafeName,
+					}, false)
+				linkedEdgeCount++
+			}
+		}
+
+		logger.Infof("Created %d CyberArkLinkedTo edges from linked account data", linkedEdgeCount)
 	}
 
 	if debug {

@@ -137,3 +137,27 @@ type AccountActivity struct {
 	MoreInfo       string  `json:"MoreInfo"`
 	IPAddress      string  `json:"IPAddress"`
 }
+
+// LinkedAccount represents a linked account (logon, reconcile, or enable account)
+type LinkedAccount struct {
+	Name        string `json:"Name"`
+	FolderPath  string `json:"FolderPath"`
+	SafeName    string `json:"SafeName"`
+	AccountID   string `json:"AccountID"`
+	ExtraPassID int    `json:"ExtraPassID"` // 1=Logon, 2=Enable, 3=Reconcile
+}
+
+// PlatformGeneral holds the general properties of a CyberArk platform
+type PlatformGeneral struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	SystemType  string `json:"systemType"`
+	Active      bool   `json:"active"`
+	Description string `json:"description"`
+	PlatformID  int    `json:"platformID"`
+}
+
+// Platform represents a CyberArk target platform
+type Platform struct {
+	General PlatformGeneral `json:"general"`
+}

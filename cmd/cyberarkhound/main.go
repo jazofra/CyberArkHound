@@ -40,6 +40,10 @@ func main() {
 	activityDays := pflag.Int("activity-days", 3, "Number of days to look back for activity")
 	activityLimit := pflag.Int("activity-limit", 100, "Max activities per account")
 
+	// Linked accounts and platforms flags
+	includeLinkedAccounts := pflag.Bool("include-linked-accounts", false, "Include linked account data (creates CyberArkLinkedTo edges for logon/reconcile/enable chains)")
+	includePlatforms := pflag.Bool("include-platforms", false, "Include platform data (creates CyberArkPlatform nodes and CyberArkUsesPlatform edges)")
+
 	// Testing limits
 	limitUsers := pflag.Int("limit-users", 0, "Limit number of users (0 = no limit)")
 	limitGroups := pflag.Int("limit-groups", 0, "Limit number of groups (0 = no limit)")
@@ -160,6 +164,17 @@ func main() {
 	}
 	if testSafePtr != nil {
 		logger.Infof("Found %d safes matching '%s'", len(safes), *testSafe)
+	}
+
+	// Fetch platforms if requested
+	var platforms []models.Platform
+	if *includePlatforms {
+		logger.Info("Fetching platforms...")
+		platforms, err = apiClient.ListPlatforms()
+		if err != nil {
+			logger.Warnf("Failed to fetch platforms: %v", err)
+			platforms = []models.Platform{}
+		}
 	}
 
 	// --- Phase 1: Discovery (Parallel Safe Processing) ---
@@ -329,6 +344,66 @@ func main() {
 		logger.Infof("Collected activities for %d accounts", len(accountActivities))
 	}
 
+	// Fetch linked accounts if requested
+	var linkedAccounts map[string][]models.LinkedAccount
+	if *includeLinkedAccounts && len(accounts) > 0 {
+		logger.Infof("Fetching linked accounts for %d accounts...", len(accounts))
+		linkedAccounts = make(map[string][]models.LinkedAccount)
+
+		linkedChan := make(chan struct {
+			accountID string
+			linked    []models.LinkedAccount
+		}, len(accounts))
+
+		var linkedWg sync.WaitGroup
+		linkedSemaphore := make(chan struct{}, *workers)
+		linkedProcessed := 0
+		var linkedMu sync.Mutex
+
+		for _, acc := range accounts {
+			linkedWg.Add(1)
+			go func(acc models.Account) {
+				defer linkedWg.Done()
+				linkedSemaphore <- struct{}{}        // Acquire
+				defer func() { <-linkedSemaphore }() // Release
+
+				accountID := acc.ID
+				if accountID == "" {
+					return
+				}
+
+				linked, err := apiClient.GetLinkedAccounts(accountID)
+				if err != nil {
+					logger.Warnf("Failed to get linked accounts for %s: %v", accountID, err)
+					return
+				}
+
+				if len(linked) > 0 {
+					linkedChan <- struct {
+						accountID string
+						linked    []models.LinkedAccount
+					}{accountID, linked}
+				}
+
+				linkedMu.Lock()
+				linkedProcessed++
+				if linkedProcessed%100 == 0 {
+					logger.Infof("  Fetched linked accounts for %d/%d accounts", linkedProcessed, len(accounts))
+				}
+				linkedMu.Unlock()
+			}(acc)
+		}
+
+		linkedWg.Wait()
+		close(linkedChan)
+
+		for result := range linkedChan {
+			linkedAccounts[result.accountID] = result.linked
+		}
+
+		logger.Infof("Collected linked accounts for %d accounts", len(linkedAccounts))
+	}
+
 	// Build OpenGraph
 	logger.Info("Building OpenGraph...")
 	og, err := graph.BuildOpenGraph(
@@ -341,6 +416,8 @@ func main() {
 		*parseSAMAccountName,
 		pvwaTag,
 		accountActivities,
+		platforms,
+		linkedAccounts,
 		logger,
 		*debug,
 		*logLevel,
