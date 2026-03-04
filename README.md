@@ -1,6 +1,6 @@
 ## CyberArkHound
 
-Export CyberArk PVWA data (users, groups, safes, accounts and permissions) into a BloodHound-compatible OpenGraph JSON file for security analysis and attack path visualization.
+Export CyberArk PVWA data (users, groups, safes, accounts, platforms and permissions) into a BloodHound-compatible OpenGraph JSON file for security analysis and attack path visualization.
 
 ### Quick Start
 
@@ -507,7 +507,7 @@ RETURN p.name, COUNT(a) as accountsOnInactivePlatform
 - **Identity**: `accountId`, `userName`, `platformId`, `address`
 - **BloodHound name**: `name` (set to `userName` to avoid collisions with AD user names in OpenGraph matching)
 - **Safe**: `safeName`, `safeUrlId`
-- **Status**: `status`, `disabled`, `secretType`
+- **Status**: `status`, `enabled`, `secretType`
 - **Management**: `automaticManagementEnabled`, `manualManagementReason`
 - **Timestamps**: `createdTime`, `lastModifiedTime`, `lastVerifiedTime`, `lastReconciledTime`, `categoryModificationTime`
 - **CPM**: `lastModifiedBy`
@@ -701,8 +701,33 @@ Use `--log-level` to control progress reporting frequency:
 [2025-11-24 10:15:30] INFO cyberarkhound: Processing 3000 accounts...
 [2025-11-24 10:15:35] INFO cyberarkhound:   Processed 100/3000 accounts (3.3%)
 ...
+[2025-11-24 10:16:45] INFO cyberarkhound: === Collection Summary ===
+[2025-11-24 10:16:45] INFO cyberarkhound: Total Nodes: 3780
+[2025-11-24 10:16:45] INFO cyberarkhound: Nodes by Type:
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkUser: 500
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkGroup: 80
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkSafe: 150
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkAccount: 3000
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkPlatform: 50
+[2025-11-24 10:16:45] INFO cyberarkhound: Total Internal Edges: 12350
+[2025-11-24 10:16:45] INFO cyberarkhound: Internal Edges by Type:
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkMemberOf: 620
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkContains: 3000
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkHasAccessTo: 4200
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkCanGrantAccessTo: 310
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkCanApprove: 95
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkCreated: 150
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkManagedBy: 140
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkUsedAccount: 785
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkLinkedTo: 2100
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkUsesPlatform: 950
+[2025-11-24 10:16:45] INFO cyberarkhound: Total External Edges: 1680
+[2025-11-24 10:16:45] INFO cyberarkhound: External Edges by Type:
+[2025-11-24 10:16:45] INFO cyberarkhound:   SyncsToCyberArkUser: 480
+[2025-11-24 10:16:45] INFO cyberarkhound:   SyncsToCyberArkGroup: 60
+[2025-11-24 10:16:45] INFO cyberarkhound:   SyncsToADUser: 1140
+[2025-11-24 10:16:45] INFO cyberarkhound: Memory stats: Alloc=85MB Sys=142MB NumGC=12
 [2025-11-24 10:16:45] INFO cyberarkhound: Writing JSON to file: export.json
-[2025-11-24 10:16:45] INFO cyberarkhound:   Total nodes: 3750, Total edges: 8500
 [2025-11-24 10:16:45] INFO cyberarkhound:   Writing compact JSON format...
 [2025-11-24 10:16:48] INFO cyberarkhound: Export complete! File written successfully.
 ```

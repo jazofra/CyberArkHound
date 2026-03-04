@@ -384,7 +384,7 @@ func BuildOpenGraph(
 			"safeUrlId":                  a.SafeUrlId,
 			"secretType":                 a.SecretType,
 			"status":                     a.Status,
-			"disabled":                   a.Disabled,
+			"enabled":                    !a.Disabled,
 			"createdTime":                a.CreatedTime,
 			"lastModifiedTime":           a.LastModifiedTime,
 			"lastVerifiedTime":           a.LastVerifiedTime,
