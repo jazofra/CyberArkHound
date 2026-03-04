@@ -2,9 +2,7 @@
 
 Export CyberArk PVWA data (users, groups, safes, accounts and permissions) into a BloodHound-compatible OpenGraph JSON file for security analysis and attack path visualization.
 
-**🚀 Now available in Go!** The Go implementation offers significantly better performance (5-10x faster) with lower memory usage, making it ideal for large CyberArk environments.
-
-### Quick Start (Go Version)
+### Quick Start
 
 **Windows:**
 ```pwsh
@@ -110,8 +108,6 @@ With 'list' and 'View Safe Members' on each safe, the tool can:
 
 ### Installation
 
-#### Go Version (Recommended)
-
 **Requirements:**
 - Go 1.21 or later
 - Git (for cloning the repository)
@@ -132,20 +128,7 @@ go install ./cmd/cyberarkhound
 **Pre-built binaries:**
 Download pre-compiled binaries from the [Releases](https://github.com/jazofra/CyberArkHound/releases) page.
 
-#### Python Version (Legacy)
-
-Create and activate a virtual environment (recommended) then install dependencies:
-```pwsh
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
 ### Usage
-
-#### Go Version (Recommended)
-
-The Go implementation offers significantly better performance and is the recommended option for production use.
 
 **Basic usage:**
 ```pwsh
@@ -185,24 +168,7 @@ The Go implementation offers significantly better performance and is the recomme
 **Performance tips for large environments:**
 - Increase `--workers` to 100-200 for faster parallel processing
 - Use `--log-level WARNING` to reduce logging overhead
-- Allocate sufficient memory (Go typically uses 50-70% less than Python)
-
-#### Python Version (Legacy)
-
-Run the modular CLI:
-```pwsh
-python -m cyberarkhound.cli `
-	--pvwa https://pvwa.example.com `
-	--username api_user `
-	--password $Env:CYBERARK_PASSWORD `
-	--output export.json `
-	--target-domains corp.example.com lab.example.com
-```
-
-Legacy one-file entry point:
-```pwsh
-python CyberArkHound.py --help
-```
+- The tool uses efficient memory management with native goroutines for true parallelism
 
 ### Command-Line Arguments
 
@@ -678,11 +644,7 @@ Use `--log-level` to control progress reporting frequency:
 
 **WARNING/ERROR** - Minimal output, only critical messages:
 ```pwsh
-# Go version
 .\cyberarkhound.exe --pvwa ... --log-level WARNING --output export.json --target-domains corp.com
-
-# Python version
-python -m cyberarkhound.cli --pvwa ... --log-level WARNING --output export.json --target-domains corp.com
 ```
 - Shows start/end of major phases
 - No intermediate progress updates
@@ -690,11 +652,7 @@ python -m cyberarkhound.cli --pvwa ... --log-level WARNING --output export.json 
 
 **INFO** (default) - Balanced progress updates:
 ```pwsh
-# Go version
 .\cyberarkhound.exe --pvwa ... --log-level INFO --output export.json --target-domains corp.com
-
-# Python version
-python -m cyberarkhound.cli --pvwa ... --log-level INFO --output export.json --target-domains corp.com
 ```
 - Progress every 50 users/groups
 - Progress every 20 safes
@@ -705,11 +663,7 @@ python -m cyberarkhound.cli --pvwa ... --log-level INFO --output export.json --t
 
 **DEBUG** - Detailed progress for troubleshooting:
 ```pwsh
-# Go version
 .\cyberarkhound.exe --pvwa ... --log-level DEBUG --output export.json --target-domains corp.com
-
-# Python version
-python -m cyberarkhound.cli --pvwa ... --log-level DEBUG --output export.json --target-domains corp.com
 ```
 - Progress every 10 users/groups
 - Progress every 5 safes
@@ -721,36 +675,6 @@ python -m cyberarkhound.cli --pvwa ... --log-level DEBUG --output export.json --
 #### Additional Logging Options
 - `--quiet` - Suppress most logging (overrides log-level)
 - `--debug` - Enable permission analysis diagnostics
-- Environment variable override (Python only):
-  ```pwsh
-  $Env:CYBERARKHOUND_LOG_LEVEL = "INFO"
-  python -m cyberarkhound.cli --pvwa ... --output export.json --target-domains corp.com
-  ```
-
-### Performance Comparison
-
-The Go implementation offers significant performance improvements over the Python version:
-
-| Metric | Python | Go | Improvement |
-|--------|--------|----|-----------| 
-| Processing Speed | Baseline | **5-10x faster** | Concurrent processing, compiled code |
-| Memory Usage | Baseline | **50-70% less** | Efficient memory management, no GC overhead |
-| Binary Size | ~50MB (with venv) | **~15MB** | Single compiled binary |
-| Startup Time | ~2-3s | **<100ms** | No interpreter/module loading |
-| Concurrency | ThreadPool (GIL limited) | **Native goroutines** | True parallelism |
-
-**Example benchmark** (1000 users, 50 groups, 200 safes, 5000 accounts):
-- Python: ~8-12 minutes
-- Go: ~1.5-2 minutes
-
-**Memory usage** during export:
-- Python: ~800MB-1.2GB peak
-- Go: ~250-400MB peak
-
-**Recommendations:**
-- Use **Go version** for production environments and large CyberArk deployments
-- Use **Python version** only if Go is not available or for development/debugging
-- For environments with 10,000+ accounts, Go version is strongly recommended
 
 #### Example Output (INFO level)
 ```
@@ -777,16 +701,23 @@ The Go implementation offers significant performance improvements over the Pytho
 ### Development
 Module layout:
 ```
-cyberarkhound/
-	client.py      # API interactions
-	graph.py       # Graph construction
-	exporter.py    # Serialization to BloodHound JSON
-	utils.py       # Helpers (logging, property sanitation)
-	cli.py         # Argument parsing / orchestration
+cmd/cyberarkhound/
+    main.go            # CLI entry point / orchestration
+pkg/
+    client/
+        client.go      # CyberArk PVWA API client
+    models/
+        models.go      # Data structures for API responses
+    graph/
+        builder.go     # OpenGraph construction
+        pvwa_tag.go    # PVWA URL tagging algorithm
+        utils.go       # Graph utilities, permission maps
+    exporter/
+        exporter.go    # BloodHound JSON export
 ```
 
 ### Extending
-Add new edge types or property mappings inside `graph.py`. Keep transformations pure and avoid network calls there. For additional export formats create a new module (e.g. `neo4j_exporter.py`) and reuse the existing OpenGraph object.
+Add new edge types or property mappings inside `pkg/graph/builder.go`. Keep transformations pure and avoid network calls there. For additional export formats create a new package (e.g. `pkg/neo4j/exporter.go`) and reuse the existing OpenGraph object.
 
 ### Security Notes
 - Prefer supplying credentials via environment variables or a secure secret store.
@@ -799,19 +730,9 @@ Add new edge types or property mappings inside `graph.py`. Keep transformations 
 3. Keep changes small and focused; update README where behavior changes
 4. Submit PR describing rationale and any edge cases
 
-### Quick Dry Run (no real data)
-You can perform a structural dry run by mocking empty collections:
-```python
-from cyberarkhound.graph import build_opengraph
-from cyberarkhound.exporter import export_opengraph_to_bloodhound_json
-og, external = build_opengraph([], [], [], [], [], ["example.com"], debug=True)
-export_opengraph_to_bloodhound_json(og, external, "dryrun.json", debug=True)
-print("dryrun.json written")
-```
-
 ### Support
 
-Open issues for bugs or enhancement requests. Provide snippet of failing input and Python version.
+Open issues for bugs or enhancement requests.
 
 ## Acknowledgments
 Thank you to Siemens Healthineers for supporting this research and to my coworkers who have helped with its development.
