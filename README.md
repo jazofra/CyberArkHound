@@ -249,18 +249,23 @@ WHERE s.safeName CONTAINS "prod"
 RETURN u.name, s.safeName
 ```
 
-#### Other Edge Types
-- `CyberArkMemberOf`: User is member of a group
-- `CyberArkContains` (Safe → Account): Safe contains an account
-- `CyberArkUsedAccount` (User → Account): User has actively used/retrieved account (requires `--include-activity`)
-- `CyberArkCreated` (User → Safe): User created the safe (always emitted)
-- `CyberArkManagedBy` (CPM User → Safe): CPM component manages the safe (always emitted)
-- `CyberArkCanApprove` (User/Group → Safe): Member can approve dual-controlled access requests (always emitted)
-- `CyberArkLinkedTo` (Account → Account): Linked logon/reconcile/enable account chain (requires `--include-linked-accounts`)
-- `CyberArkUsesPlatform` (Account → Platform): Account uses a specific platform (requires `--include-platforms`)
-- `SyncsToCyberArkUser`: AD User syncs to CyberArk User (external edge)
-- `SyncsToCyberArkGroup`: AD Group syncs to CyberArk Group (external edge)
-- `SyncsToADUser`: CyberArk Account syncs to AD User (external edge)
+#### Edge Types Summary
+
+| Edge | Direction | Source | Security Value |
+|------|-----------|--------|----------------|
+| `CyberArkHasAccessTo` | User/Group → Account | Safe member `useAccounts`/`retrieveAccounts` | Direct credential access; `requiresApproval` shows if dual control blocks retrieval |
+| `CyberArkCanGrantAccessTo` | User/Group → Safe | Safe member `manageSafe`/`manageSafeMembers` | Privilege escalation — can grant themselves account access |
+| `CyberArkCanApprove` | User/Group → Safe | Safe member `requestsAuthorizationLevel1`/`Level2` | Can approve dual-controlled access requests (L1/L2) |
+| `CyberArkUsedAccount` | User → Account | `GET /API/Accounts/{id}/Activities` | Actual usage audit trail — who really accessed what |
+| `CyberArkLinkedTo` | Account → Account | `GET /API/Accounts/{id}/LinkedAccounts` | Logon/reconcile/enable credential chains — compromising one propagates to all dependents |
+| `CyberArkCreated` | User → Safe | Existing `Safe.Creator` field | Shows who created each safe (implicit ownership/access) |
+| `CyberArkManagedBy` | CPM User → Safe | Existing `Safe.ManagingCPM` field | CPM accounts have privileged password management access |
+| `CyberArkUsesPlatform` | Account → Platform | `GET /API/Platforms/Targets` | Shared platform config = shared attack surface |
+| `CyberArkMemberOf` | User/Group → Group | Group membership data | Group-based permission inheritance |
+| `CyberArkContains` | Safe → Account | Account's `safeName` field | Safe-account containment relationship |
+| `SyncsToCyberArkUser` | AD User → CyberArkUser | LDAP DN with `DC=` | External edge — AD-to-CyberArk identity mapping |
+| `SyncsToCyberArkGroup` | AD Group → CyberArkGroup | LDAP DN with `DC=` | External edge — AD-to-CyberArk group mapping |
+| `SyncsToADUser` | CyberArkAccount → AD User | Account address matches target domain | External edge — credential-to-AD-user mapping |
 
 **Note**: Permissions like `listAccounts`, `viewAuditLog`, `addAccounts`, `updateAccountContent` do **not** create access edges as they don't allow password retrieval or account usage.
 
@@ -322,6 +327,16 @@ LIMIT 10
 
 #### Dual Control (Double Approval) Awareness
 CyberArk's dual control feature requires users to get approval before retrieving passwords. CyberArkHound detects this automatically from safe member permissions — no extra API calls or CLI flags needed.
+
+**CyberArk safe member permissions used for dual control detection:**
+
+| Permission | Type | Meaning |
+|------------|------|---------|
+| `accessWithoutConfirmation` | bool | Member can bypass dual control and retrieve passwords without approval |
+| `requestsAuthorizationLevel1` | bool | Member can approve Level 1 access requests from other users |
+| `requestsAuthorizationLevel2` | bool | Member can approve Level 2 access requests from other users |
+
+These permissions are already returned by the Safe Members API (`GET /API/Safes/{safeUrlId}/Members`) — no additional API calls are needed.
 
 **How it works:**
 - `CyberArkHasAccessTo` edges include a `requiresApproval` property (bool) indicating whether the member needs approval to retrieve passwords
