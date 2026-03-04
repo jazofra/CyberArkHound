@@ -119,6 +119,8 @@ def build_opengraph(
     verbose: bool = True,
     log_level: str = "INFO",
     account_activities: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    platforms: Optional[List[Dict[str, Any]]] = None,
+    linked_accounts: Optional[Dict[str, List[Dict[str, Any]]]] = None,
 ) -> Tuple[OpenGraph, List[Dict[str, Any]]]:
     logger = get_logger(verbose)
     
@@ -385,6 +387,51 @@ def build_opengraph(
         if safe_url_id:
             safes_by_urlid[str(safe_url_id)] = sid
 
+        # CyberArkCreated edge (User → Safe) — safe creator relationship
+        creator = s.get("creator")
+        if isinstance(creator, dict):
+            creator_name = creator.get("name") or creator.get("memberName")
+        elif isinstance(creator, str) and creator:
+            creator_name = creator
+        else:
+            creator_name = None
+        if creator_name:
+            creator_node_id = users_by_username.get(creator_name) or f"causer-{creator_name}"
+            creator_id = creator.get("id") if isinstance(creator, dict) else None
+            add_edge("CyberArkCreated", creator_node_id, sid, properties={
+                "creatorId": creator_id,
+            })
+
+        # CyberArkManagedBy edge (CPM User → Safe) — CPM management relationship
+        managing_cpm = _get(s, _SAFE_FIELDS, "managingCPM")
+        if managing_cpm:
+            cpm_node_id = users_by_username.get(managing_cpm) or f"causer-{managing_cpm}"
+            add_edge("CyberArkManagedBy", cpm_node_id, sid)
+
+    # Process Platforms (if provided)
+    platforms_by_id: Dict[str, str] = {}
+    if platforms:
+        logger.info("Processing %d platforms...", len(platforms))
+        for p in platforms:
+            general = p.get("general", {})
+            pid = general.get("id") or str(general.get("platformID", ""))
+            if not pid:
+                continue
+            platform_node_id = f"caplatform-{pid}"
+            merge_node({
+                "id": platform_node_id,
+                "kinds": ["CyberArkPlatform", "CyberArkBase"],
+                "properties": {
+                    "id": platform_node_id,
+                    "name": general.get("name", ""),
+                    "platformId": pid,
+                    "systemType": general.get("systemType", ""),
+                    "active": general.get("active", True),
+                    "description": general.get("description", ""),
+                },
+            })
+            platforms_by_id[str(pid)] = platform_node_id
+
     accounts_by_id: Dict[str, bool] = {}
     td_lower = {d.lower() for d in target_domains}
     logger.info("Processing %d accounts...", len(accounts))
@@ -435,6 +482,12 @@ def build_opengraph(
             }
         })
         accounts_by_id[aid] = True
+
+        # CyberArkUsesPlatform edge (Account → Platform)
+        platform_id = _get(a, _ACCOUNT_FIELDS, "platformId")
+        if platform_id and str(platform_id) in platforms_by_id:
+            add_edge("CyberArkUsesPlatform", aid, platforms_by_id[str(platform_id)])
+
         safe_node_id = None
         if safe_url and str(safe_url) in safes_by_urlid:
             safe_node_id = safes_by_urlid[str(safe_url)]
@@ -738,6 +791,31 @@ def build_opengraph(
         logger.info("Created %d CyberArkUsedAccount edges from activity data", activity_edge_count)
         if debug:
             logger.debug("===========================================")
+
+    # Process Linked Accounts (if provided)
+    if linked_accounts:
+        logger.info("Processing linked accounts for %d accounts...", len(linked_accounts))
+        linked_edge_count = 0
+        for account_id, links in linked_accounts.items():
+            source_node_id = f"caaccount-{account_id}"
+            for link in links:
+                target_account_id = link.get("AccountID") or link.get("accountID")
+                if not target_account_id:
+                    continue
+                target_node_id = f"caaccount-{target_account_id}"
+
+                # Map ExtraPassID to human-readable link type
+                extra_pass_id = link.get("ExtraPassID") or link.get("extraPassID")
+                link_type_map = {1: "logon", 2: "enable", 3: "reconcile"}
+                link_type = link_type_map.get(extra_pass_id, "unknown")
+
+                add_edge("CyberArkLinkedTo", source_node_id, target_node_id, properties={
+                    "linkType": link_type,
+                    "linkName": link.get("Name") or link.get("name", ""),
+                    "safeName": link.get("SafeName") or link.get("safeName", ""),
+                })
+                linked_edge_count += 1
+        logger.info("Created %d CyberArkLinkedTo edges from linked account data", linked_edge_count)
 
     og = OpenGraph(source_kind="CyberArkBase")
     logger.info("Creating OpenGraph with %d nodes...", len(node_index))

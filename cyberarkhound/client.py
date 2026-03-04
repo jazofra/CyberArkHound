@@ -367,6 +367,63 @@ class CyberArkClient:
             self.logger.warning("Failed to get activities for account %s: %s", account_id, e)
             return []
 
+    def get_linked_accounts(self, account_id: str) -> List[Dict[str, Any]]:
+        """Get linked accounts for an account (logon, reconcile, enable).
+
+        Parameters
+        ----------
+        account_id: str
+            The account ID to query
+
+        Returns
+        -------
+        List[Dict[str, Any]]
+            List of linked account records with fields: Name, FolderPath,
+            SafeName, AccountID, ExtraPassID (1=Logon, 2=Enable, 3=Reconcile)
+        """
+        url = f"{self.base}/PasswordVault/API/Accounts/{account_id}/LinkedAccounts"
+        try:
+            resp = self._request_with_retries("GET", url, raise_for_status=True)
+            linked = resp.json()
+            if isinstance(linked, dict):
+                linked = linked.get("value", [])
+            self.logger.debug("Account %s: fetched %d linked accounts", account_id, len(linked))
+            return linked
+        except requests.exceptions.HTTPError as e:
+            resp_obj = getattr(e, "response", None)
+            if resp_obj is not None and resp_obj.status_code in (404, 403):
+                self.logger.debug("No linked accounts available for account %s", account_id)
+                return []
+            self.logger.debug("Failed to get linked accounts for account %s: %s", account_id, e)
+            return []
+        except Exception as e:
+            self.logger.warning("Failed to get linked accounts for account %s: %s", account_id, e)
+            return []
+
+    def list_platforms(self) -> List[Dict[str, Any]]:
+        """Retrieve all target platforms.
+
+        Returns
+        -------
+        List[Dict[str, Any]]
+            List of platform records with nested 'general' containing
+            id, name, systemType, active, description.
+        """
+        platforms: List[Dict[str, Any]] = []
+        limit = 500
+        offset = 0
+        while True:
+            url = f"{self.base}/PasswordVault/API/Platforms/Targets?limit={limit}&offset={offset}"
+            resp = self._request_with_retries("GET", url)
+            data = resp.json()
+            page = data.get("Platforms", []) or data.get("value", [])
+            platforms.extend(page)
+            if len(page) < limit:
+                break
+            offset += len(page)
+        self.logger.info("Collected %d platforms", len(platforms))
+        return platforms
+
     def list_users(self, *, limit_count: Optional[int] = None) -> List[Dict[str, Any]]:
         users: List[Dict[str, Any]] = []
         url = f"{self.base}/PasswordVault/API/Users?ExtendedDetails=true"
