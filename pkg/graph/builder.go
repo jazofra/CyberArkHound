@@ -534,6 +534,9 @@ func BuildOpenGraph(
 		// Determine edge type based on permissions
 		hasDirectAccess := false
 		canGrantAccess := false
+		accessWithoutConfirmation := false
+		canApproveL1 := false
+		canApproveL2 := false
 
 		for normPerm := range normalizedPerms {
 			if AccountAccessPermissions[normPerm] {
@@ -542,15 +545,25 @@ func BuildOpenGraph(
 			if EscalationPermissions[normPerm] {
 				canGrantAccess = true
 			}
+			switch normPerm {
+			case "accesswithoutconfirmation":
+				accessWithoutConfirmation = true
+			case "requestsauthorizationlevel1":
+				canApproveL1 = true
+			case "requestsauthorizationlevel2":
+				canApproveL2 = true
+			}
 		}
 
 		// Store safe permission details for node properties
 		safePermDetail := map[string]interface{}{
-			"safeName":             sm.SafeName,
-			"permissions":          matchedPermNames,
-			"permissionParameters": matchedPermParams,
-			"hasDirectAccess":      hasDirectAccess,
-			"canGrantAccess":       canGrantAccess,
+			"safeName":                  sm.SafeName,
+			"permissions":               matchedPermNames,
+			"permissionParameters":      matchedPermParams,
+			"hasDirectAccess":           hasDirectAccess,
+			"canGrantAccess":            canGrantAccess,
+			"accessWithoutConfirmation": accessWithoutConfirmation,
+			"canApproveRequests":        canApproveL1 || canApproveL2,
 		}
 
 		if isMemberGroup {
@@ -562,13 +575,15 @@ func BuildOpenGraph(
 		// Create edges based on permissions
 		if hasDirectAccess {
 			// Create edges to each account in the safe
+			requiresApproval := !accessWithoutConfirmation
 			accountsInSafe := accountsBySafe[sm.SafeName]
 			for _, accountNodeID := range accountsInSafe {
 				og.AddEdge("CyberArkHasAccessTo", memberNodeID, accountNodeID,
 					"id", "id", map[string]interface{}{
-						"safeName":    sm.SafeName,
-						"permissions": matchedPermNames,
-						"inferred":    false,
+						"safeName":         sm.SafeName,
+						"permissions":      matchedPermNames,
+						"inferred":         false,
+						"requiresApproval": requiresApproval,
 					}, false)
 			}
 		}
@@ -579,6 +594,19 @@ func BuildOpenGraph(
 				"id", "id", map[string]interface{}{
 					"permissions": matchedPermNames,
 					"inferred":    false,
+				}, false)
+		}
+
+		// Create approval edges for dual control
+		if canApproveL1 || canApproveL2 {
+			approvalLevel := 1
+			if canApproveL2 {
+				approvalLevel = 2
+			}
+			og.AddEdge("CyberArkCanApprove", memberNodeID, safeNodeID,
+				"id", "id", map[string]interface{}{
+					"approvalLevel": approvalLevel,
+					"inferred":      false,
 				}, false)
 		}
 	}

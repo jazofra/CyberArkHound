@@ -47,6 +47,7 @@ The resulting `cyberark_export.json` file can be directly imported into BloodHou
 - **Linked account chain analysis**: Optional CyberArkLinkedTo edges mapping logon/reconcile/enable account dependencies for credential chain traversal
 - **Safe creator and CPM tracking**: CyberArkCreated and CyberArkManagedBy edges showing who created and manages each safe
 - **Platform-based grouping**: Optional CyberArkPlatform nodes and CyberArkUsesPlatform edges for shared attack surface analysis
+- **Dual control awareness**: CyberArkHasAccessTo edges include `requiresApproval` property; CyberArkCanApprove edges identify who can authorize dual-controlled access
 - **Enriched metadata**: Personal details, vault authorizations, safe permissions, account management status
 - **Safe permission tracking**: Per-user/group safe access with permission details
 - **External edges preserved**: AD sync relationships stored separately for cross-domain analysis
@@ -288,6 +289,7 @@ RETURN u.name, s.safeName
 - `CyberArkUsedAccount` (User → Account): User has actively used/retrieved account (requires `--include-activity`)
 - `CyberArkCreated` (User → Safe): User created the safe (always emitted)
 - `CyberArkManagedBy` (CPM User → Safe): CPM component manages the safe (always emitted)
+- `CyberArkCanApprove` (User/Group → Safe): Member can approve dual-controlled access requests (always emitted)
 - `CyberArkLinkedTo` (Account → Account): Linked logon/reconcile/enable account chain (requires `--include-linked-accounts`)
 - `CyberArkUsesPlatform` (Account → Platform): Account uses a specific platform (requires `--include-platforms`)
 - `SyncsToCyberArkUser`: AD User syncs to CyberArk User (external edge)
@@ -351,6 +353,46 @@ LIMIT 10
 - Use `--activity-limit` to cap activities fetched per account (default: 100)
 - Activity fetching runs in parallel (50 threads) for optimal performance
 - Can be run separately from initial data collection for incremental updates
+
+#### Dual Control (Double Approval) Awareness
+CyberArk's dual control feature requires users to get approval before retrieving passwords. CyberArkHound detects this automatically from safe member permissions — no extra API calls or CLI flags needed.
+
+**How it works:**
+- `CyberArkHasAccessTo` edges include a `requiresApproval` property (bool) indicating whether the member needs approval to retrieve passwords
+- A member with `retrieveAccounts=true` but `accessWithoutConfirmation=false` gets `requiresApproval: true`
+- A member with `accessWithoutConfirmation=true` gets `requiresApproval: false` (can bypass dual control)
+- `CyberArkCanApprove` edges (User/Group → Safe) identify who can approve access requests, with `approvalLevel` (1 or 2)
+
+**Edge Properties on CyberArkHasAccessTo:**
+- `requiresApproval`: `true` if the member needs approval from a dual control authorizer before retrieving passwords
+
+**CyberArkCanApprove Edge Properties:**
+- `approvalLevel`: Authorization level (1 or 2) — maps to `requestsAuthorizationLevel1` / `requestsAuthorizationLevel2` permissions
+
+**BloodHound Query Examples:**
+```cypher
+// Users who can retrieve passwords WITHOUT any approval (highest risk)
+MATCH (u:CyberArkUser)-[r:CyberArkHasAccessTo {requiresApproval: false}]->(a:CyberArkAccount)
+RETURN u.name, a.name, a.safeName
+
+// Users who REQUIRE approval — attack needs both accessor + approver
+MATCH (u:CyberArkUser)-[r:CyberArkHasAccessTo {requiresApproval: true}]->(a:CyberArkAccount)
+RETURN u.name, a.name, a.safeName
+
+// Find approvers who can unlock access for dual-controlled safes
+MATCH (approver)-[r:CyberArkCanApprove]->(s:CyberArkSafe)-[:CyberArkContains]->(a:CyberArkAccount)
+RETURN approver.name, r.approvalLevel, s.safeName, COLLECT(a.name)
+
+// Full dual control attack path: need BOTH a user with access AND an approver
+MATCH (u:CyberArkUser)-[access:CyberArkHasAccessTo {requiresApproval: true}]->(a:CyberArkAccount)
+MATCH (a)<-[:CyberArkContains]-(s:CyberArkSafe)<-[approve:CyberArkCanApprove]-(approver)
+RETURN u.name AS accessor, a.name AS account, approver.name AS approver, approve.approvalLevel
+
+// Users who are BOTH accessor and approver on the same safe (dual control bypass risk)
+MATCH (u)-[access:CyberArkHasAccessTo {requiresApproval: true}]->(a:CyberArkAccount)
+MATCH (a)<-[:CyberArkContains]-(s:CyberArkSafe)<-[:CyberArkCanApprove]-(u)
+RETURN u.name, s.safeName, COLLECT(a.name) AS selfApprovableAccounts
+```
 
 #### CyberArkLinkedTo (Account → Account) - Optional
 **Linked account dependencies** - Maps credential chains where one account depends on another for logon, reconciliation, or enablement:
@@ -577,6 +619,8 @@ flowchart TD
  CyberArkUser == CyberArkUsedAccount<br>(actual usage) ==> CyberArkAccount
  CyberArkUser -. CyberArkCanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArkSafe["fa:fa-vault CyberArkSafe"]
  CyberArkGroup -. CyberArkCanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArkSafe
+ CyberArkUser -. CyberArkCanApprove<br>(dual control) .-> CyberArkSafe
+ CyberArkGroup -. CyberArkCanApprove<br>(dual control) .-> CyberArkSafe
  CyberArkSafe -- CyberArkContains --> CyberArkAccount
  CyberArkUser -. CyberArkCreated .-> CyberArkSafe
  CyberArkUser -. CyberArkManagedBy<br>(CPM) .-> CyberArkSafe
@@ -594,7 +638,7 @@ flowchart TD
 **Legend:**
 - **Solid Lines** (→): Internal CyberArk relationships (membership, containment, platform)
 - **Thick Lines** (⇒): Direct account access edges (permission-based or actual usage)
-- **Dashed Lines** (⇢): External sync relationships, privilege escalation, linked accounts, creator/CPM management
+- **Dashed Lines** (⇢): External sync relationships, privilege escalation, dual control approval, linked accounts, creator/CPM management
 
 ### BloodHound Custom Node Definitions
 The file `cyberark_model.json` defines custom node types (icons & colors) for BloodHound via the API Explorer `custom-nodes` endpoint:
