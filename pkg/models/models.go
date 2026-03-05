@@ -124,6 +124,7 @@ type Account struct {
 	AutomaticManagementEnabled bool                   `json:"automaticManagementEnabled"`
 	ManualManagementReason     string                 `json:"manualManagementReason"`
 	LastModifiedBy             string                 `json:"lastModifiedBy"`
+	LinkedAccounts             []LinkedAccount        `json:"linkedAccounts,omitempty"`
 }
 
 // AccountActivity represents an activity log for an account
@@ -149,12 +150,12 @@ type LinkedAccount struct {
 
 // PlatformGeneral holds the general properties of a CyberArk platform
 type PlatformGeneral struct {
-	ID          string `json:"id"`
+	ID          int    `json:"id"`
 	Name        string `json:"name"`
 	SystemType  string `json:"systemType"`
 	Active      bool   `json:"active"`
 	Description string `json:"description"`
-	PlatformID  int    `json:"platformID"`
+	PlatformID  string `json:"platformID"`
 }
 
 // Platform represents a CyberArk target platform

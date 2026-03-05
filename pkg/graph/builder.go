@@ -323,7 +323,10 @@ func BuildOpenGraph(
 	if len(platforms) > 0 {
 		logger.Infof("Processing %d platforms...", len(platforms))
 		for _, p := range platforms {
-			pid := p.General.ID
+			pid := p.General.PlatformID
+			if pid == "" {
+				pid = p.General.Name
+			}
 			if pid == "" {
 				continue
 			}
@@ -449,8 +452,8 @@ func BuildOpenGraph(
 				continue
 			}
 			for _, domain := range targetDomains {
-				domainLower := strings.ToLower(domain)
-				addressLower := strings.ToLower(a.Address)
+				domainLower := strings.ToLower(strings.TrimSpace(domain))
+				addressLower := strings.TrimRight(strings.ToLower(strings.TrimSpace(a.Address)), ".")
 
 				// Only create SyncsToADUser if address exactly matches the target domain
 				// If address contains subdomain (e.g., computer.domain.com), it's a computer account, not a user
