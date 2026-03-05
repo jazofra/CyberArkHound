@@ -541,49 +541,6 @@ func (c *Client) GetAccountActivities(accountID string, limit int, daysBack *int
 	return activities, nil
 }
 
-// GetLinkedAccounts retrieves the linked accounts for an account (logon, reconcile, enable)
-func (c *Client) GetLinkedAccounts(accountID string) ([]models.LinkedAccount, error) {
-	linkedURL := fmt.Sprintf("%s/PasswordVault/API/Accounts/%s/LinkedAccounts", c.BaseURL, accountID)
-
-	resp, err := c.requestWithRetries("GET", linkedURL, nil, c.ReqTimeout, 3)
-	if err != nil {
-		// 404 or 403 means no linked accounts available
-		if resp != nil && (resp.StatusCode == 404 || resp.StatusCode == 403) {
-			c.Logger.Debugf("No linked accounts available for account %s", accountID)
-			return []models.LinkedAccount{}, nil
-		}
-		c.Logger.Debugf("Failed to get linked accounts for account %s: %v", accountID, err)
-		return []models.LinkedAccount{}, nil
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, readErr := io.ReadAll(resp.Body)
-	if readErr != nil {
-		c.Logger.Warnf("GetLinkedAccounts: failed to read response body for account %s: %v", accountID, readErr)
-		return []models.LinkedAccount{}, nil
-	}
-
-	var linked []models.LinkedAccount
-	if err := json.Unmarshal(bodyBytes, &linked); err != nil {
-		// Try alternate response shape: some PVWA versions wrap in an object
-		var wrapped struct {
-			LinkedAccounts []models.LinkedAccount `json:"LinkedAccounts"`
-			Value          []models.LinkedAccount `json:"value"`
-		}
-		if err2 := json.Unmarshal(bodyBytes, &wrapped); err2 != nil {
-			c.Logger.Debugf("GetLinkedAccounts: could not decode response for account %s (tried array and object): %v / %v", accountID, err, err2)
-			return []models.LinkedAccount{}, nil
-		}
-		linked = wrapped.LinkedAccounts
-		if len(linked) == 0 {
-			linked = wrapped.Value
-		}
-	}
-
-	c.Logger.Debugf("Account %s: fetched %d linked accounts", accountID, len(linked))
-	return linked, nil
-}
-
 // ListPlatforms retrieves all target platforms
 func (c *Client) ListPlatforms() ([]models.Platform, error) {
 	platforms := make([]models.Platform, 0)
