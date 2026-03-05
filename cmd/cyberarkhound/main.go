@@ -36,13 +36,13 @@ func main() {
 	safePageLimit := pflag.Int("safe-page-limit", client.SafePageLimit, "Safes page size for /API/safes pagination (lower can help slow PVWA)")
 
 	// Activity tracking flags
-	includeActivity := pflag.Bool("include-activity", false, "Include account activity data (creates CyberArkUsedAccount edges)")
+	includeActivity := pflag.Bool("include-activity", true, "Include account activity data (creates CyberArkUsedAccount edges)")
 	activityDays := pflag.Int("activity-days", 3, "Number of days to look back for activity")
 	activityLimit := pflag.Int("activity-limit", 100, "Max activities per account")
 
 	// Linked accounts and platforms flags
-	includeLinkedAccounts := pflag.Bool("include-linked-accounts", false, "Include linked account data (creates CyberArkLinkedTo edges for logon/reconcile/enable chains)")
-	includePlatforms := pflag.Bool("include-platforms", false, "Include platform data (creates CyberArkPlatform nodes and CyberArkUsesPlatform edges)")
+	includeLinkedAccounts := pflag.Bool("include-linked-accounts", true, "Include linked account data (creates CyberArkLinkedTo edges for logon/reconcile/enable chains)")
+	includePlatforms := pflag.Bool("include-platforms", true, "Include platform data (creates CyberArkPlatform nodes and CyberArkUsesPlatform edges)")
 
 	// Testing limits
 	limitUsers := pflag.Int("limit-users", 0, "Limit number of users (0 = no limit)")
@@ -233,6 +233,8 @@ func main() {
 
 	// Reset processed count for logging
 	processedAccounts := 0
+	skippedDisabled := 0
+	skippedArchived := 0
 	var processedMu sync.Mutex
 
 	accountSemaphore := make(chan struct{}, *workers)
@@ -262,6 +264,14 @@ func main() {
 
 			// Skip disabled or archived accounts
 			if details.Disabled || details.Status == "Archived" {
+				processedMu.Lock()
+				if details.Disabled {
+					skippedDisabled++
+				}
+				if details.Status == "Archived" {
+					skippedArchived++
+				}
+				processedMu.Unlock()
 				return
 			}
 
@@ -280,6 +290,9 @@ func main() {
 	}
 
 	accountWg.Wait()
+	if skippedDisabled > 0 || skippedArchived > 0 {
+		logger.Warnf("Phase 2: Skipped %d disabled and %d archived accounts out of %d total.", skippedDisabled, skippedArchived, len(skeletonAccounts))
+	}
 	logger.Infof("Phase 2 Complete. Collected %d active accounts.", len(accounts))
 
 	// Fetch account activities if requested

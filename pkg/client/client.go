@@ -402,6 +402,8 @@ func (c *Client) ListAccounts(safeName, safeURLID string) ([]models.Account, err
 	accounts := make([]models.Account, 0)
 	limit := 1000
 	offset := 0
+	totalAPICount := 0
+	firstPage := true
 	filterValue := fmt.Sprintf("safeName eq %s", safeName)
 
 	for {
@@ -427,6 +429,11 @@ func (c *Client) ListAccounts(safeName, safeURLID string) ([]models.Account, err
 
 		c.Logger.Debugf("ListAccounts response for safe '%s': %d accounts in page, count=%d", safeName, len(data.Value), data.Count)
 
+		if firstPage {
+			totalAPICount = data.Count
+			firstPage = false
+		}
+
 		accounts = append(accounts, data.Value...)
 
 		if len(data.Value) < limit {
@@ -434,6 +441,10 @@ func (c *Client) ListAccounts(safeName, safeURLID string) ([]models.Account, err
 		}
 
 		offset += limit
+	}
+
+	if totalAPICount > 0 && len(accounts) < totalAPICount {
+		c.Logger.Warnf("ListAccounts: API reports count=%d but collected only %d accounts for safe '%s'. Some accounts may be filtered by the server or inaccessible.", totalAPICount, len(accounts), safeName)
 	}
 
 	return accounts, nil
@@ -546,10 +557,27 @@ func (c *Client) GetLinkedAccounts(accountID string) ([]models.LinkedAccount, er
 	}
 	defer resp.Body.Close()
 
-	var linked []models.LinkedAccount
-	if err := json.NewDecoder(resp.Body).Decode(&linked); err != nil {
-		// Try alternate response shape: some versions wrap in an object
+	bodyBytes, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		c.Logger.Warnf("GetLinkedAccounts: failed to read response body for account %s: %v", accountID, readErr)
 		return []models.LinkedAccount{}, nil
+	}
+
+	var linked []models.LinkedAccount
+	if err := json.Unmarshal(bodyBytes, &linked); err != nil {
+		// Try alternate response shape: some PVWA versions wrap in an object
+		var wrapped struct {
+			LinkedAccounts []models.LinkedAccount `json:"LinkedAccounts"`
+			Value          []models.LinkedAccount `json:"value"`
+		}
+		if err2 := json.Unmarshal(bodyBytes, &wrapped); err2 != nil {
+			c.Logger.Debugf("GetLinkedAccounts: could not decode response for account %s (tried array and object): %v / %v", accountID, err, err2)
+			return []models.LinkedAccount{}, nil
+		}
+		linked = wrapped.LinkedAccounts
+		if len(linked) == 0 {
+			linked = wrapped.Value
+		}
 	}
 
 	c.Logger.Debugf("Account %s: fetched %d linked accounts", accountID, len(linked))

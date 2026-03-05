@@ -345,7 +345,9 @@ func BuildOpenGraph(
 			})
 
 			platformsByID[pid] = platformNodeID
+			platformsByID[strings.ToLower(pid)] = platformNodeID
 		}
+		logger.Infof("Indexed %d platform IDs for matching", len(platformsByID))
 	}
 
 	// Process Accounts
@@ -415,9 +417,15 @@ func BuildOpenGraph(
 
 		// CyberArkUsesPlatform edge (Account → Platform)
 		if a.PlatformID != "" {
-			if platformNodeID, ok := platformsByID[a.PlatformID]; ok {
+			platformNodeID, ok := platformsByID[a.PlatformID]
+			if !ok {
+				platformNodeID, ok = platformsByID[strings.ToLower(a.PlatformID)]
+			}
+			if ok {
 				og.AddEdge("CyberArkUsesPlatform", accountNodeID, platformNodeID,
 					"id", "id", nil, false)
+			} else if len(platformsByID) > 0 && debug {
+				logger.Debugf("Account %s has platformId '%s' but no matching platform node found", a.ID, a.PlatformID)
 			}
 		}
 
