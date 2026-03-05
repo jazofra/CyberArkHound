@@ -323,9 +323,9 @@ func BuildOpenGraph(
 	if len(platforms) > 0 {
 		logger.Infof("Processing %d platforms...", len(platforms))
 		for _, p := range platforms {
-			pid := p.General.PlatformID
+			pid := p.PlatformID
 			if pid == "" {
-				pid = p.General.Name
+				pid = p.Name
 			}
 			if pid == "" {
 				continue
@@ -334,11 +334,11 @@ func BuildOpenGraph(
 
 			props := map[string]interface{}{
 				"id":          platformNodeID,
-				"name":        p.General.Name,
+				"name":        p.Name,
 				"platformId":  pid,
-				"systemType":  p.General.SystemType,
-				"active":      p.General.Active,
-				"description": p.General.Description,
+				"systemType":  p.SystemType,
+				"active":      p.Active,
+				"description": p.Description,
 			}
 
 			og.MergeNode(&Node{

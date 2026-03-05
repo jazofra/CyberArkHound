@@ -148,17 +148,14 @@ type LinkedAccount struct {
 	ExtraPassID int    `json:"ExtraPassID"` // 1=Logon, 2=Enable, 3=Reconcile
 }
 
-// PlatformGeneral holds the general properties of a CyberArk platform
-type PlatformGeneral struct {
-	ID          int    `json:"id"`
-	Name        string `json:"name"`
-	SystemType  string `json:"systemType"`
-	Active      bool   `json:"active"`
-	Description string `json:"description"`
-	PlatformID  string `json:"platformID"`
-}
-
-// Platform represents a CyberArk target platform
+// Platform represents a CyberArk target platform.
+// The /API/Platforms/Targets endpoint returns a flat structure with fields
+// at the top level (not nested under "general").
 type Platform struct {
-	General PlatformGeneral `json:"general"`
+	PlatformID  string `json:"PlatformID"`
+	ID          int    `json:"ID"`
+	Name        string `json:"Name"`
+	SystemType  string `json:"SystemType"`
+	Active      bool   `json:"Active"`
+	Description string `json:"Description"`
 }
