@@ -148,14 +148,68 @@ type LinkedAccount struct {
 	ExtraPassID int    `json:"ExtraPassID"` // 1=Logon, 2=Enable, 3=Reconcile
 }
 
-// Platform represents a CyberArk target platform.
-// The /API/Platforms/Targets endpoint returns a flat structure with fields
-// at the top level (not nested under "general").
+// PlatformGeneral holds the general section of a platform response
+type PlatformGeneral struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	SystemType     string `json:"systemType"`
+	Active         bool   `json:"active"`
+	Description    string `json:"description"`
+	PlatformBaseID string `json:"platformBaseID"`
+	PlatformType   string `json:"platformType"`
+}
+
+// PlatformProperty represents a required or optional platform property
+type PlatformProperty struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
+}
+
+// PlatformProperties holds required and optional properties for a platform
+type PlatformProperties struct {
+	Required []PlatformProperty `json:"required"`
+	Optional []PlatformProperty `json:"optional"`
+}
+
+// PlatformLinkedAccountType describes a linked account type defined for a platform
+type PlatformLinkedAccountType struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
+}
+
+// PlatformCredentialsManagement holds credential management settings
+type PlatformCredentialsManagement struct {
+	AllowedSafes                         string `json:"allowedSafes"`
+	AllowManualChange                    bool   `json:"allowManualChange"`
+	PerformPeriodicChange                bool   `json:"performPeriodicChange"`
+	RequirePasswordChangeEveryXDays      int    `json:"requirePasswordChangeEveryXDays"`
+	AllowManualVerification              bool   `json:"allowManualVerification"`
+	PerformPeriodicVerification          bool   `json:"performPeriodicVerification"`
+	RequirePasswordVerificationEveryXDays int   `json:"requirePasswordVerificationEveryXDays"`
+	AllowManualReconciliation            bool   `json:"allowManualReconciliation"`
+	AutomaticReconcileWhenUnsynched      bool   `json:"automaticReconcileWhenUnsynched"`
+}
+
+// PlatformSessionManagement holds session management settings
+type PlatformSessionManagement struct {
+	RequirePrivilegedSessionMonitoringAndIsolation bool   `json:"requirePrivilegedSessionMonitoringAndIsolation"`
+	RecordAndSaveSessionActivity                   bool   `json:"recordAndSaveSessionActivity"`
+	PSMServerID                                    string `json:"PSMServerID"`
+}
+
+// PlatformPrivilegedAccessWorkflows holds privileged access workflow settings
+type PlatformPrivilegedAccessWorkflows struct {
+	RequireDualControlPasswordAccessApproval bool `json:"requireDualControlPasswordAccessApproval"`
+	EnforceCheckinCheckoutExclusiveAccess    bool `json:"enforceCheckinCheckoutExclusiveAccess"`
+	EnforceOnetimePasswordAccess             bool `json:"enforceOnetimePasswordAccess"`
+}
+
+// Platform represents a CyberArk platform from GET /API/Platforms/
 type Platform struct {
-	PlatformID  string `json:"PlatformID"`
-	ID          int    `json:"ID"`
-	Name        string `json:"Name"`
-	SystemType  string `json:"SystemType"`
-	Active      bool   `json:"Active"`
-	Description string `json:"Description"`
+	General                  PlatformGeneral                   `json:"general"`
+	Properties               PlatformProperties                `json:"properties"`
+	LinkedAccounts           []PlatformLinkedAccountType        `json:"linkedAccounts"`
+	CredentialsManagement    PlatformCredentialsManagement     `json:"credentialsManagement"`
+	SessionManagement        PlatformSessionManagement         `json:"sessionManagement"`
+	PrivilegedAccessWorkflows PlatformPrivilegedAccessWorkflows `json:"privilegedAccessWorkflows"`
 }
