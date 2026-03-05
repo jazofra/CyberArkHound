@@ -495,14 +495,16 @@ func BuildOpenGraph(
 		if a.UserName != "" && a.Address != "" {
 			adKey := StripAfterAt(a.UserName)
 			if adKey == "" {
+				if debug {
+					logger.Debugf("SyncsToADUser: skipping account %s — empty username after stripping '@' from '%s'", a.ID, a.UserName)
+				}
 				continue
 			}
+			addressLower := strings.TrimRight(strings.ToLower(strings.TrimSpace(a.Address)), ".")
+			matched := false
 			for _, domain := range targetDomains {
 				domainLower := strings.ToLower(strings.TrimSpace(domain))
-				addressLower := strings.TrimRight(strings.ToLower(strings.TrimSpace(a.Address)), ".")
 
-				// Only create SyncsToADUser if address exactly matches the target domain
-				// If address contains subdomain (e.g., computer.domain.com), it's a computer account, not a user
 				if addressLower == domainLower {
 					adUserName := fmt.Sprintf("%s@%s", strings.ToUpper(adKey), strings.ToUpper(domain))
 					og.AddEdge("SyncsToADUser", accountNodeID, adUserName,
@@ -511,9 +513,18 @@ func BuildOpenGraph(
 							"source":   "CyberArk",
 							"domain":   domain,
 						}, true)
+					matched = true
+					if debug {
+						logger.Debugf("SyncsToADUser: account %s (user=%s, address=%s) -> %s", a.ID, a.UserName, a.Address, adUserName)
+					}
 					break
 				}
 			}
+			if !matched && debug {
+				logger.Debugf("SyncsToADUser: account %s (user=%s, address=%s) — no target domain match (domains: %v)", a.ID, a.UserName, a.Address, targetDomains)
+			}
+		} else if debug && (a.UserName == "" || a.Address == "") {
+			logger.Debugf("SyncsToADUser: skipping account %s — missing userName=%q or address=%q", a.ID, a.UserName, a.Address)
 		}
 	}
 
