@@ -52,7 +52,7 @@ func main() {
 
 	pflag.Parse()
 
-	// Handle leftover arguments as target domains (supports space-separated domains)
+	// Handle leftover positional arguments as additional target domains
 	if len(pflag.Args()) > 0 {
 		*targetDomains = append(*targetDomains, pflag.Args()...)
 	}
@@ -66,7 +66,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --username string          API username\n")
 		fmt.Fprintf(os.Stderr, "  --password string          API password\n")
 		fmt.Fprintf(os.Stderr, "  --output string            Output JSON file\n")
-		fmt.Fprintf(os.Stderr, "  --target-domains strings   Target AD domains (comma-separated or space-separated)\n\n")
+		fmt.Fprintf(os.Stderr, "  --target-domains strings   Target AD domains (comma-separated, e.g. domain1.com,domain2.com)\n\n")
 		pflag.PrintDefaults()
 		os.Exit(1)
 	}
@@ -235,6 +235,7 @@ func main() {
 	processedAccounts := 0
 	skippedDisabled := 0
 	skippedArchived := 0
+	failedDetails := 0
 	var processedMu sync.Mutex
 
 	accountSemaphore := make(chan struct{}, *workers)
@@ -255,6 +256,9 @@ func main() {
 			details, err := apiClient.GetAccountDetails(accountID)
 			if err != nil {
 				logger.Warnf("Failed to get details for account %s: %v", accountID, err)
+				processedMu.Lock()
+				failedDetails++
+				processedMu.Unlock()
 				return
 			}
 
@@ -293,7 +297,10 @@ func main() {
 	if skippedDisabled > 0 || skippedArchived > 0 {
 		logger.Warnf("Phase 2: Skipped %d disabled and %d archived accounts out of %d total.", skippedDisabled, skippedArchived, len(skeletonAccounts))
 	}
-	logger.Infof("Phase 2 Complete. Collected %d active accounts.", len(accounts))
+	if failedDetails > 0 {
+		logger.Warnf("Phase 2: Failed to retrieve details for %d out of %d accounts (API errors).", failedDetails, len(skeletonAccounts))
+	}
+	logger.Infof("Phase 2 Complete. Collected %d active accounts (discovered: %d, failed: %d, disabled: %d, archived: %d).", len(accounts), len(skeletonAccounts), failedDetails, skippedDisabled, skippedArchived)
 
 	// Fetch account activities if requested
 	var accountActivities map[string][]models.AccountActivity

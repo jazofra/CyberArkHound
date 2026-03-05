@@ -521,7 +521,13 @@ func BuildOpenGraph(
 				}
 			}
 			if !matched && debug {
-				logger.Debugf("SyncsToADUser: account %s (user=%s, address=%s) — no target domain match (domains: %v)", a.ID, a.UserName, a.Address, targetDomains)
+				logger.Debugf("SyncsToADUser: account %s (user=%s, address=%q [%x]) — no target domain match (domains: %q [%x])", a.ID, a.UserName, a.Address, []byte(a.Address), targetDomains, func() [][]byte {
+					var bs [][]byte
+					for _, d := range targetDomains {
+						bs = append(bs, []byte(d))
+					}
+					return bs
+				}())
 			}
 		} else if debug && (a.UserName == "" || a.Address == "") {
 			logger.Debugf("SyncsToADUser: skipping account %s — missing userName=%q or address=%q", a.ID, a.UserName, a.Address)
