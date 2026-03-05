@@ -323,22 +323,68 @@ func BuildOpenGraph(
 	if len(platforms) > 0 {
 		logger.Infof("Processing %d platforms...", len(platforms))
 		for _, p := range platforms {
-			pid := p.PlatformID
+			pid := p.General.ID
 			if pid == "" {
-				pid = p.Name
+				pid = p.General.Name
 			}
 			if pid == "" {
 				continue
 			}
 			platformNodeID := strings.ToUpper(fmt.Sprintf("caplatform-%s-%s", pid, pvwaTag))
 
+			// Collect required and optional property names
+			requiredProps := make([]string, 0, len(p.Properties.Required))
+			for _, rp := range p.Properties.Required {
+				requiredProps = append(requiredProps, rp.Name)
+			}
+			optionalProps := make([]string, 0, len(p.Properties.Optional))
+			for _, op := range p.Properties.Optional {
+				optionalProps = append(optionalProps, op.Name)
+			}
+
+			// Collect linked account type names
+			linkedAccountTypes := make([]string, 0, len(p.LinkedAccounts))
+			for _, la := range p.LinkedAccounts {
+				linkedAccountTypes = append(linkedAccountTypes, la.Name)
+			}
+
 			props := map[string]interface{}{
-				"id":          platformNodeID,
-				"name":        p.Name,
-				"platformId":  pid,
-				"systemType":  p.SystemType,
-				"active":      p.Active,
-				"description": p.Description,
+				"id":             platformNodeID,
+				"name":           p.General.Name,
+				"platformId":     pid,
+				"systemType":     p.General.SystemType,
+				"active":         p.General.Active,
+				"description":    p.General.Description,
+				"platformBaseID": p.General.PlatformBaseID,
+				"platformType":   p.General.PlatformType,
+
+				// Properties
+				"requiredProperties": requiredProps,
+				"optionalProperties": optionalProps,
+
+				// Linked account types defined for this platform
+				"linkedAccountTypes": linkedAccountTypes,
+
+				// Credentials management
+				"allowedSafes":                          p.CredentialsManagement.AllowedSafes,
+				"allowManualChange":                     p.CredentialsManagement.AllowManualChange,
+				"performPeriodicChange":                 p.CredentialsManagement.PerformPeriodicChange,
+				"requirePasswordChangeEveryXDays":       p.CredentialsManagement.RequirePasswordChangeEveryXDays,
+				"allowManualVerification":               p.CredentialsManagement.AllowManualVerification,
+				"performPeriodicVerification":           p.CredentialsManagement.PerformPeriodicVerification,
+				"requirePasswordVerificationEveryXDays": p.CredentialsManagement.RequirePasswordVerificationEveryXDays,
+				"allowManualReconciliation":             p.CredentialsManagement.AllowManualReconciliation,
+				"automaticReconcileWhenUnsynched":       p.CredentialsManagement.AutomaticReconcileWhenUnsynched,
+
+				// Session management
+				"requirePrivilegedSessionMonitoringAndIsolation": p.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation,
+				"recordAndSaveSessionActivity":                   p.SessionManagement.RecordAndSaveSessionActivity,
+				"psmServerID":                                    p.SessionManagement.PSMServerID,
+
+				// Privileged access workflows
+				"requireDualControlPasswordAccessApproval": p.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval,
+				"enforceCheckinCheckoutExclusiveAccess":    p.PrivilegedAccessWorkflows.EnforceCheckinCheckoutExclusiveAccess,
+				"enforceOnetimePasswordAccess":             p.PrivilegedAccessWorkflows.EnforceOnetimePasswordAccess,
 			}
 
 			og.MergeNode(&Node{

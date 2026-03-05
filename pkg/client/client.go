@@ -541,45 +541,26 @@ func (c *Client) GetAccountActivities(accountID string, limit int, daysBack *int
 	return activities, nil
 }
 
-// ListPlatforms retrieves all target platforms
+// ListPlatforms retrieves all platforms via GET /API/Platforms/
 func (c *Client) ListPlatforms() ([]models.Platform, error) {
-	platforms := make([]models.Platform, 0)
-	limit := 500
-	offset := 0
+	platformURL := fmt.Sprintf("%s/PasswordVault/API/Platforms/", c.BaseURL)
 
-	for {
-		platformURL := fmt.Sprintf("%s/PasswordVault/API/Platforms/Targets?limit=%d&offset=%d",
-			c.BaseURL, limit, offset)
+	resp, err := c.requestWithRetries("GET", platformURL, nil, c.ReqTimeout, 3)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list platforms: %w", err)
+	}
+	defer resp.Body.Close()
 
-		resp, err := c.requestWithRetries("GET", platformURL, nil, c.ReqTimeout, 3)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list platforms: %w", err)
-		}
-
-		var data struct {
-			Platforms []models.Platform `json:"Platforms"`
-			Value     []models.Platform `json:"value"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-			resp.Body.Close()
-			return nil, fmt.Errorf("failed to decode platforms response: %w", err)
-		}
-		resp.Body.Close()
-
-		page := data.Platforms
-		if len(page) == 0 {
-			page = data.Value
-		}
-		platforms = append(platforms, page...)
-
-		if len(page) < limit {
-			break
-		}
-		offset += len(page)
+	var data struct {
+		Platforms []models.Platform `json:"Platforms"`
+		Total     int               `json:"Total"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("failed to decode platforms response: %w", err)
 	}
 
-	c.Logger.Infof("Collected %d platforms", len(platforms))
-	return platforms, nil
+	c.Logger.Infof("Collected %d platforms", len(data.Platforms))
+	return data.Platforms, nil
 }
 
 // ListUsers retrieves all users
