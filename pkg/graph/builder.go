@@ -537,6 +537,27 @@ func BuildOpenGraph(
 	// Process Safe Members and create permission edges
 	logger.Infof("Processing %d safe members...", len(safeMembers))
 
+	// Pre-compute which safes have dual control enabled.
+	// Dual control is active only when at least one member has L1 or L2 approval permissions.
+	// Without approvers, there is no approval workflow regardless of accessWithoutConfirmation.
+	safesWithDualControl := make(map[string]bool)
+	for _, sm := range safeMembers {
+		for permKey, permVal := range sm.Permissions {
+			normKey := NormPermName(permKey)
+			isGranted := false
+			switch v := permVal.(type) {
+			case bool:
+				isGranted = v
+			case string:
+				isGranted = strings.ToLower(v) == "true"
+			}
+			if isGranted && (normKey == "requestsauthorizationlevel1" || normKey == "requestsauthorizationlevel2") {
+				safesWithDualControl[sm.SafeName] = true
+				break
+			}
+		}
+	}
+
 	// Track safe permissions for user/group nodes
 	userSafePerms := make(map[string][]map[string]interface{})
 	groupSafePerms := make(map[string][]map[string]interface{})
@@ -649,7 +670,9 @@ func BuildOpenGraph(
 		// Create edges based on permissions
 		if hasDirectAccess {
 			// Create edges to each account in the safe
-			requiresApproval := !accessWithoutConfirmation
+			// Approval is only required when the safe has dual control (approvers exist)
+			// AND the member does not have accessWithoutConfirmation
+			requiresApproval := safesWithDualControl[sm.SafeName] && !accessWithoutConfirmation
 			accountsInSafe := accountsBySafe[sm.SafeName]
 			for _, accountNodeID := range accountsInSafe {
 				og.AddEdge("CyberArkHasAccessTo", memberNodeID, accountNodeID,
