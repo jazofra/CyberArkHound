@@ -397,16 +397,35 @@ func (c *Client) ListSafeMembers(safeName, safeURLID string) ([]models.SafeMembe
 	return members, nil
 }
 
-// ListAccounts retrieves all accounts in a safe
+// ListAccounts retrieves all accounts in a safe.
+// It first tries filtering by safeName; if the PVWA returns zero results
+// (which can happen when the filter format is not accepted by the PVWA version),
+// it falls back to a search-based query.
 func (c *Client) ListAccounts(safeName, safeURLID string) ([]models.Account, error) {
+	accounts, err := c.listAccountsWithFilter(safeName)
+	if err != nil {
+		return nil, err
+	}
+	if len(accounts) > 0 {
+		return accounts, nil
+	}
+
+	// Fallback: try search-based query (works across all PVWA versions)
+	c.Logger.Debugf("Filter returned 0 accounts for safe '%s', trying search-based fallback", safeName)
+	return c.listAccountsWithSearch(safeName)
+}
+
+func (c *Client) listAccountsWithFilter(safeName string) ([]models.Account, error) {
 	accounts := make([]models.Account, 0)
 	limit := 1000
 	offset := 0
-	filterValue := fmt.Sprintf("safeName eq \"%s\"", safeName)
+	filterValue := fmt.Sprintf("safeName eq %s", safeName)
 
 	for {
 		accountURL := fmt.Sprintf("%s/PasswordVault/API/Accounts?limit=%d&offset=%d&filter=%s",
 			c.BaseURL, limit, offset, url.QueryEscape(filterValue))
+
+		c.Logger.Debugf("ListAccounts filter request: %s", accountURL)
 
 		resp, err := c.requestWithRetries("GET", accountURL, nil, c.ReqTimeout, 3)
 		if err != nil {
@@ -415,6 +434,7 @@ func (c *Client) ListAccounts(safeName, safeURLID string) ([]models.Account, err
 
 		var data struct {
 			Value []models.Account `json:"value"`
+			Count int              `json:"count"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 			resp.Body.Close()
@@ -422,7 +442,54 @@ func (c *Client) ListAccounts(safeName, safeURLID string) ([]models.Account, err
 		}
 		resp.Body.Close()
 
+		c.Logger.Debugf("ListAccounts filter response for safe '%s': %d accounts in page, count=%d", safeName, len(data.Value), data.Count)
+
 		accounts = append(accounts, data.Value...)
+
+		if len(data.Value) < limit {
+			break
+		}
+
+		offset += limit
+	}
+
+	return accounts, nil
+}
+
+func (c *Client) listAccountsWithSearch(safeName string) ([]models.Account, error) {
+	accounts := make([]models.Account, 0)
+	limit := 1000
+	offset := 0
+
+	for {
+		accountURL := fmt.Sprintf("%s/PasswordVault/API/Accounts?limit=%d&offset=%d&search=%s",
+			c.BaseURL, limit, offset, url.QueryEscape(safeName))
+
+		c.Logger.Debugf("ListAccounts search fallback request: %s", accountURL)
+
+		resp, err := c.requestWithRetries("GET", accountURL, nil, c.ReqTimeout, 3)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list accounts (search fallback): %w", err)
+		}
+
+		var data struct {
+			Value []models.Account `json:"value"`
+			Count int              `json:"count"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("failed to decode accounts response: %w", err)
+		}
+		resp.Body.Close()
+
+		// Search is broader than filter — only keep accounts belonging to this safe
+		for _, acc := range data.Value {
+			if strings.EqualFold(acc.SafeName, safeName) {
+				accounts = append(accounts, acc)
+			}
+		}
+
+		c.Logger.Debugf("ListAccounts search fallback for safe '%s': %d accounts in page, %d matched safe", safeName, len(data.Value), len(accounts))
 
 		if len(data.Value) < limit {
 			break
