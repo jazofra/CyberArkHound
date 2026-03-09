@@ -169,6 +169,7 @@ Download pre-compiled binaries from the [Releases](https://github.com/jazofra/Cy
 - Increase `--workers` to 100-200 for faster parallel processing
 - Use `--log-level WARNING` to reduce logging overhead
 - The tool uses efficient memory management with native goroutines for true parallelism
+- Re-authentication is single-flighted: when multiple workers receive HTTP 401 simultaneously, only one re-authenticates while the others wait and reuse the refreshed token — avoiding thundering-herd token churn
 
 ### Command-Line Arguments
 

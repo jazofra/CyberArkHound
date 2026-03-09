@@ -43,6 +43,12 @@ type Client struct {
 	RetryMultiplier     float64
 	RetryJitter         float64
 	MaxReauthAttempts   int
+
+	// authMu serialises re-authentication so only one goroutine re-auths at a time.
+	authMu sync.Mutex
+	// tokenGen is bumped on every successful Authenticate(); workers compare
+	// their snapshot to decide whether someone else already refreshed the token.
+	tokenGen uint64
 }
 
 // NewClient creates a new CyberArk API client
@@ -104,6 +110,11 @@ func (c *Client) requestWithRetries(method, urlPath string, body interface{}, ti
 		attempt++
 		c.Logger.Debugf("Request attempt %d: %s %s", attempt, method, urlPath)
 
+		// Snapshot the current token generation before issuing the request.
+		// If we get a 401, we pass this to reauthIfNeeded so it can tell
+		// whether another goroutine already refreshed the token.
+		preReqGen := c.tokenGen
+
 		var bodyReader io.Reader
 		if jsonData != nil {
 			bodyReader = bytes.NewReader(jsonData)
@@ -143,7 +154,7 @@ func (c *Client) requestWithRetries(method, urlPath string, body interface{}, ti
 				return nil, fmt.Errorf("authentication retries exhausted for %s (attempted %d times)", urlPath, reauthAttempts)
 			}
 			c.Logger.Warnf("HTTP 401 received for %s. Re-authenticating (re-auth attempt %d/%d)...", urlPath, reauthAttempts, maxReauthAttempts)
-			if err := c.Authenticate(); err != nil {
+			if err := c.reauthIfNeeded(preReqGen); err != nil {
 				return nil, fmt.Errorf("re-authentication failed: %w", err)
 			}
 
@@ -263,6 +274,27 @@ func (c *Client) Authenticate() error {
 
 	c.Logger.Infof("Authenticated successfully (token length: %d chars)", len(c.Token))
 	c.Logger.Debugf("Token preview: %s...", truncateString(c.Token, 50))
+	return nil
+}
+
+// reauthIfNeeded performs single-flight re-authentication.  The caller passes
+// the tokenGen snapshot it observed *before* getting the 401.  Under the lock
+// we check whether another goroutine already refreshed the token; if so, we
+// skip the actual auth call and return immediately.
+func (c *Client) reauthIfNeeded(callerGen uint64) error {
+	c.authMu.Lock()
+	defer c.authMu.Unlock()
+
+	// Another goroutine already re-authenticated since our 401.
+	if c.tokenGen != callerGen {
+		c.Logger.Debugf("Skipping re-auth: token already refreshed (gen %d → %d)", callerGen, c.tokenGen)
+		return nil
+	}
+
+	if err := c.Authenticate(); err != nil {
+		return err
+	}
+	c.tokenGen++
 	return nil
 }
 
