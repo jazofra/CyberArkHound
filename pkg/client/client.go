@@ -42,6 +42,7 @@ type Client struct {
 	RetryMaxBackoff     time.Duration
 	RetryMultiplier     float64
 	RetryJitter         float64
+	MaxReauthAttempts   int
 }
 
 // NewClient creates a new CyberArk API client
@@ -71,6 +72,7 @@ func NewClient(baseURL, username, password string, insecure bool, caBundle strin
 		RetryMaxBackoff:     60 * time.Second,
 		RetryMultiplier:     2.0,
 		RetryJitter:         0.2,
+		MaxReauthAttempts:   5,
 	}
 }
 
@@ -86,7 +88,7 @@ func (c *Client) requestWithRetries(method, urlPath string, body interface{}, ti
 	attempt := 0
 	backoff := c.RetryInitialBackoff
 	reauthAttempts := 0
-	maxReauthAttempts := 2
+	maxReauthAttempts := c.MaxReauthAttempts
 
 	// Pre-marshal body once to avoid re-marshaling on each retry
 	var jsonData []byte
