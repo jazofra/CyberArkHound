@@ -186,6 +186,26 @@ func (c *Client) requestWithRetries(method, urlPath string, body interface{}, ti
 			return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(bodyBytes))
 		}
 
+		// Guard against PVWA returning HTML (e.g. IIS login/error page) on
+		// an otherwise successful HTTP 200.  Every valid PVWA API response is
+		// JSON, so a non-JSON Content-Type is treated as a transient error
+		// and retried.
+		ct := resp.Header.Get("Content-Type")
+		if ct != "" && !strings.Contains(ct, "application/json") && !strings.Contains(ct, "text/json") {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			preview := string(bodyBytes)
+			if len(preview) > 200 {
+				preview = preview[:200] + "..."
+			}
+			c.Logger.Warnf("Non-JSON response (Content-Type: %s) for %s: %s", ct, urlPath, preview)
+			if maxRetries > 0 && attempt >= maxRetries {
+				return nil, fmt.Errorf("non-JSON response for %s (Content-Type: %s)", urlPath, ct)
+			}
+			c.throttleVariableDuration(backoff)
+			continue
+		}
+
 		if attempt > 1 {
 			c.Logger.Infof("Request succeeded on attempt %d: %s", attempt, urlPath)
 		}
