@@ -34,6 +34,7 @@ func main() {
 	requestTimeout := pflag.Duration("request-timeout", 360*time.Second, "HTTP request timeout (e.g. 10m, 600s)")
 	authTimeout := pflag.Duration("auth-timeout", 360*time.Second, "Authentication timeout (e.g. 2m, 120s)")
 	safePageLimit := pflag.Int("safe-page-limit", client.SafePageLimit, "Safes page size for /API/safes pagination (lower can help slow PVWA)")
+	maxReauthAttempts := pflag.Int("max-reauth-attempts", 5, "Max re-authentication attempts on HTTP 401 before giving up")
 
 	// Activity tracking flags
 	includeActivity := pflag.Bool("include-activity", true, "Include account activity data (creates CyberArkUsedAccount edges)")
@@ -107,6 +108,7 @@ func main() {
 	apiClient.ReqTimeout = *requestTimeout
 	apiClient.AuthTimeout = *authTimeout
 	apiClient.SafePageLimit = *safePageLimit
+	apiClient.MaxReauthAttempts = *maxReauthAttempts
 	apiClient.HTTPClient.Timeout = apiClient.ReqTimeout
 
 	// Authenticate
