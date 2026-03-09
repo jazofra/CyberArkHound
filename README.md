@@ -188,6 +188,8 @@ Download pre-compiled binaries from the [Releases](https://github.com/jazofra/Cy
 - `--quiet` Suppress info/debug logs
 - `--debug` Enable debug logging with detailed diagnostics
 - `--log-level` Set logging level: DEBUG, INFO (default), WARNING, ERROR
+- `--safe-page-limit` Safes page size for pagination (default: 1000; lower can help slow PVWA)
+- `--max-reauth-attempts` Max re-authentication attempts on HTTP 401 before giving up (default: 5)
 
 **Activity Tracking:**
 - `--include-activity` Include account activity data (creates CyberArkUsedAccount edges)
