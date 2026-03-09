@@ -27,6 +27,13 @@
         "name": "user",
         "color": "#BFD6E3"
       }
+    },
+    "CyberArkPlatform": {
+      "icon": {
+        "type": "font-awesome",
+        "name": "server",
+        "color": "#D4B8D9"
+      }
     }
   }
 }

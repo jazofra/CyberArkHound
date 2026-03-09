@@ -124,6 +124,7 @@ type Account struct {
 	AutomaticManagementEnabled bool                   `json:"automaticManagementEnabled"`
 	ManualManagementReason     string                 `json:"manualManagementReason"`
 	LastModifiedBy             string                 `json:"lastModifiedBy"`
+	LinkedAccounts             []LinkedAccount        `json:"linkedAccounts,omitempty"`
 }
 
 // AccountActivity represents an activity log for an account
@@ -136,4 +137,79 @@ type AccountActivity struct {
 	Reason         string  `json:"Reason"`
 	MoreInfo       string  `json:"MoreInfo"`
 	IPAddress      string  `json:"IPAddress"`
+}
+
+// LinkedAccount represents a linked account (logon, reconcile, or enable account)
+type LinkedAccount struct {
+	Name        string `json:"Name"`
+	FolderPath  string `json:"FolderPath"`
+	SafeName    string `json:"SafeName"`
+	AccountID   string `json:"AccountID"`
+	ExtraPassID int    `json:"ExtraPassID"` // 1=Logon, 2=Enable, 3=Reconcile
+}
+
+// PlatformGeneral holds the general section of a platform response
+type PlatformGeneral struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	SystemType     string `json:"systemType"`
+	Active         bool   `json:"active"`
+	Description    string `json:"description"`
+	PlatformBaseID string `json:"platformBaseID"`
+	PlatformType   string `json:"platformType"`
+}
+
+// PlatformProperty represents a required or optional platform property
+type PlatformProperty struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
+}
+
+// PlatformProperties holds required and optional properties for a platform
+type PlatformProperties struct {
+	Required []PlatformProperty `json:"required"`
+	Optional []PlatformProperty `json:"optional"`
+}
+
+// PlatformLinkedAccountType describes a linked account type defined for a platform
+type PlatformLinkedAccountType struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
+}
+
+// PlatformCredentialsManagement holds credential management settings
+type PlatformCredentialsManagement struct {
+	AllowedSafes                         string `json:"allowedSafes"`
+	AllowManualChange                    bool   `json:"allowManualChange"`
+	PerformPeriodicChange                bool   `json:"performPeriodicChange"`
+	RequirePasswordChangeEveryXDays      int    `json:"requirePasswordChangeEveryXDays"`
+	AllowManualVerification              bool   `json:"allowManualVerification"`
+	PerformPeriodicVerification          bool   `json:"performPeriodicVerification"`
+	RequirePasswordVerificationEveryXDays int   `json:"requirePasswordVerificationEveryXDays"`
+	AllowManualReconciliation            bool   `json:"allowManualReconciliation"`
+	AutomaticReconcileWhenUnsynched      bool   `json:"automaticReconcileWhenUnsynched"`
+}
+
+// PlatformSessionManagement holds session management settings
+type PlatformSessionManagement struct {
+	RequirePrivilegedSessionMonitoringAndIsolation bool   `json:"requirePrivilegedSessionMonitoringAndIsolation"`
+	RecordAndSaveSessionActivity                   bool   `json:"recordAndSaveSessionActivity"`
+	PSMServerID                                    string `json:"PSMServerID"`
+}
+
+// PlatformPrivilegedAccessWorkflows holds privileged access workflow settings
+type PlatformPrivilegedAccessWorkflows struct {
+	RequireDualControlPasswordAccessApproval bool `json:"requireDualControlPasswordAccessApproval"`
+	EnforceCheckinCheckoutExclusiveAccess    bool `json:"enforceCheckinCheckoutExclusiveAccess"`
+	EnforceOnetimePasswordAccess             bool `json:"enforceOnetimePasswordAccess"`
+}
+
+// Platform represents a CyberArk platform from GET /API/Platforms/
+type Platform struct {
+	General                  PlatformGeneral                   `json:"general"`
+	Properties               PlatformProperties                `json:"properties"`
+	LinkedAccounts           []PlatformLinkedAccountType        `json:"linkedAccounts"`
+	CredentialsManagement    PlatformCredentialsManagement     `json:"credentialsManagement"`
+	SessionManagement        PlatformSessionManagement         `json:"sessionManagement"`
+	PrivilegedAccessWorkflows PlatformPrivilegedAccessWorkflows `json:"privilegedAccessWorkflows"`
 }

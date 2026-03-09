@@ -19,6 +19,8 @@ func BuildOpenGraph(
 	parseSAMAccountNameFromDN bool,
 	pvwaTag string,
 	accountActivities map[string][]models.AccountActivity,
+	platforms []models.Platform,
+	linkedAccounts map[string][]models.LinkedAccount,
 	logger *logrus.Logger,
 	debug bool,
 	logLevel string,
@@ -51,8 +53,8 @@ func BuildOpenGraph(
 	}
 
 	if debug {
-		logger.Debugf("Building OpenGraph (users=%d groups=%d safes=%d accounts=%d)",
-			len(users), len(groups), len(safes), len(accounts))
+		logger.Debugf("Building OpenGraph (users=%d groups=%d safes=%d accounts=%d platforms=%d)",
+			len(users), len(groups), len(safes), len(accounts), len(platforms))
 	}
 
 	// Track users and groups for lookups
@@ -292,6 +294,109 @@ func BuildOpenGraph(
 		})
 
 		safesByName[s.SafeName] = safeNodeID
+
+		// CyberArkCreated edge (User → Safe) — safe creator relationship
+		if s.Creator.Name != "" {
+			creatorNodeID := usersByUsername[s.Creator.Name]
+			if creatorNodeID == "" {
+				creatorNodeID = strings.ToUpper(fmt.Sprintf("causer-%s-%s", s.Creator.Name, pvwaTag))
+			}
+			og.AddEdge("CyberArkCreated", creatorNodeID, safeNodeID,
+				"id", "id", map[string]interface{}{
+					"creatorId": s.Creator.ID,
+				}, false)
+		}
+
+		// CyberArkManagedBy edge (CPM User → Safe) — CPM management relationship
+		if s.ManagingCPM != "" {
+			cpmNodeID := usersByUsername[s.ManagingCPM]
+			if cpmNodeID == "" {
+				cpmNodeID = strings.ToUpper(fmt.Sprintf("causer-%s-%s", s.ManagingCPM, pvwaTag))
+			}
+			og.AddEdge("CyberArkManagedBy", cpmNodeID, safeNodeID,
+				"id", "id", nil, false)
+		}
+	}
+
+	// Process Platforms (if provided)
+	platformsByID := make(map[string]string) // platformID (string) -> platformNodeID
+	if len(platforms) > 0 {
+		logger.Infof("Processing %d platforms...", len(platforms))
+		for _, p := range platforms {
+			pid := p.General.ID
+			if pid == "" {
+				pid = p.General.Name
+			}
+			if pid == "" {
+				continue
+			}
+			platformNodeID := strings.ToUpper(fmt.Sprintf("caplatform-%s-%s", pid, pvwaTag))
+
+			// Collect required and optional property names
+			requiredProps := make([]string, 0, len(p.Properties.Required))
+			for _, rp := range p.Properties.Required {
+				requiredProps = append(requiredProps, rp.Name)
+			}
+			optionalProps := make([]string, 0, len(p.Properties.Optional))
+			for _, op := range p.Properties.Optional {
+				optionalProps = append(optionalProps, op.Name)
+			}
+
+			// Collect linked account type names
+			linkedAccountTypes := make([]string, 0, len(p.LinkedAccounts))
+			for _, la := range p.LinkedAccounts {
+				linkedAccountTypes = append(linkedAccountTypes, la.Name)
+			}
+
+			props := map[string]interface{}{
+				"id":             platformNodeID,
+				"name":           p.General.Name,
+				"platformId":     pid,
+				"systemType":     p.General.SystemType,
+				"active":         p.General.Active,
+				"description":    p.General.Description,
+				"platformBaseID": p.General.PlatformBaseID,
+				"platformType":   p.General.PlatformType,
+
+				// Properties
+				"requiredProperties": requiredProps,
+				"optionalProperties": optionalProps,
+
+				// Linked account types defined for this platform
+				"linkedAccountTypes": linkedAccountTypes,
+
+				// Credentials management
+				"allowedSafes":                          p.CredentialsManagement.AllowedSafes,
+				"allowManualChange":                     p.CredentialsManagement.AllowManualChange,
+				"performPeriodicChange":                 p.CredentialsManagement.PerformPeriodicChange,
+				"requirePasswordChangeEveryXDays":       p.CredentialsManagement.RequirePasswordChangeEveryXDays,
+				"allowManualVerification":               p.CredentialsManagement.AllowManualVerification,
+				"performPeriodicVerification":           p.CredentialsManagement.PerformPeriodicVerification,
+				"requirePasswordVerificationEveryXDays": p.CredentialsManagement.RequirePasswordVerificationEveryXDays,
+				"allowManualReconciliation":             p.CredentialsManagement.AllowManualReconciliation,
+				"automaticReconcileWhenUnsynched":       p.CredentialsManagement.AutomaticReconcileWhenUnsynched,
+
+				// Session management
+				"requirePrivilegedSessionMonitoringAndIsolation": p.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation,
+				"recordAndSaveSessionActivity":                   p.SessionManagement.RecordAndSaveSessionActivity,
+				"psmServerID":                                    p.SessionManagement.PSMServerID,
+
+				// Privileged access workflows
+				"requireDualControlPasswordAccessApproval": p.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval,
+				"enforceCheckinCheckoutExclusiveAccess":    p.PrivilegedAccessWorkflows.EnforceCheckinCheckoutExclusiveAccess,
+				"enforceOnetimePasswordAccess":             p.PrivilegedAccessWorkflows.EnforceOnetimePasswordAccess,
+			}
+
+			og.MergeNode(&Node{
+				ID:         platformNodeID,
+				Kinds:      []string{"CyberArkPlatform", "CyberArkBase"},
+				Properties: SanitizeProperties(props),
+			})
+
+			platformsByID[pid] = platformNodeID
+			platformsByID[strings.ToLower(pid)] = platformNodeID
+		}
+		logger.Infof("Indexed %d platform IDs for matching", len(platformsByID))
 	}
 
 	// Process Accounts
@@ -330,7 +435,7 @@ func BuildOpenGraph(
 			"safeUrlId":                  a.SafeUrlId,
 			"secretType":                 a.SecretType,
 			"status":                     a.Status,
-			"disabled":                   a.Disabled,
+			"enabled":                    !a.Disabled,
 			"createdTime":                a.CreatedTime,
 			"lastModifiedTime":           a.LastModifiedTime,
 			"lastVerifiedTime":           a.LastVerifiedTime,
@@ -359,6 +464,20 @@ func BuildOpenGraph(
 
 		accountsByID[a.ID] = accountNodeID
 
+		// CyberArkUsesPlatform edge (Account → Platform)
+		if a.PlatformID != "" {
+			platformNodeID, ok := platformsByID[a.PlatformID]
+			if !ok {
+				platformNodeID, ok = platformsByID[strings.ToLower(a.PlatformID)]
+			}
+			if ok {
+				og.AddEdge("CyberArkUsesPlatform", accountNodeID, platformNodeID,
+					"id", "id", nil, false)
+			} else if len(platformsByID) > 0 && debug {
+				logger.Debugf("Account %s has platformId '%s' but no matching platform node found", a.ID, a.PlatformID)
+			}
+		}
+
 		// Track accounts by safe
 		if a.SafeName != "" {
 			accountsBySafe[a.SafeName] = append(accountsBySafe[a.SafeName], accountNodeID)
@@ -376,14 +495,16 @@ func BuildOpenGraph(
 		if a.UserName != "" && a.Address != "" {
 			adKey := StripAfterAt(a.UserName)
 			if adKey == "" {
+				if debug {
+					logger.Debugf("SyncsToADUser: skipping account %s — empty username after stripping '@' from '%s'", a.ID, a.UserName)
+				}
 				continue
 			}
+			addressLower := strings.TrimRight(strings.ToLower(strings.TrimSpace(a.Address)), ".")
+			matched := false
 			for _, domain := range targetDomains {
-				domainLower := strings.ToLower(domain)
-				addressLower := strings.ToLower(a.Address)
+				domainLower := strings.ToLower(strings.TrimSpace(domain))
 
-				// Only create SyncsToADUser if address exactly matches the target domain
-				// If address contains subdomain (e.g., computer.domain.com), it's a computer account, not a user
 				if addressLower == domainLower {
 					adUserName := fmt.Sprintf("%s@%s", strings.ToUpper(adKey), strings.ToUpper(domain))
 					og.AddEdge("SyncsToADUser", accountNodeID, adUserName,
@@ -392,6 +513,10 @@ func BuildOpenGraph(
 							"source":   "CyberArk",
 							"domain":   domain,
 						}, true)
+					matched = true
+					if debug {
+						logger.Debugf("SyncsToADUser: account %s (user=%s, address=%s) -> %s", a.ID, a.UserName, a.Address, adUserName)
+					}
 					break
 					// Create CyberArkCanConnect edge from CyberArkUser to AD Computer if address is a subdomain of the target domain
 				} else if strings.HasSuffix(addressLower, "."+domainLower) {
@@ -411,11 +536,43 @@ func BuildOpenGraph(
 					}
 				}
 			}
+			if !matched && debug {
+				logger.Debugf("SyncsToADUser: account %s (user=%s, address=%q [%x]) — no target domain match (domains: %q [%x])", a.ID, a.UserName, a.Address, []byte(a.Address), targetDomains, func() [][]byte {
+					var bs [][]byte
+					for _, d := range targetDomains {
+						bs = append(bs, []byte(d))
+					}
+					return bs
+				}())
+			}
+		} else if debug && (a.UserName == "" || a.Address == "") {
+			logger.Debugf("SyncsToADUser: skipping account %s — missing userName=%q or address=%q", a.ID, a.UserName, a.Address)
 		}
 	}
 
 	// Process Safe Members and create permission edges
 	logger.Infof("Processing %d safe members...", len(safeMembers))
+
+	// Pre-compute which safes have dual control enabled.
+	// Dual control is active only when at least one member has L1 or L2 approval permissions.
+	// Without approvers, there is no approval workflow regardless of accessWithoutConfirmation.
+	safesWithDualControl := make(map[string]bool)
+	for _, sm := range safeMembers {
+		for permKey, permVal := range sm.Permissions {
+			normKey := NormPermName(permKey)
+			isGranted := false
+			switch v := permVal.(type) {
+			case bool:
+				isGranted = v
+			case string:
+				isGranted = strings.ToLower(v) == "true"
+			}
+			if isGranted && (normKey == "requestsauthorizationlevel1" || normKey == "requestsauthorizationlevel2") {
+				safesWithDualControl[sm.SafeName] = true
+				break
+			}
+		}
+	}
 
 	// Track safe permissions for user/group nodes
 	userSafePerms := make(map[string][]map[string]interface{})
@@ -488,6 +645,9 @@ func BuildOpenGraph(
 		// Determine edge type based on permissions
 		hasDirectAccess := false
 		canGrantAccess := false
+		accessWithoutConfirmation := false
+		canApproveL1 := false
+		canApproveL2 := false
 
 		for normPerm := range normalizedPerms {
 			if AccountAccessPermissions[normPerm] {
@@ -496,15 +656,25 @@ func BuildOpenGraph(
 			if EscalationPermissions[normPerm] {
 				canGrantAccess = true
 			}
+			switch normPerm {
+			case "accesswithoutconfirmation":
+				accessWithoutConfirmation = true
+			case "requestsauthorizationlevel1":
+				canApproveL1 = true
+			case "requestsauthorizationlevel2":
+				canApproveL2 = true
+			}
 		}
 
 		// Store safe permission details for node properties
 		safePermDetail := map[string]interface{}{
-			"safeName":             sm.SafeName,
-			"permissions":          matchedPermNames,
-			"permissionParameters": matchedPermParams,
-			"hasDirectAccess":      hasDirectAccess,
-			"canGrantAccess":       canGrantAccess,
+			"safeName":                  sm.SafeName,
+			"permissions":               matchedPermNames,
+			"permissionParameters":      matchedPermParams,
+			"hasDirectAccess":           hasDirectAccess,
+			"canGrantAccess":            canGrantAccess,
+			"accessWithoutConfirmation": accessWithoutConfirmation,
+			"canApproveRequests":        canApproveL1 || canApproveL2,
 		}
 
 		if isMemberGroup {
@@ -516,13 +686,17 @@ func BuildOpenGraph(
 		// Create edges based on permissions
 		if hasDirectAccess {
 			// Create edges to each account in the safe
+			// Approval is only required when the safe has dual control (approvers exist)
+			// AND the member does not have accessWithoutConfirmation
+			requiresApproval := safesWithDualControl[sm.SafeName] && !accessWithoutConfirmation
 			accountsInSafe := accountsBySafe[sm.SafeName]
 			for _, accountNodeID := range accountsInSafe {
 				og.AddEdge("CyberArkHasAccessTo", memberNodeID, accountNodeID,
 					"id", "id", map[string]interface{}{
-						"safeName":    sm.SafeName,
-						"permissions": matchedPermNames,
-						"inferred":    false,
+						"safeName":         sm.SafeName,
+						"permissions":      matchedPermNames,
+						"inferred":         false,
+						"requiresApproval": requiresApproval,
 					}, false)
 			}
 		}
@@ -533,6 +707,19 @@ func BuildOpenGraph(
 				"id", "id", map[string]interface{}{
 					"permissions": matchedPermNames,
 					"inferred":    false,
+				}, false)
+		}
+
+		// Create approval edges for dual control
+		if canApproveL1 || canApproveL2 {
+			approvalLevel := 1
+			if canApproveL2 {
+				approvalLevel = 2
+			}
+			og.AddEdge("CyberArkCanApprove", memberNodeID, safeNodeID,
+				"id", "id", map[string]interface{}{
+					"approvalLevel": approvalLevel,
+					"inferred":      false,
 				}, false)
 		}
 	}
@@ -665,6 +852,50 @@ func BuildOpenGraph(
 		if debug {
 			logger.Debug("===========================================")
 		}
+	}
+
+	// Process Linked Accounts (if provided)
+	if linkedAccounts != nil && len(linkedAccounts) > 0 {
+		logger.Infof("Processing linked accounts for %d accounts...", len(linkedAccounts))
+		linkedEdgeCount := 0
+
+		for accountID, links := range linkedAccounts {
+			sourceNodeID := accountsByID[accountID]
+			if sourceNodeID == "" {
+				sourceNodeID = strings.ToUpper(fmt.Sprintf("caaccount-%s-%s", accountID, pvwaTag))
+			}
+
+			for _, link := range links {
+				targetNodeID := accountsByID[link.AccountID]
+				if targetNodeID == "" && link.AccountID != "" {
+					targetNodeID = strings.ToUpper(fmt.Sprintf("caaccount-%s-%s", link.AccountID, pvwaTag))
+				}
+				if targetNodeID == "" {
+					continue
+				}
+
+				// Map ExtraPassID to human-readable link type
+				linkType := "unknown"
+				switch link.ExtraPassID {
+				case 1:
+					linkType = "logon"
+				case 2:
+					linkType = "enable"
+				case 3:
+					linkType = "reconcile"
+				}
+
+				og.AddEdge("CyberArkLinkedTo", sourceNodeID, targetNodeID,
+					"id", "id", map[string]interface{}{
+						"linkType": linkType,
+						"linkName": link.Name,
+						"safeName": link.SafeName,
+					}, false)
+				linkedEdgeCount++
+			}
+		}
+
+		logger.Infof("Created %d CyberArkLinkedTo edges from linked account data", linkedEdgeCount)
 	}
 
 	if debug {

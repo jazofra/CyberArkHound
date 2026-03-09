@@ -42,6 +42,13 @@ type Client struct {
 	RetryMaxBackoff     time.Duration
 	RetryMultiplier     float64
 	RetryJitter         float64
+	MaxReauthAttempts   int
+
+	// authMu serialises re-authentication so only one goroutine re-auths at a time.
+	authMu sync.Mutex
+	// tokenGen is bumped on every successful Authenticate(); workers compare
+	// their snapshot to decide whether someone else already refreshed the token.
+	tokenGen uint64
 }
 
 // NewClient creates a new CyberArk API client
@@ -71,6 +78,7 @@ func NewClient(baseURL, username, password string, insecure bool, caBundle strin
 		RetryMaxBackoff:     60 * time.Second,
 		RetryMultiplier:     2.0,
 		RetryJitter:         0.2,
+		MaxReauthAttempts:   5,
 	}
 }
 
@@ -86,7 +94,7 @@ func (c *Client) requestWithRetries(method, urlPath string, body interface{}, ti
 	attempt := 0
 	backoff := c.RetryInitialBackoff
 	reauthAttempts := 0
-	maxReauthAttempts := 2
+	maxReauthAttempts := c.MaxReauthAttempts
 
 	// Pre-marshal body once to avoid re-marshaling on each retry
 	var jsonData []byte
@@ -101,6 +109,11 @@ func (c *Client) requestWithRetries(method, urlPath string, body interface{}, ti
 	for {
 		attempt++
 		c.Logger.Debugf("Request attempt %d: %s %s", attempt, method, urlPath)
+
+		// Snapshot the current token generation before issuing the request.
+		// If we get a 401, we pass this to reauthIfNeeded so it can tell
+		// whether another goroutine already refreshed the token.
+		preReqGen := c.tokenGen
 
 		var bodyReader io.Reader
 		if jsonData != nil {
@@ -141,7 +154,7 @@ func (c *Client) requestWithRetries(method, urlPath string, body interface{}, ti
 				return nil, fmt.Errorf("authentication retries exhausted for %s (attempted %d times)", urlPath, reauthAttempts)
 			}
 			c.Logger.Warnf("HTTP 401 received for %s. Re-authenticating (re-auth attempt %d/%d)...", urlPath, reauthAttempts, maxReauthAttempts)
-			if err := c.Authenticate(); err != nil {
+			if err := c.reauthIfNeeded(preReqGen); err != nil {
 				return nil, fmt.Errorf("re-authentication failed: %w", err)
 			}
 
@@ -171,6 +184,26 @@ func (c *Client) requestWithRetries(method, urlPath string, body interface{}, ti
 				return nil, fmt.Errorf("HTTP %d: failed to read error response: %w", resp.StatusCode, readErr)
 			}
 			return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(bodyBytes))
+		}
+
+		// Guard against PVWA returning HTML (e.g. IIS login/error page) on
+		// an otherwise successful HTTP 200.  Every valid PVWA API response is
+		// JSON, so a non-JSON Content-Type is treated as a transient error
+		// and retried.
+		ct := resp.Header.Get("Content-Type")
+		if ct != "" && !strings.Contains(ct, "application/json") && !strings.Contains(ct, "text/json") {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			preview := string(bodyBytes)
+			if len(preview) > 200 {
+				preview = preview[:200] + "..."
+			}
+			c.Logger.Warnf("Non-JSON response (Content-Type: %s) for %s: %s", ct, urlPath, preview)
+			if maxRetries > 0 && attempt >= maxRetries {
+				return nil, fmt.Errorf("non-JSON response for %s (Content-Type: %s)", urlPath, ct)
+			}
+			c.throttleVariableDuration(backoff)
+			continue
 		}
 
 		if attempt > 1 {
@@ -261,6 +294,27 @@ func (c *Client) Authenticate() error {
 
 	c.Logger.Infof("Authenticated successfully (token length: %d chars)", len(c.Token))
 	c.Logger.Debugf("Token preview: %s...", truncateString(c.Token, 50))
+	return nil
+}
+
+// reauthIfNeeded performs single-flight re-authentication.  The caller passes
+// the tokenGen snapshot it observed *before* getting the 401.  Under the lock
+// we check whether another goroutine already refreshed the token; if so, we
+// skip the actual auth call and return immediately.
+func (c *Client) reauthIfNeeded(callerGen uint64) error {
+	c.authMu.Lock()
+	defer c.authMu.Unlock()
+
+	// Another goroutine already re-authenticated since our 401.
+	if c.tokenGen != callerGen {
+		c.Logger.Debugf("Skipping re-auth: token already refreshed (gen %d → %d)", callerGen, c.tokenGen)
+		return nil
+	}
+
+	if err := c.Authenticate(); err != nil {
+		return err
+	}
+	c.tokenGen++
 	return nil
 }
 
@@ -402,11 +456,15 @@ func (c *Client) ListAccounts(safeName, safeURLID string) ([]models.Account, err
 	accounts := make([]models.Account, 0)
 	limit := 1000
 	offset := 0
-	filterValue := fmt.Sprintf("safeName eq \"%s\"", safeName)
+	totalAPICount := 0
+	firstPage := true
+	filterValue := fmt.Sprintf("safeName eq %s", safeName)
 
 	for {
 		accountURL := fmt.Sprintf("%s/PasswordVault/API/Accounts?limit=%d&offset=%d&filter=%s",
 			c.BaseURL, limit, offset, url.QueryEscape(filterValue))
+
+		c.Logger.Debugf("ListAccounts request: %s", accountURL)
 
 		resp, err := c.requestWithRetries("GET", accountURL, nil, c.ReqTimeout, 3)
 		if err != nil {
@@ -415,12 +473,20 @@ func (c *Client) ListAccounts(safeName, safeURLID string) ([]models.Account, err
 
 		var data struct {
 			Value []models.Account `json:"value"`
+			Count int              `json:"count"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 			resp.Body.Close()
 			return nil, fmt.Errorf("failed to decode accounts response: %w", err)
 		}
 		resp.Body.Close()
+
+		c.Logger.Debugf("ListAccounts response for safe '%s': %d accounts in page, count=%d", safeName, len(data.Value), data.Count)
+
+		if firstPage {
+			totalAPICount = data.Count
+			firstPage = false
+		}
 
 		accounts = append(accounts, data.Value...)
 
@@ -429,6 +495,10 @@ func (c *Client) ListAccounts(safeName, safeURLID string) ([]models.Account, err
 		}
 
 		offset += limit
+	}
+
+	if totalAPICount > 0 && len(accounts) < totalAPICount {
+		c.Logger.Warnf("ListAccounts: API reports count=%d but collected only %d accounts for safe '%s'. Some accounts may be filtered by the server or inaccessible.", totalAPICount, len(accounts), safeName)
 	}
 
 	return accounts, nil
@@ -523,6 +593,28 @@ func (c *Client) GetAccountActivities(accountID string, limit int, daysBack *int
 	}
 
 	return activities, nil
+}
+
+// ListPlatforms retrieves all platforms via GET /API/Platforms/
+func (c *Client) ListPlatforms() ([]models.Platform, error) {
+	platformURL := fmt.Sprintf("%s/PasswordVault/API/Platforms/", c.BaseURL)
+
+	resp, err := c.requestWithRetries("GET", platformURL, nil, c.ReqTimeout, 3)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list platforms: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var data struct {
+		Platforms []models.Platform `json:"Platforms"`
+		Total     int               `json:"Total"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("failed to decode platforms response: %w", err)
+	}
+
+	c.Logger.Infof("Collected %d platforms", len(data.Platforms))
+	return data.Platforms, nil
 }
 
 // ListUsers retrieves all users

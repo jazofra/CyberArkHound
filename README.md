@@ -1,10 +1,8 @@
 ## CyberArkHound
 
-Export CyberArk PVWA data (users, groups, safes, accounts and permissions) into a BloodHound-compatible OpenGraph JSON file for security analysis and attack path visualization.
+Export CyberArk PVWA data (users, groups, safes, accounts, platforms and permissions) into a BloodHound-compatible OpenGraph JSON file for security analysis and attack path visualization.
 
-**🚀 Now available in Go!** The Go implementation offers significantly better performance (5-10x faster) with lower memory usage, making it ideal for large CyberArk environments.
-
-### Quick Start (Go Version)
+### Quick Start
 
 **Windows:**
 ```pwsh
@@ -44,6 +42,10 @@ The resulting `cyberark_export.json` file can be directly imported into BloodHou
 - **LDAP/Directory sync tracking**: Identify synced vs local users and groups
 - **External AD entity inference**: Automatic detection of relationships to Active Directory
 - **Account activity tracking**: Optional CyberArkUsedAccount edges showing actual usage patterns
+- **Linked account chain analysis**: Optional CyberArkLinkedTo edges mapping logon/reconcile/enable account dependencies for credential chain traversal
+- **Safe creator and CPM tracking**: CyberArkCreated and CyberArkManagedBy edges showing who created and manages each safe
+- **Platform-based grouping**: Optional CyberArkPlatform nodes and CyberArkUsesPlatform edges for shared attack surface analysis
+- **Dual control awareness**: CyberArkHasAccessTo edges include `requiresApproval` property; CyberArkCanApprove edges identify who can authorize dual-controlled access
 - **Enriched metadata**: Personal details, vault authorizations, safe permissions, account management status
 - **Safe permission tracking**: Per-user/group safe access with permission details
 - **External edges preserved**: AD sync relationships stored separately for cross-domain analysis
@@ -88,6 +90,8 @@ With 'list' and 'View Safe Members' on each safe, the tool can:
 - `GET /API/Accounts` - List accounts (filtered by safe)
 - `GET /API/Accounts/{accountId}` - Get account details
 - `GET /API/Accounts/{accountId}/Activities` - Get account activity logs (optional, requires `--include-activity`)
+- `GET /API/Accounts/{accountId}/LinkedAccounts` - Get linked accounts: logon, reconcile, enable (optional, requires `--include-linked-accounts`)
+- `GET /API/Platforms/Targets` - List target platforms (optional, requires `--include-platforms`)
 - `GET /API/Users` - List all users
 - `GET /API/UserGroups` - List all groups
 - `GET /API/UserGroups/{groupId}` - Get group details with members
@@ -103,8 +107,6 @@ With 'list' and 'View Safe Members' on each safe, the tool can:
 - Adding the user to the 'Auditors' groups is easy to provide required perms but grants too much access
 
 ### Installation
-
-#### Go Version (Recommended)
 
 **Requirements:**
 - Go 1.21 or later
@@ -126,20 +128,7 @@ go install ./cmd/cyberarkhound
 **Pre-built binaries:**
 Download pre-compiled binaries from the [Releases](https://github.com/jazofra/CyberArkHound/releases) page.
 
-#### Python Version (Legacy)
-
-Create and activate a virtual environment (recommended) then install dependencies:
-```pwsh
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
 ### Usage
-
-#### Go Version (Recommended)
-
-The Go implementation offers significantly better performance and is the recommended option for production use.
 
 **Basic usage:**
 ```pwsh
@@ -179,24 +168,8 @@ The Go implementation offers significantly better performance and is the recomme
 **Performance tips for large environments:**
 - Increase `--workers` to 100-200 for faster parallel processing
 - Use `--log-level WARNING` to reduce logging overhead
-- Allocate sufficient memory (Go typically uses 50-70% less than Python)
-
-#### Python Version (Legacy)
-
-Run the modular CLI:
-```pwsh
-python -m cyberarkhound.cli `
-	--pvwa https://pvwa.example.com `
-	--username api_user `
-	--password $Env:CYBERARK_PASSWORD `
-	--output export.json `
-	--target-domains corp.example.com lab.example.com
-```
-
-Legacy one-file entry point:
-```pwsh
-python CyberArkHound.py --help
-```
+- The tool uses efficient memory management with native goroutines for true parallelism
+- Re-authentication is single-flighted: when multiple workers receive HTTP 401 simultaneously, only one re-authenticates while the others wait and reuse the refreshed token — avoiding thundering-herd token churn
 
 ### Command-Line Arguments
 
@@ -216,11 +189,17 @@ python CyberArkHound.py --help
 - `--quiet` Suppress info/debug logs
 - `--debug` Enable debug logging with detailed diagnostics
 - `--log-level` Set logging level: DEBUG, INFO (default), WARNING, ERROR
+- `--safe-page-limit` Safes page size for pagination (default: 1000; lower can help slow PVWA)
+- `--max-reauth-attempts` Max re-authentication attempts on HTTP 401 before giving up (default: 5)
 
 **Activity Tracking:**
 - `--include-activity` Include account activity data (creates CyberArkUsedAccount edges)
 - `--activity-days` Number of days to look back for activity (default: 3)
 - `--activity-limit` Max activities per account to fetch from API (default: 100)
+
+**Linked Accounts & Platforms:**
+- `--include-linked-accounts` Include linked account data (creates CyberArkLinkedTo edges for logon/reconcile/enable account chains)
+- `--include-platforms` Include platform data (creates CyberArkPlatform nodes and CyberArkUsesPlatform edges)
 
 **Testing/Development:**
 - `--limit-users` Limit number of users to process (0 = no limit)
@@ -273,14 +252,23 @@ WHERE s.safeName CONTAINS "prod"
 RETURN u.name, s.safeName
 ```
 
-#### Other Edge Types
-- `CyberArkMemberOf`: User is member of a group
-- `CyberArkContains` (Safe → Account): Safe contains an account
-- `CyberArkUsedAccount` (User → Account): User has actively used/retrieved account (requires `--include-activity`)
-- `SyncsToCyberArkUser`: AD User syncs to CyberArk User (external edge)
-- `SyncsToCyberArkGroup`: AD Group syncs to CyberArk Group (external edge)
-- `SyncsToADUser`: CyberArk Account syncs to AD User (external edge)
-- `CyberArkCanConnect` : CyberArk Account can connect to AD Computer (external edge)
+#### Edge Types Summary
+
+| Edge | Direction | Source | Security Value |
+|------|-----------|--------|----------------|
+| `CyberArkHasAccessTo` | User/Group → Account | Safe member `useAccounts`/`retrieveAccounts` | Direct credential access; `requiresApproval` shows if dual control blocks retrieval |
+| `CyberArkCanGrantAccessTo` | User/Group → Safe | Safe member `manageSafe`/`manageSafeMembers` | Privilege escalation — can grant themselves account access |
+| `CyberArkCanApprove` | User/Group → Safe | Safe member `requestsAuthorizationLevel1`/`Level2` | Can approve dual-controlled access requests (L1/L2) |
+| `CyberArkUsedAccount` | User → Account | `GET /API/Accounts/{id}/Activities` | Actual usage audit trail — who really accessed what |
+| `CyberArkLinkedTo` | Account → Account | `GET /API/Accounts/{id}/LinkedAccounts` | Logon/reconcile/enable credential chains — compromising one propagates to all dependents |
+| `CyberArkCreated` | User → Safe | Existing `Safe.Creator` field | Shows who created each safe (implicit ownership/access) |
+| `CyberArkManagedBy` | CPM User → Safe | Existing `Safe.ManagingCPM` field | CPM accounts have privileged password management access |
+| `CyberArkUsesPlatform` | Account → Platform | `GET /API/Platforms/Targets` | Shared platform config = shared attack surface |
+| `CyberArkMemberOf` | User/Group → Group | Group membership data | Group-based permission inheritance |
+| `CyberArkContains` | Safe → Account | Account's `safeName` field | Safe-account containment relationship |
+| `SyncsToCyberArkUser` | AD User → CyberArkUser | LDAP DN with `DC=` | External edge — AD-to-CyberArk identity mapping |
+| `SyncsToCyberArkGroup` | AD Group → CyberArkGroup | LDAP DN with `DC=` | External edge — AD-to-CyberArk group mapping |
+| `SyncsToADUser` | CyberArkAccount → AD User | Account address matches target domain | External edge — credential-to-AD-user mapping |
 
 **Note**: Permissions like `listAccounts`, `viewAuditLog`, `addAccounts`, `updateAccountContent` do **not** create access edges as they don't allow password retrieval or account usage.
 
@@ -340,6 +328,158 @@ LIMIT 10
 - Activity fetching runs in parallel (50 threads) for optimal performance
 - Can be run separately from initial data collection for incremental updates
 
+#### Dual Control (Double Approval) Awareness
+CyberArk's dual control feature requires users to get approval before retrieving passwords. CyberArkHound detects this automatically from safe member permissions — no extra API calls or CLI flags needed.
+
+**CyberArk safe member permissions used for dual control detection:**
+
+| Permission | Type | Meaning |
+|------------|------|---------|
+| `accessWithoutConfirmation` | bool | Member can bypass dual control and retrieve passwords without approval |
+| `requestsAuthorizationLevel1` | bool | Member can approve Level 1 access requests from other users |
+| `requestsAuthorizationLevel2` | bool | Member can approve Level 2 access requests from other users |
+
+These permissions are already returned by the Safe Members API (`GET /API/Safes/{safeUrlId}/Members`) — no additional API calls are needed.
+
+**How it works:**
+- `CyberArkHasAccessTo` edges include a `requiresApproval` property (bool) indicating whether the member needs approval to retrieve passwords
+- A member with `retrieveAccounts=true` but `accessWithoutConfirmation=false` gets `requiresApproval: true`
+- A member with `accessWithoutConfirmation=true` gets `requiresApproval: false` (can bypass dual control)
+- `CyberArkCanApprove` edges (User/Group → Safe) identify who can approve access requests, with `approvalLevel` (1 or 2)
+
+**Edge Properties on CyberArkHasAccessTo:**
+- `requiresApproval`: `true` if the member needs approval from a dual control authorizer before retrieving passwords
+
+**CyberArkCanApprove Edge Properties:**
+- `approvalLevel`: Authorization level (1 or 2) — maps to `requestsAuthorizationLevel1` / `requestsAuthorizationLevel2` permissions
+
+**BloodHound Query Examples:**
+```cypher
+// Users who can retrieve passwords WITHOUT any approval (highest risk)
+MATCH (u:CyberArkUser)-[r:CyberArkHasAccessTo {requiresApproval: false}]->(a:CyberArkAccount)
+RETURN u.name, a.name, a.safeName
+
+// Users who REQUIRE approval — attack needs both accessor + approver
+MATCH (u:CyberArkUser)-[r:CyberArkHasAccessTo {requiresApproval: true}]->(a:CyberArkAccount)
+RETURN u.name, a.name, a.safeName
+
+// Find approvers who can unlock access for dual-controlled safes
+MATCH (approver)-[r:CyberArkCanApprove]->(s:CyberArkSafe)-[:CyberArkContains]->(a:CyberArkAccount)
+RETURN approver.name, r.approvalLevel, s.safeName, COLLECT(a.name)
+
+// Full dual control attack path: need BOTH a user with access AND an approver
+MATCH (u:CyberArkUser)-[access:CyberArkHasAccessTo {requiresApproval: true}]->(a:CyberArkAccount)
+MATCH (a)<-[:CyberArkContains]-(s:CyberArkSafe)<-[approve:CyberArkCanApprove]-(approver)
+RETURN u.name AS accessor, a.name AS account, approver.name AS approver, approve.approvalLevel
+
+// Users who are BOTH accessor and approver on the same safe (dual control bypass risk)
+MATCH (u)-[access:CyberArkHasAccessTo {requiresApproval: true}]->(a:CyberArkAccount)
+MATCH (a)<-[:CyberArkContains]-(s:CyberArkSafe)<-[:CyberArkCanApprove]-(u)
+RETURN u.name, s.safeName, COLLECT(a.name) AS selfApprovableAccounts
+```
+
+#### CyberArkLinkedTo (Account → Account) - Optional
+**Linked account dependencies** - Maps credential chains where one account depends on another for logon, reconciliation, or enablement:
+- Created when `--include-linked-accounts` flag is used
+- Based on CyberArk linked accounts via `/API/Accounts/{accountId}/LinkedAccounts`
+- Link types: `logon` (ExtraPassID=1), `enable` (ExtraPassID=2), `reconcile` (ExtraPassID=3)
+- Critical for attack path analysis: compromising a logon account gives access to all accounts that depend on it
+
+**Edge Properties**:
+- `linkType`: Type of link — `logon`, `enable`, `reconcile`, or `unknown`
+- `linkName`: Name of the linked account relationship
+- `safeName`: Safe containing the linked account
+
+**BloodHound Query Examples:**
+```cypher
+// Find all accounts that depend on a specific logon account
+MATCH (logon:CyberArkAccount {name: "svc-logon"})<-[r:CyberArkLinkedTo {linkType: "logon"}]-(a:CyberArkAccount)
+RETURN a.name, a.safeName
+
+// Find credential chains: accounts linked through logon accounts
+MATCH path = (a:CyberArkAccount)-[:CyberArkLinkedTo*1..3]->(target:CyberArkAccount)
+RETURN path
+
+// Find all reconcile account dependencies
+MATCH (a:CyberArkAccount)-[r:CyberArkLinkedTo {linkType: "reconcile"}]->(reconciler:CyberArkAccount)
+RETURN a.name, reconciler.name, reconciler.safeName
+
+// Attack path: user with access to a logon account can reach all dependent accounts
+MATCH (u:CyberArkUser)-[:CyberArkHasAccessTo]->(logon:CyberArkAccount)<-[:CyberArkLinkedTo {linkType: "logon"}]-(dependent:CyberArkAccount)
+RETURN u.name, logon.name, COLLECT(dependent.name) as dependentAccounts
+```
+
+**Performance Note**: Linked account fetching adds one API call per account. Runs in parallel (50 workers by default).
+
+#### CyberArkCreated (User → Safe)
+**Safe creator relationship** - Shows which user created each safe:
+- Always emitted (no extra API calls — uses existing `Safe.Creator` field)
+- Useful for understanding implicit access and ownership
+
+**Edge Properties**:
+- `creatorId`: The vault user ID of the creator
+
+**BloodHound Query Examples:**
+```cypher
+// Find all safes created by a user
+MATCH (u:CyberArkUser)-[:CyberArkCreated]->(s:CyberArkSafe)
+RETURN u.name, s.safeName
+
+// Find who created production safes
+MATCH (u:CyberArkUser)-[:CyberArkCreated]->(s:CyberArkSafe)
+WHERE s.safeName CONTAINS "prod"
+RETURN u.name, s.safeName
+
+// Find users who created safes AND can grant access to them
+MATCH (u:CyberArkUser)-[:CyberArkCreated]->(s:CyberArkSafe)
+WHERE (u)-[:CyberArkCanGrantAccessTo]->(s)
+RETURN u.name, s.safeName
+```
+
+#### CyberArkManagedBy (CPM User → Safe)
+**CPM management relationship** - Shows which CPM component manages password rotation for each safe:
+- Always emitted (no extra API calls — uses existing `Safe.ManagingCPM` field)
+- CPM accounts have privileged access to manage and rotate passwords
+
+**BloodHound Query Examples:**
+```cypher
+// Find all safes managed by a specific CPM
+MATCH (cpm:CyberArkUser)-[:CyberArkManagedBy]->(s:CyberArkSafe)
+WHERE cpm.name CONTAINS "CPM"
+RETURN cpm.name, COLLECT(s.safeName) as managedSafes
+
+// Find safes without CPM management (unmanaged passwords)
+MATCH (s:CyberArkSafe)
+WHERE NOT ()-[:CyberArkManagedBy]->(s)
+RETURN s.safeName
+
+// Find all accounts reachable through a CPM's managed safes
+MATCH (cpm:CyberArkUser)-[:CyberArkManagedBy]->(s:CyberArkSafe)-[:CyberArkContains]->(a:CyberArkAccount)
+RETURN cpm.name, COUNT(a) as accountCount
+```
+
+#### CyberArkUsesPlatform (Account → Platform) - Optional
+**Platform association** - Shows which platform configuration each account uses:
+- Created when `--include-platforms` flag is used
+- Creates `CyberArkPlatform` nodes from `/API/Platforms/Targets`
+- Accounts sharing a platform share configuration, policies, and potential vulnerabilities
+
+**BloodHound Query Examples:**
+```cypher
+// Find all accounts using a specific platform
+MATCH (a:CyberArkAccount)-[:CyberArkUsesPlatform]->(p:CyberArkPlatform {name: "WinServerLocal"})
+RETURN a.name, a.safeName
+
+// Find platforms with the most accounts (highest blast radius)
+MATCH (a:CyberArkAccount)-[:CyberArkUsesPlatform]->(p:CyberArkPlatform)
+RETURN p.name, p.systemType, COUNT(a) as accountCount
+ORDER BY accountCount DESC
+
+// Find inactive platforms still in use
+MATCH (a:CyberArkAccount)-[:CyberArkUsesPlatform]->(p:CyberArkPlatform {active: false})
+RETURN p.name, COUNT(a) as accountsOnInactivePlatform
+```
+
 ### Node Properties
 
 #### CyberArkUser Properties
@@ -370,11 +510,16 @@ LIMIT 10
 - **Identity**: `accountId`, `userName`, `platformId`, `address`
 - **BloodHound name**: `name` (set to `userName` to avoid collisions with AD user names in OpenGraph matching)
 - **Safe**: `safeName`, `safeUrlId`
-- **Status**: `status`, `disabled`, `secretType`
+- **Status**: `status`, `enabled`, `secretType`
 - **Management**: `automaticManagementEnabled`, `manualManagementReason`
 - **Timestamps**: `createdTime`, `lastModifiedTime`, `lastVerifiedTime`, `lastReconciledTime`, `categoryModificationTime`
 - **CPM**: `lastModifiedBy`
 - **Extended**: `platformAccountProperties` (JSON), `secretManagement` (JSON)
+
+#### CyberArkPlatform Properties (requires `--include-platforms`)
+- **Identity**: `platformId`, `name`
+- **Configuration**: `systemType`, `active`
+- **Metadata**: `description`
 
 ### Output
 The resulting JSON structure follows BloodHound OpenGraph schema:
@@ -459,7 +604,13 @@ flowchart TD
  CyberArkUser == CyberArkUsedAccount<br>(actual usage) ==> CyberArkAccount
  CyberArkUser -. CyberArkCanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArkSafe["fa:fa-vault CyberArkSafe"]
  CyberArkGroup -. CyberArkCanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArkSafe
+ CyberArkUser -. CyberArkCanApprove<br>(dual control) .-> CyberArkSafe
+ CyberArkGroup -. CyberArkCanApprove<br>(dual control) .-> CyberArkSafe
  CyberArkSafe -- CyberArkContains --> CyberArkAccount
+ CyberArkUser -. CyberArkCreated .-> CyberArkSafe
+ CyberArkUser -. CyberArkManagedBy<br>(CPM) .-> CyberArkSafe
+ CyberArkAccount -. CyberArkLinkedTo<br>(logon/reconcile/enable) .-> CyberArkAccount
+ CyberArkAccount -- CyberArkUsesPlatform --> CyberArkPlatform["fa:fa-server CyberArkPlatform"]
  style User fill:#17E625,stroke:#0B8A14,stroke-width:2px
  style Computer fill:#FCAEA3,stroke:DF7E71,stroke-widthg:2px
  style CyberArkUser fill:#BFD6E3,stroke:#7BA3C0,stroke-width:2px
@@ -467,12 +618,13 @@ flowchart TD
  style CyberArkGroup fill:#C8DCC0,stroke:#8FB888,stroke-width:2px
  style CyberArkAccount fill:#E7C8C8,stroke:#C09999,stroke-width:2px
  style CyberArkSafe fill:#E8D8B3,stroke:#C0AC7F,stroke-width:2px
+ style CyberArkPlatform fill:#D4B8D9,stroke:#A98CB3,stroke-width:2px
 ```
 
 **Legend:**
-- **Solid Lines** (→): Internal CyberArk relationships (membership, containment)
-- **Thick Lines** (⇒): Direct account access edges (permission-based)
-- **Dashed Lines** (⇢): External sync relationships, privilege escalation, or actual usage (audit-based)
+- **Solid Lines** (→): Internal CyberArk relationships (membership, containment, platform)
+- **Thick Lines** (⇒): Direct account access edges (permission-based or actual usage)
+- **Dashed Lines** (⇢): External sync relationships, privilege escalation, dual control approval, linked accounts, creator/CPM management
 
 ### BloodHound Custom Node Definitions
 The file `cyberark_model.json` defines custom node types (icons & colors) for BloodHound via the API Explorer `custom-nodes` endpoint:
@@ -480,10 +632,11 @@ The file `cyberark_model.json` defines custom node types (icons & colors) for Bl
 ```json
 {
 	"custom_types": {
-		"CyberArkAccount": {"icon": {"type": "font-awesome", "name": "user-secret", "color": "#E7C8C8"}},
-		"CyberArkGroup":   {"icon": {"type": "font-awesome", "name": "user-group",  "color": "#C8DCC0"}},
-		"CyberArkSafe":    {"icon": {"type": "font-awesome", "name": "vault",       "color": "#E8D8B3"}},
-		"CyberArkUser":    {"icon": {"type": "font-awesome", "name": "user",        "color": "#BFD6E3"}}
+		"CyberArkAccount":  {"icon": {"type": "font-awesome", "name": "user-secret", "color": "#E7C8C8"}},
+		"CyberArkGroup":    {"icon": {"type": "font-awesome", "name": "user-group",  "color": "#C8DCC0"}},
+		"CyberArkSafe":     {"icon": {"type": "font-awesome", "name": "vault",       "color": "#E8D8B3"}},
+		"CyberArkUser":     {"icon": {"type": "font-awesome", "name": "user",        "color": "#BFD6E3"}},
+		"CyberArkPlatform": {"icon": {"type": "font-awesome", "name": "server",      "color": "#D4B8D9"}}
 	}
 }
 ```
@@ -511,11 +664,7 @@ Use `--log-level` to control progress reporting frequency:
 
 **WARNING/ERROR** - Minimal output, only critical messages:
 ```pwsh
-# Go version
 .\cyberarkhound.exe --pvwa ... --log-level WARNING --output export.json --target-domains corp.com
-
-# Python version
-python -m cyberarkhound.cli --pvwa ... --log-level WARNING --output export.json --target-domains corp.com
 ```
 - Shows start/end of major phases
 - No intermediate progress updates
@@ -523,11 +672,7 @@ python -m cyberarkhound.cli --pvwa ... --log-level WARNING --output export.json 
 
 **INFO** (default) - Balanced progress updates:
 ```pwsh
-# Go version
 .\cyberarkhound.exe --pvwa ... --log-level INFO --output export.json --target-domains corp.com
-
-# Python version
-python -m cyberarkhound.cli --pvwa ... --log-level INFO --output export.json --target-domains corp.com
 ```
 - Progress every 50 users/groups
 - Progress every 20 safes
@@ -538,11 +683,7 @@ python -m cyberarkhound.cli --pvwa ... --log-level INFO --output export.json --t
 
 **DEBUG** - Detailed progress for troubleshooting:
 ```pwsh
-# Go version
 .\cyberarkhound.exe --pvwa ... --log-level DEBUG --output export.json --target-domains corp.com
-
-# Python version
-python -m cyberarkhound.cli --pvwa ... --log-level DEBUG --output export.json --target-domains corp.com
 ```
 - Progress every 10 users/groups
 - Progress every 5 safes
@@ -554,36 +695,6 @@ python -m cyberarkhound.cli --pvwa ... --log-level DEBUG --output export.json --
 #### Additional Logging Options
 - `--quiet` - Suppress most logging (overrides log-level)
 - `--debug` - Enable permission analysis diagnostics
-- Environment variable override (Python only):
-  ```pwsh
-  $Env:CYBERARKHOUND_LOG_LEVEL = "INFO"
-  python -m cyberarkhound.cli --pvwa ... --output export.json --target-domains corp.com
-  ```
-
-### Performance Comparison
-
-The Go implementation offers significant performance improvements over the Python version:
-
-| Metric | Python | Go | Improvement |
-|--------|--------|----|-----------| 
-| Processing Speed | Baseline | **5-10x faster** | Concurrent processing, compiled code |
-| Memory Usage | Baseline | **50-70% less** | Efficient memory management, no GC overhead |
-| Binary Size | ~50MB (with venv) | **~15MB** | Single compiled binary |
-| Startup Time | ~2-3s | **<100ms** | No interpreter/module loading |
-| Concurrency | ThreadPool (GIL limited) | **Native goroutines** | True parallelism |
-
-**Example benchmark** (1000 users, 50 groups, 200 safes, 5000 accounts):
-- Python: ~8-12 minutes
-- Go: ~1.5-2 minutes
-
-**Memory usage** during export:
-- Python: ~800MB-1.2GB peak
-- Go: ~250-400MB peak
-
-**Recommendations:**
-- Use **Go version** for production environments and large CyberArk deployments
-- Use **Python version** only if Go is not available or for development/debugging
-- For environments with 10,000+ accounts, Go version is strongly recommended
 
 #### Example Output (INFO level)
 ```
@@ -595,8 +706,33 @@ The Go implementation offers significant performance improvements over the Pytho
 [2025-11-24 10:15:30] INFO cyberarkhound: Processing 3000 accounts...
 [2025-11-24 10:15:35] INFO cyberarkhound:   Processed 100/3000 accounts (3.3%)
 ...
+[2025-11-24 10:16:45] INFO cyberarkhound: === Collection Summary ===
+[2025-11-24 10:16:45] INFO cyberarkhound: Total Nodes: 3780
+[2025-11-24 10:16:45] INFO cyberarkhound: Nodes by Type:
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkUser: 500
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkGroup: 80
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkSafe: 150
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkAccount: 3000
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkPlatform: 50
+[2025-11-24 10:16:45] INFO cyberarkhound: Total Internal Edges: 12350
+[2025-11-24 10:16:45] INFO cyberarkhound: Internal Edges by Type:
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkMemberOf: 620
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkContains: 3000
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkHasAccessTo: 4200
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkCanGrantAccessTo: 310
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkCanApprove: 95
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkCreated: 150
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkManagedBy: 140
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkUsedAccount: 785
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkLinkedTo: 2100
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkUsesPlatform: 950
+[2025-11-24 10:16:45] INFO cyberarkhound: Total External Edges: 1680
+[2025-11-24 10:16:45] INFO cyberarkhound: External Edges by Type:
+[2025-11-24 10:16:45] INFO cyberarkhound:   SyncsToCyberArkUser: 480
+[2025-11-24 10:16:45] INFO cyberarkhound:   SyncsToCyberArkGroup: 60
+[2025-11-24 10:16:45] INFO cyberarkhound:   SyncsToADUser: 1140
+[2025-11-24 10:16:45] INFO cyberarkhound: Memory stats: Alloc=85MB Sys=142MB NumGC=12
 [2025-11-24 10:16:45] INFO cyberarkhound: Writing JSON to file: export.json
-[2025-11-24 10:16:45] INFO cyberarkhound:   Total nodes: 3750, Total edges: 8500
 [2025-11-24 10:16:45] INFO cyberarkhound:   Writing compact JSON format...
 [2025-11-24 10:16:48] INFO cyberarkhound: Export complete! File written successfully.
 ```
@@ -610,16 +746,23 @@ The Go implementation offers significant performance improvements over the Pytho
 ### Development
 Module layout:
 ```
-cyberarkhound/
-	client.py      # API interactions
-	graph.py       # Graph construction
-	exporter.py    # Serialization to BloodHound JSON
-	utils.py       # Helpers (logging, property sanitation)
-	cli.py         # Argument parsing / orchestration
+cmd/cyberarkhound/
+    main.go            # CLI entry point / orchestration
+pkg/
+    client/
+        client.go      # CyberArk PVWA API client
+    models/
+        models.go      # Data structures for API responses
+    graph/
+        builder.go     # OpenGraph construction
+        pvwa_tag.go    # PVWA URL tagging algorithm
+        utils.go       # Graph utilities, permission maps
+    exporter/
+        exporter.go    # BloodHound JSON export
 ```
 
 ### Extending
-Add new edge types or property mappings inside `graph.py`. Keep transformations pure and avoid network calls there. For additional export formats create a new module (e.g. `neo4j_exporter.py`) and reuse the existing OpenGraph object.
+Add new edge types or property mappings inside `pkg/graph/builder.go`. Keep transformations pure and avoid network calls there. For additional export formats create a new package (e.g. `pkg/neo4j/exporter.go`) and reuse the existing OpenGraph object.
 
 ### Security Notes
 - Prefer supplying credentials via environment variables or a secure secret store.
@@ -632,19 +775,9 @@ Add new edge types or property mappings inside `graph.py`. Keep transformations 
 3. Keep changes small and focused; update README where behavior changes
 4. Submit PR describing rationale and any edge cases
 
-### Quick Dry Run (no real data)
-You can perform a structural dry run by mocking empty collections:
-```python
-from cyberarkhound.graph import build_opengraph
-from cyberarkhound.exporter import export_opengraph_to_bloodhound_json
-og, external = build_opengraph([], [], [], [], [], ["example.com"], debug=True)
-export_opengraph_to_bloodhound_json(og, external, "dryrun.json", debug=True)
-print("dryrun.json written")
-```
-
 ### Support
 
-Open issues for bugs or enhancement requests. Provide snippet of failing input and Python version.
+Open issues for bugs or enhancement requests.
 
 ## Acknowledgments
 Thank you to Siemens Healthineers for supporting this research and to my coworkers who have helped with its development.

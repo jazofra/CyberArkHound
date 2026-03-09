@@ -34,11 +34,16 @@ func main() {
 	requestTimeout := pflag.Duration("request-timeout", 360*time.Second, "HTTP request timeout (e.g. 10m, 600s)")
 	authTimeout := pflag.Duration("auth-timeout", 360*time.Second, "Authentication timeout (e.g. 2m, 120s)")
 	safePageLimit := pflag.Int("safe-page-limit", client.SafePageLimit, "Safes page size for /API/safes pagination (lower can help slow PVWA)")
+	maxReauthAttempts := pflag.Int("max-reauth-attempts", 5, "Max re-authentication attempts on HTTP 401 before giving up")
 
 	// Activity tracking flags
-	includeActivity := pflag.Bool("include-activity", false, "Include account activity data (creates CyberArkUsedAccount edges)")
+	includeActivity := pflag.Bool("include-activity", true, "Include account activity data (creates CyberArkUsedAccount edges)")
 	activityDays := pflag.Int("activity-days", 3, "Number of days to look back for activity")
 	activityLimit := pflag.Int("activity-limit", 100, "Max activities per account")
+
+	// Linked accounts and platforms flags
+	includeLinkedAccounts := pflag.Bool("include-linked-accounts", true, "Include linked account data (creates CyberArkLinkedTo edges for logon/reconcile/enable chains)")
+	includePlatforms := pflag.Bool("include-platforms", true, "Include platform data (creates CyberArkPlatform nodes and CyberArkUsesPlatform edges)")
 
 	// Testing limits
 	limitUsers := pflag.Int("limit-users", 0, "Limit number of users (0 = no limit)")
@@ -48,7 +53,7 @@ func main() {
 
 	pflag.Parse()
 
-	// Handle leftover arguments as target domains (supports space-separated domains)
+	// Handle leftover positional arguments as additional target domains
 	if len(pflag.Args()) > 0 {
 		*targetDomains = append(*targetDomains, pflag.Args()...)
 	}
@@ -62,7 +67,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --username string          API username\n")
 		fmt.Fprintf(os.Stderr, "  --password string          API password\n")
 		fmt.Fprintf(os.Stderr, "  --output string            Output JSON file\n")
-		fmt.Fprintf(os.Stderr, "  --target-domains strings   Target AD domains (comma-separated or space-separated)\n\n")
+		fmt.Fprintf(os.Stderr, "  --target-domains strings   Target AD domains (comma-separated, e.g. domain1.com,domain2.com)\n\n")
 		pflag.PrintDefaults()
 		os.Exit(1)
 	}
@@ -103,6 +108,7 @@ func main() {
 	apiClient.ReqTimeout = *requestTimeout
 	apiClient.AuthTimeout = *authTimeout
 	apiClient.SafePageLimit = *safePageLimit
+	apiClient.MaxReauthAttempts = *maxReauthAttempts
 	apiClient.HTTPClient.Timeout = apiClient.ReqTimeout
 
 	// Authenticate
@@ -162,6 +168,17 @@ func main() {
 		logger.Infof("Found %d safes matching '%s'", len(safes), *testSafe)
 	}
 
+	// Fetch platforms if requested
+	var platforms []models.Platform
+	if *includePlatforms {
+		logger.Info("Fetching platforms...")
+		platforms, err = apiClient.ListPlatforms()
+		if err != nil {
+			logger.Warnf("Failed to fetch platforms: %v", err)
+			platforms = []models.Platform{}
+		}
+	}
+
 	// --- Phase 1: Discovery (Parallel Safe Processing) ---
 	logger.Infof("Phase 1: Discovering members and accounts for %d safes...", len(safes))
 
@@ -218,6 +235,9 @@ func main() {
 
 	// Reset processed count for logging
 	processedAccounts := 0
+	skippedDisabled := 0
+	skippedArchived := 0
+	failedDetails := 0
 	var processedMu sync.Mutex
 
 	accountSemaphore := make(chan struct{}, *workers)
@@ -238,6 +258,9 @@ func main() {
 			details, err := apiClient.GetAccountDetails(accountID)
 			if err != nil {
 				logger.Warnf("Failed to get details for account %s: %v", accountID, err)
+				processedMu.Lock()
+				failedDetails++
+				processedMu.Unlock()
 				return
 			}
 
@@ -247,6 +270,14 @@ func main() {
 
 			// Skip disabled or archived accounts
 			if details.Disabled || details.Status == "Archived" {
+				processedMu.Lock()
+				if details.Disabled {
+					skippedDisabled++
+				}
+				if details.Status == "Archived" {
+					skippedArchived++
+				}
+				processedMu.Unlock()
 				return
 			}
 
@@ -265,7 +296,13 @@ func main() {
 	}
 
 	accountWg.Wait()
-	logger.Infof("Phase 2 Complete. Collected %d active accounts.", len(accounts))
+	if skippedDisabled > 0 || skippedArchived > 0 {
+		logger.Warnf("Phase 2: Skipped %d disabled and %d archived accounts out of %d total.", skippedDisabled, skippedArchived, len(skeletonAccounts))
+	}
+	if failedDetails > 0 {
+		logger.Warnf("Phase 2: Failed to retrieve details for %d out of %d accounts (API errors).", failedDetails, len(skeletonAccounts))
+	}
+	logger.Infof("Phase 2 Complete. Collected %d active accounts (discovered: %d, failed: %d, disabled: %d, archived: %d).", len(accounts), len(skeletonAccounts), failedDetails, skippedDisabled, skippedArchived)
 
 	// Fetch account activities if requested
 	var accountActivities map[string][]models.AccountActivity
@@ -329,6 +366,21 @@ func main() {
 		logger.Infof("Collected activities for %d accounts", len(accountActivities))
 	}
 
+	// Extract linked accounts from account details (populated by GetAccountDetails)
+	var linkedAccounts map[string][]models.LinkedAccount
+	if *includeLinkedAccounts && len(accounts) > 0 {
+		logger.Infof("Extracting linked accounts from %d accounts...", len(accounts))
+		linkedAccounts = make(map[string][]models.LinkedAccount)
+
+		for _, acc := range accounts {
+			if acc.ID != "" && len(acc.LinkedAccounts) > 0 {
+				linkedAccounts[acc.ID] = acc.LinkedAccounts
+			}
+		}
+
+		logger.Infof("Found linked accounts for %d accounts", len(linkedAccounts))
+	}
+
 	// Build OpenGraph
 	logger.Info("Building OpenGraph...")
 	og, err := graph.BuildOpenGraph(
@@ -341,6 +393,8 @@ func main() {
 		*parseSAMAccountName,
 		pvwaTag,
 		accountActivities,
+		platforms,
+		linkedAccounts,
 		logger,
 		*debug,
 		*logLevel,
