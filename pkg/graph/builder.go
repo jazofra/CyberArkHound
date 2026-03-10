@@ -319,7 +319,8 @@ func BuildOpenGraph(
 	}
 
 	// Process Platforms (if provided)
-	platformsByID := make(map[string]string) // platformID (string) -> platformNodeID
+	platformsByID := make(map[string]string)              // platformID (string) -> platformNodeID
+	platformDualControl := make(map[string]bool)          // platformID (lowercase) -> requireDualControlPasswordAccessApproval
 	if len(platforms) > 0 {
 		logger.Infof("Processing %d platforms...", len(platforms))
 		for _, p := range platforms {
@@ -395,13 +396,15 @@ func BuildOpenGraph(
 
 			platformsByID[pid] = platformNodeID
 			platformsByID[strings.ToLower(pid)] = platformNodeID
+			platformDualControl[strings.ToLower(pid)] = p.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval
 		}
 		logger.Infof("Indexed %d platform IDs for matching", len(platformsByID))
 	}
 
 	// Process Accounts
-	accountsBySafe := make(map[string][]string) // safeName -> []accountNodeIDs
-	accountsByID := make(map[string]string)     // accountID -> accountNodeID
+	accountsBySafe := make(map[string][]string)       // safeName -> []accountNodeIDs
+	accountsByID := make(map[string]string)            // accountID -> accountNodeID
+	accountPlatformID := make(map[string]string)       // accountNodeID -> platformID (lowercase)
 
 	logger.Infof("Processing %d accounts...", len(accounts))
 	for idx, a := range accounts {
@@ -463,6 +466,11 @@ func BuildOpenGraph(
 		})
 
 		accountsByID[a.ID] = accountNodeID
+
+		// Track account's platform for dual control determination
+		if a.PlatformID != "" {
+			accountPlatformID[accountNodeID] = strings.ToLower(a.PlatformID)
+		}
 
 		// CyberArkUsesPlatform edge (Account → Platform)
 		if a.PlatformID != "" {
@@ -553,10 +561,10 @@ func BuildOpenGraph(
 	// Process Safe Members and create permission edges
 	logger.Infof("Processing %d safe members...", len(safeMembers))
 
-	// Pre-compute which safes have dual control enabled.
-	// Dual control is active only when at least one member has L1 or L2 approval permissions.
-	// Without approvers, there is no approval workflow regardless of accessWithoutConfirmation.
-	safesWithDualControl := make(map[string]bool)
+	// Pre-compute which safes have approvers (members with L1/L2 authorization).
+	// This is used together with the platform's requireDualControlPasswordAccessApproval
+	// setting to determine whether dual control is practically enforceable for each account.
+	safesWithApprovers := make(map[string]bool)
 	for _, sm := range safeMembers {
 		for permKey, permVal := range sm.Permissions {
 			normKey := NormPermName(permKey)
@@ -568,7 +576,7 @@ func BuildOpenGraph(
 				isGranted = strings.ToLower(v) == "true"
 			}
 			if isGranted && (normKey == "requestsauthorizationlevel1" || normKey == "requestsauthorizationlevel2") {
-				safesWithDualControl[sm.SafeName] = true
+				safesWithApprovers[sm.SafeName] = true
 				break
 			}
 		}
@@ -685,12 +693,40 @@ func BuildOpenGraph(
 
 		// Create edges based on permissions
 		if hasDirectAccess {
-			// Create edges to each account in the safe
-			// Approval is only required when the safe has dual control (approvers exist)
-			// AND the member does not have accessWithoutConfirmation
-			requiresApproval := safesWithDualControl[sm.SafeName] && !accessWithoutConfirmation
+			// Create edges to each account in the safe.
+			// Dual control determination is per-account based on its platform's effective policy:
+			//
+			// 1. Primary: The platform's requireDualControlPasswordAccessApproval field
+			//    reflects the effective Master Policy (including platform-level exceptions).
+			//    This is the authoritative source for whether dual control is enabled.
+			//
+			// 2. Secondary: The safe must have at least one member with L1/L2 approval
+			//    permissions for dual control to be practically enforceable — without
+			//    approvers, no one can approve requests regardless of policy.
+			//
+			// 3. Bypass: A member with accessWithoutConfirmation=true can skip approval
+			//    even when dual control is active.
+			//
+			// When platform data is not available (--include-platforms not used), we fall
+			// back to the approver-presence heuristic: if the safe has members with L1/L2
+			// permissions, we assume dual control is likely intended.
 			accountsInSafe := accountsBySafe[sm.SafeName]
 			for _, accountNodeID := range accountsInSafe {
+				requiresApproval := false
+				if !accessWithoutConfirmation {
+					platID := accountPlatformID[accountNodeID]
+					_, platformLoaded := platformDualControl[platID]
+					if platID != "" && platformLoaded {
+						// Platform data available: use the authoritative policy setting,
+						// but only if the safe actually has approvers to enforce it
+						requiresApproval = platformDualControl[platID] && safesWithApprovers[sm.SafeName]
+					} else {
+						// No platform data for this account: fall back to approver-presence
+						// heuristic. This occurs when --include-platforms is not used, or when
+						// the account's platformId doesn't match any loaded platform.
+						requiresApproval = safesWithApprovers[sm.SafeName]
+					}
+				}
 				og.AddEdge("CyberArkHasAccessTo", memberNodeID, accountNodeID,
 					"id", "id", map[string]interface{}{
 						"safeName":         sm.SafeName,

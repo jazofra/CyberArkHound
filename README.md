@@ -45,7 +45,7 @@ The resulting `cyberark_export.json` file can be directly imported into BloodHou
 - **Linked account chain analysis**: Optional CyberArkLinkedTo edges mapping logon/reconcile/enable account dependencies for credential chain traversal
 - **Safe creator and CPM tracking**: CyberArkCreated and CyberArkManagedBy edges showing who created and manages each safe
 - **Platform-based grouping**: Optional CyberArkPlatform nodes and CyberArkUsesPlatform edges for shared attack surface analysis
-- **Dual control awareness**: CyberArkHasAccessTo edges include `requiresApproval` property; CyberArkCanApprove edges identify who can authorize dual-controlled access
+- **Dual control awareness**: Per-account `requiresApproval` derived from platform Master Policy settings (with approver-presence fallback); CyberArkCanApprove edges identify who can authorize dual-controlled access
 - **Enriched metadata**: Personal details, vault authorizations, safe permissions, account management status
 - **Safe permission tracking**: Per-user/group safe access with permission details
 - **External edges preserved**: AD sync relationships stored separately for cross-domain analysis
@@ -328,24 +328,44 @@ LIMIT 10
 - Activity fetching runs in parallel (50 threads) for optimal performance
 - Can be run separately from initial data collection for incremental updates
 
-#### Dual Control (Double Approval) Awareness
-CyberArk's dual control feature requires users to get approval before retrieving passwords. CyberArkHound detects this automatically from safe member permissions — no extra API calls or CLI flags needed.
+#### Dual Control (Access Confirmation) Awareness
+CyberArk's dual control feature requires users to get approval from authorized Safe members before retrieving passwords. CyberArkHound determines dual control status using a combination of platform policy data and safe member permissions.
 
-**CyberArk safe member permissions used for dual control detection:**
+**How CyberArk Dual Control works:**
 
-| Permission | Type | Meaning |
-|------------|------|---------|
+Dual control is governed by the **Master Policy** rule "Require dual control password access approval", which can be set globally or overridden per platform. The effective policy for each platform is exposed via the `GET /API/Platforms/` endpoint in the `privilegedAccessWorkflows.requireDualControlPasswordAccessApproval` field. Safe members with `requestsAuthorizationLevel1` or `requestsAuthorizationLevel2` permissions act as the **approvers** who confirm or reject access requests.
+
+**How CyberArkHound determines `requiresApproval`:**
+
+The `requiresApproval` property on `CyberArkHasAccessTo` edges is computed **per-account** using a layered approach:
+
+| Layer | Source | Check |
+|-------|--------|-------|
+| 1. Platform policy (primary) | `GET /API/Platforms/` → `requireDualControlPasswordAccessApproval` | Is dual control enabled for the account's platform in the effective Master Policy? |
+| 2. Approver presence (enforcement) | Safe member permissions → `requestsAuthorizationLevel1` / `Level2` | Does the safe have at least one member who can approve requests? Without approvers, dual control is unenforceable even if the policy enables it. |
+| 3. Member bypass | Safe member permissions → `accessWithoutConfirmation` | Can this specific member bypass dual control? If `true`, `requiresApproval` is always `false`. |
+
+An account's `requiresApproval` is `true` only when **all three conditions** are met:
+1. The account's platform has `requireDualControlPasswordAccessApproval: true`
+2. The safe has at least one member with L1/L2 approval permissions
+3. The accessing member does **not** have `accessWithoutConfirmation: true`
+
+**Fallback when platform data is unavailable:**
+When `--include-platforms` is not used, the platform policy cannot be checked. In this case, CyberArkHound falls back to an **approver-presence heuristic**: if the safe has members with L1/L2 approval permissions, dual control is assumed to be active. This can produce false positives (e.g., approver permissions exist from a template but the Master Policy has dual control disabled). Use `--include-platforms` for accurate dual control detection.
+
+**CyberArk safe member permissions used:**
+
+| Permission | Type | Role |
+|------------|------|------|
 | `accessWithoutConfirmation` | bool | Member can bypass dual control and retrieve passwords without approval |
 | `requestsAuthorizationLevel1` | bool | Member can approve Level 1 access requests from other users |
 | `requestsAuthorizationLevel2` | bool | Member can approve Level 2 access requests from other users |
 
-These permissions are already returned by the Safe Members API (`GET /API/Safes/{safeUrlId}/Members`) — no additional API calls are needed.
+**Platform policy field used (requires `--include-platforms`):**
 
-**How it works:**
-- `CyberArkHasAccessTo` edges include a `requiresApproval` property (bool) indicating whether the member needs approval to retrieve passwords
-- A member with `retrieveAccounts=true` but `accessWithoutConfirmation=false` gets `requiresApproval: true`
-- A member with `accessWithoutConfirmation=true` gets `requiresApproval: false` (can bypass dual control)
-- `CyberArkCanApprove` edges (User/Group → Safe) identify who can approve access requests, with `approvalLevel` (1 or 2)
+| Field | Source | Meaning |
+|-------|--------|---------|
+| `requireDualControlPasswordAccessApproval` | `GET /API/Platforms/` → `privilegedAccessWorkflows` | The effective Master Policy setting for this platform, including any platform-level exceptions |
 
 **Edge Properties on CyberArkHasAccessTo:**
 - `requiresApproval`: `true` if the member needs approval from a dual control authorizer before retrieving passwords
@@ -376,6 +396,16 @@ RETURN u.name AS accessor, a.name AS account, approver.name AS approver, approve
 MATCH (u)-[access:CyberArkHasAccessTo {requiresApproval: true}]->(a:CyberArkAccount)
 MATCH (a)<-[:CyberArkContains]-(s:CyberArkSafe)<-[:CyberArkCanApprove]-(u)
 RETURN u.name, s.safeName, COLLECT(a.name) AS selfApprovableAccounts
+
+// Find platforms where dual control is enabled
+MATCH (p:CyberArkPlatform {requireDualControlPasswordAccessApproval: true})
+RETURN p.name, p.systemType
+
+// Accounts on dual-control platforms but in safes without approvers (policy misconfiguration)
+MATCH (a:CyberArkAccount)-[:CyberArkUsesPlatform]->(p:CyberArkPlatform {requireDualControlPasswordAccessApproval: true})
+MATCH (s:CyberArkSafe)-[:CyberArkContains]->(a)
+WHERE NOT ()-[:CyberArkCanApprove]->(s)
+RETURN a.name, s.safeName, p.name AS platform
 ```
 
 #### CyberArkLinkedTo (Account → Account) - Optional
