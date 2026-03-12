@@ -269,6 +269,7 @@ RETURN u.name, s.safeName
 | `SyncsToCyberArkUser` | AD User → CyberArkUser | LDAP DN with `DC=` | External edge — AD-to-CyberArk identity mapping |
 | `SyncsToCyberArkGroup` | AD Group → CyberArkGroup | LDAP DN with `DC=` | External edge — AD-to-CyberArk group mapping |
 | `SyncsToADUser` | CyberArkAccount → AD User | Account address matches target domain | External edge — credential-to-AD-user mapping |
+| `CyberArkCanConnect` | CyberArkAccount → AD Computer | Account address matches address subdomain of the target domain (Local accounts) | External edge — credential-to-AD-computer mapping |
 
 **Note**: Permissions like `listAccounts`, `viewAuditLog`, `addAccounts`, `updateAccountContent` do **not** create access edges as they don't allow password retrieval or account usage.
 
@@ -813,5 +814,6 @@ Open issues for bugs or enhancement requests.
 Thank you to Siemens Healthineers for supporting this research and to my coworkers who have helped with its development.
 
 - Julian Garcia - for cooperating with this research, and for offering valuable perspective for coding practices.
+
 
 
