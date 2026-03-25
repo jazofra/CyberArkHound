@@ -369,6 +369,8 @@ When `--include-platforms` is not used, the platform policy cannot be checked. I
 
 **Edge Properties on CyberArkHasAccessTo:**
 - `requiresApproval`: `true` if the member needs approval from a dual control authorizer before retrieving passwords
+- `requiresSessionMonitoring`: `true` if the account's platform requires PSM session monitoring and isolation
+- `recordsSessionActivity`: `true` if the account's platform records and saves session activity
 
 **CyberArkCanApprove Edge Properties:**
 - `approvalLevel`: Authorization level (1 or 2) — maps to `requestsAuthorizationLevel1` / `requestsAuthorizationLevel2` permissions
@@ -406,6 +408,25 @@ MATCH (a:CyberArkAccount)-[:CyberArkUsesPlatform]->(p:CyberArkPlatform {requireD
 MATCH (s:CyberArkSafe)-[:CyberArkContains]->(a)
 WHERE NOT ()-[:CyberArkCanApprove]->(s)
 RETURN a.name, s.safeName, p.name AS platform
+
+// High-risk: accounts accessible WITHOUT session monitoring
+MATCH (u:CyberArkUser)-[r:CyberArkHasAccessTo {requiresSessionMonitoring: false}]->(a:CyberArkAccount)
+RETURN u.name, a.name, a.safeName
+
+// Platforms that support RDP connections
+MATCH (p:CyberArkPlatform)
+WHERE 'PSM-RDP' IN p.connectionComponents
+RETURN p.name, p.connectionComponents
+
+// Platforms where dual control is DISABLED as an exception to Master Policy (high priority audit finding)
+MATCH (p:CyberArkPlatform)
+WHERE p.requireDualControlPasswordAccessApproval = false AND p.dualControlIsException = true
+RETURN p.name, p.systemType
+
+// Platforms where session monitoring is disabled as a Master Policy exception
+MATCH (p:CyberArkPlatform)
+WHERE p.requirePrivilegedSessionMonitoringAndIsolation = false AND p.sessionMonitoringIsException = true
+RETURN p.name, p.systemType
 ```
 
 #### CyberArkLinkedTo (Account → Account) - Optional
@@ -550,6 +571,8 @@ RETURN p.name, COUNT(a) as accountsOnInactivePlatform
 - **Identity**: `platformId`, `name`
 - **Configuration**: `systemType`, `active`
 - **Metadata**: `description`
+- **Connection Components**: `connectionComponents` (list of enabled PSM connector IDs, e.g., `["PSM-RDP", "PSM-SSH"]`)
+- **Master Policy Exception Flags**: `dualControlIsException`, `exclusiveAccessIsException`, `otpIsException`, `sessionMonitoringIsException`, `sessionRecordingIsException` — `true` when the platform's setting deviates from the Master Policy default
 
 ### Output
 The resulting JSON structure follows BloodHound OpenGraph schema:

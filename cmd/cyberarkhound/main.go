@@ -170,12 +170,39 @@ func main() {
 
 	// Fetch platforms if requested
 	var platforms []models.Platform
+	var platformConnectors map[string][]string
+	var targetPlatforms []models.TargetPlatform
 	if *includePlatforms {
 		logger.Info("Fetching platforms...")
 		platforms, err = apiClient.ListPlatforms()
 		if err != nil {
 			logger.Warnf("Failed to fetch platforms: %v", err)
 			platforms = []models.Platform{}
+		}
+
+		// Fetch PSM connection components per platform
+		if len(platforms) > 0 {
+			logger.Info("Fetching PSM connection components per platform...")
+			platformIDs := make([]string, 0, len(platforms))
+			for _, p := range platforms {
+				pid := p.General.ID
+				if pid == "" {
+					pid = p.General.Name
+				}
+				if pid != "" {
+					platformIDs = append(platformIDs, pid)
+				}
+			}
+			platformConnectors = apiClient.GetAllPlatformPSMConnectors(platformIDs, *workers)
+			logger.Infof("Fetched PSM connectors for %d platforms", len(platformConnectors))
+		}
+
+		// Fetch target platform data for Master Policy exception flags
+		logger.Info("Fetching platform exception data...")
+		targetPlatforms, err = apiClient.ListTargetPlatforms()
+		if err != nil {
+			logger.Warnf("Failed to fetch target platform data: %v (exception flags will be omitted)", err)
+			targetPlatforms = nil
 		}
 	}
 
@@ -394,6 +421,8 @@ func main() {
 		pvwaTag,
 		accountActivities,
 		platforms,
+		platformConnectors,
+		targetPlatforms,
 		linkedAccounts,
 		logger,
 		*debug,

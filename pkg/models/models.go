@@ -213,3 +213,43 @@ type Platform struct {
 	SessionManagement        PlatformSessionManagement         `json:"sessionManagement"`
 	PrivilegedAccessWorkflows PlatformPrivilegedAccessWorkflows `json:"privilegedAccessWorkflows"`
 }
+
+// PSMConnector represents a PSM connection component for a platform
+type PSMConnector struct {
+	PSMConnectorID string `json:"PSMConnectorID"`
+	Enabled        bool   `json:"Enabled"`
+}
+
+// PlatformPSMConfig represents the privileged session management config from the Targets endpoint
+type PlatformPSMConfig struct {
+	PSMConnectors []PSMConnector `json:"PSMConnectors"`
+}
+
+// WorkflowRule represents a workflow setting with Master Policy exception info
+type WorkflowRule struct {
+	IsActive      bool `json:"IsActive"`
+	IsAnException bool `json:"IsAnException"`
+}
+
+// TargetPlatformWorkflows holds workflow rules from GET /API/Platforms/Targets
+type TargetPlatformWorkflows struct {
+	RequireDualControlPasswordAccessApproval WorkflowRule `json:"RequireDualControlPasswordAccessApproval"`
+	EnforceCheckinCheckoutExclusiveAccess    WorkflowRule `json:"EnforceCheckinCheckoutExclusiveAccess"`
+	EnforceOnetimePasswordAccess             WorkflowRule `json:"EnforceOnetimePasswordAccess"`
+}
+
+// TargetPlatformSessionManagement holds session management from the Targets endpoint
+type TargetPlatformSessionManagement struct {
+	RequirePrivilegedSessionMonitoringAndIsolation WorkflowRule `json:"RequirePrivilegedSessionMonitoringAndIsolation"`
+	RecordAndSaveSessionActivity                   WorkflowRule `json:"RecordAndSaveSessionActivity"`
+	PSMServerID                                    string       `json:"PSMServerID"`
+}
+
+// TargetPlatform represents a platform from GET /API/Platforms/Targets with exception metadata
+type TargetPlatform struct {
+	ID                        int                              `json:"ID"`
+	PlatformID                string                           `json:"PlatformID"`
+	Name                      string                           `json:"Name"`
+	PrivilegedAccessWorkflows TargetPlatformWorkflows          `json:"PrivilegedAccessWorkflows"`
+	SessionManagement         TargetPlatformSessionManagement  `json:"PrivilegedSessionManagement"`
+}

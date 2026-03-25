@@ -20,6 +20,8 @@ func BuildOpenGraph(
 	pvwaTag string,
 	accountActivities map[string][]models.AccountActivity,
 	platforms []models.Platform,
+	platformConnectors map[string][]string,
+	targetPlatforms []models.TargetPlatform,
 	linkedAccounts map[string][]models.LinkedAccount,
 	logger *logrus.Logger,
 	debug bool,
@@ -321,6 +323,8 @@ func BuildOpenGraph(
 	// Process Platforms (if provided)
 	platformsByID := make(map[string]string)              // platformID (string) -> platformNodeID
 	platformDualControl := make(map[string]bool)          // platformID (lowercase) -> requireDualControlPasswordAccessApproval
+	platformSessionMonitoring := make(map[string]bool)   // platformID (lowercase) -> requirePrivilegedSessionMonitoringAndIsolation
+	platformSessionRecording := make(map[string]bool)    // platformID (lowercase) -> recordAndSaveSessionActivity
 	if len(platforms) > 0 {
 		logger.Infof("Processing %d platforms...", len(platforms))
 		for _, p := range platforms {
@@ -388,6 +392,13 @@ func BuildOpenGraph(
 				"enforceOnetimePasswordAccess":             p.PrivilegedAccessWorkflows.EnforceOnetimePasswordAccess,
 			}
 
+			// Add connection components if available
+			if platformConnectors != nil {
+				if connectors, ok := platformConnectors[pid]; ok {
+					props["connectionComponents"] = connectors
+				}
+			}
+
 			og.MergeNode(&Node{
 				ID:         platformNodeID,
 				Kinds:      []string{"CyberArkPlatform", "CyberArkBase"},
@@ -397,8 +408,41 @@ func BuildOpenGraph(
 			platformsByID[pid] = platformNodeID
 			platformsByID[strings.ToLower(pid)] = platformNodeID
 			platformDualControl[strings.ToLower(pid)] = p.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval
+			platformSessionMonitoring[strings.ToLower(pid)] = p.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation
+			platformSessionRecording[strings.ToLower(pid)] = p.SessionManagement.RecordAndSaveSessionActivity
 		}
 		logger.Infof("Indexed %d platform IDs for matching", len(platformsByID))
+	}
+
+	// Enrich platform nodes with Master Policy exception flags from Targets endpoint
+	if len(targetPlatforms) > 0 {
+		logger.Infof("Processing %d target platform exception flags...", len(targetPlatforms))
+		for _, tp := range targetPlatforms {
+			tpID := tp.PlatformID
+			if tpID == "" {
+				tpID = tp.Name
+			}
+			if tpID == "" {
+				continue
+			}
+			platformNodeID, ok := platformsByID[tpID]
+			if !ok {
+				platformNodeID, ok = platformsByID[strings.ToLower(tpID)]
+			}
+			if !ok {
+				continue
+			}
+
+			// Merge exception flags into the existing platform node
+			node := og.Nodes[platformNodeID]
+			if node != nil {
+				node.Properties["dualControlIsException"] = tp.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval.IsAnException
+				node.Properties["exclusiveAccessIsException"] = tp.PrivilegedAccessWorkflows.EnforceCheckinCheckoutExclusiveAccess.IsAnException
+				node.Properties["otpIsException"] = tp.PrivilegedAccessWorkflows.EnforceOnetimePasswordAccess.IsAnException
+				node.Properties["sessionMonitoringIsException"] = tp.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation.IsAnException
+				node.Properties["sessionRecordingIsException"] = tp.SessionManagement.RecordAndSaveSessionActivity.IsAnException
+			}
+		}
 	}
 
 	// Process Accounts
@@ -712,9 +756,9 @@ func BuildOpenGraph(
 			// permissions, we assume dual control is likely intended.
 			accountsInSafe := accountsBySafe[sm.SafeName]
 			for _, accountNodeID := range accountsInSafe {
+				platID := accountPlatformID[accountNodeID]
 				requiresApproval := false
 				if !accessWithoutConfirmation {
-					platID := accountPlatformID[accountNodeID]
 					_, platformLoaded := platformDualControl[platID]
 					if platID != "" && platformLoaded {
 						// Platform data available: use the authoritative policy setting,
@@ -727,12 +771,22 @@ func BuildOpenGraph(
 						requiresApproval = safesWithApprovers[sm.SafeName]
 					}
 				}
+				// Look up session management properties from the account's platform
+				requiresSessionMonitoring := false
+				recordsSessionActivity := false
+				if platID != "" {
+					requiresSessionMonitoring = platformSessionMonitoring[platID]
+					recordsSessionActivity = platformSessionRecording[platID]
+				}
+
 				og.AddEdge("CyberArkHasAccessTo", memberNodeID, accountNodeID,
 					"id", "id", map[string]interface{}{
-						"safeName":         sm.SafeName,
-						"permissions":      matchedPermNames,
-						"inferred":         false,
-						"requiresApproval": requiresApproval,
+						"safeName":                  sm.SafeName,
+						"permissions":               matchedPermNames,
+						"inferred":                  false,
+						"requiresApproval":          requiresApproval,
+						"requiresSessionMonitoring": requiresSessionMonitoring,
+						"recordsSessionActivity":    recordsSessionActivity,
 					}, false)
 			}
 		}

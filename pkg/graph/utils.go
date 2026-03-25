@@ -246,6 +246,10 @@ func SanitizeProperties(props map[string]interface{}) map[string]interface{} {
 		switch v := value.(type) {
 		case string, int, float64, bool, int64, int32:
 			sanitized[key] = value
+		case []string:
+			if len(v) > 0 {
+				sanitized[key] = value
+			}
 		case []interface{}:
 			if len(v) == 0 {
 				continue
