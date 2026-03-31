@@ -941,8 +941,28 @@ func TestPlatformFallbackFromTargets(t *testing.T) {
 		{
 			PlatformID: "WinServer",
 			Name:       "WinServer",
+			Active:     true,
+			SystemType: "Windows",
+			AllowedSafes: ".*",
 			PrivilegedAccessWorkflows: models.TargetPlatformWorkflows{
-				RequireDualControlPasswordAccessApproval: models.WorkflowRule{IsActive: true, IsAnException: true},
+				RequireDualControlPasswordAccessApproval:    models.WorkflowRule{IsActive: true, IsAnException: true},
+				RequireUsersToSpecifyReasonForAccess:        models.WorkflowRule{IsActive: true, IsAnException: false},
+			},
+			CredentialsManagementPolicy: models.TargetCredentialsManagementPolicy{
+				Verification: models.TargetCredentialVerification{
+					PerformAutomatic:      true,
+					RequirePasswordEveryXDays: 7,
+					AllowManual:           true,
+				},
+				Change: models.TargetCredentialChange{
+					PerformAutomatic:      false,
+					RequirePasswordEveryXDays: 90,
+					AllowManual:           true,
+				},
+				Reconcile: models.TargetCredentialReconcile{
+					AutomaticReconcileWhenUnsynced: true,
+					AllowManual:                    true,
+				},
 			},
 			SessionManagement: models.TargetPlatformSessionManagement{
 				PSMServerID:                                    "PSMServer_abc123",
@@ -971,6 +991,24 @@ func TestPlatformFallbackFromTargets(t *testing.T) {
 	}
 	if node.Properties["psmServerID"] != "PSMServer_abc123" {
 		t.Errorf("expected psmServerID=PSMServer_abc123, got %v", node.Properties["psmServerID"])
+	}
+	if node.Properties["active"] != true {
+		t.Errorf("expected active=true, got %v", node.Properties["active"])
+	}
+	if node.Properties["systemType"] != "Windows" {
+		t.Errorf("expected systemType=Windows, got %v", node.Properties["systemType"])
+	}
+	if node.Properties["allowedSafes"] != ".*" {
+		t.Errorf("expected allowedSafes=.*, got %v", node.Properties["allowedSafes"])
+	}
+	if node.Properties["requireUsersToSpecifyReasonForAccess"] != true {
+		t.Errorf("expected requireUsersToSpecifyReasonForAccess=true, got %v", node.Properties["requireUsersToSpecifyReasonForAccess"])
+	}
+	if node.Properties["performPeriodicVerification"] != true {
+		t.Errorf("expected performPeriodicVerification=true, got %v", node.Properties["performPeriodicVerification"])
+	}
+	if node.Properties["automaticReconcileWhenUnsynched"] != true {
+		t.Errorf("expected automaticReconcileWhenUnsynched=true, got %v", node.Properties["automaticReconcileWhenUnsynched"])
 	}
 
 	// Exception flags should still be set

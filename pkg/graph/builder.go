@@ -440,19 +440,43 @@ func BuildOpenGraph(
 			}
 
 			if !ok {
-				// Fallback: create a basic platform node from target data when
+				// Fallback: create a rich platform node from target data when
 				// the full /API/Platforms/ endpoint was unavailable.
 				platformNodeID = strings.ToUpper(fmt.Sprintf("caplatform-%s-%s", tpID, pvwaTag))
 				props := map[string]interface{}{
 					"id":         platformNodeID,
 					"name":       tp.Name,
 					"platformId": tpID,
+					"active":     tp.Active,
+					"systemType": tp.SystemType,
 					"psmServerID": tp.SessionManagement.PSMServerID,
+
+					// Session management (from IsActive flags)
 					"requirePrivilegedSessionMonitoringAndIsolation": tp.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation.IsActive,
 					"recordAndSaveSessionActivity":                   tp.SessionManagement.RecordAndSaveSessionActivity.IsActive,
-					"requireDualControlPasswordAccessApproval":       tp.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval.IsActive,
-					"enforceCheckinCheckoutExclusiveAccess":          tp.PrivilegedAccessWorkflows.EnforceCheckinCheckoutExclusiveAccess.IsActive,
-					"enforceOnetimePasswordAccess":                   tp.PrivilegedAccessWorkflows.EnforceOnetimePasswordAccess.IsActive,
+
+					// Privileged access workflows
+					"requireDualControlPasswordAccessApproval": tp.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval.IsActive,
+					"enforceCheckinCheckoutExclusiveAccess":    tp.PrivilegedAccessWorkflows.EnforceCheckinCheckoutExclusiveAccess.IsActive,
+					"enforceOnetimePasswordAccess":             tp.PrivilegedAccessWorkflows.EnforceOnetimePasswordAccess.IsActive,
+					"requireUsersToSpecifyReasonForAccess":     tp.PrivilegedAccessWorkflows.RequireUsersToSpecifyReasonForAccess.IsActive,
+
+					// Credentials management
+					"allowedSafes":                          tp.AllowedSafes,
+					"performPeriodicVerification":           tp.CredentialsManagementPolicy.Verification.PerformAutomatic,
+					"requirePasswordVerificationEveryXDays": tp.CredentialsManagementPolicy.Verification.RequirePasswordEveryXDays,
+					"allowManualVerification":               tp.CredentialsManagementPolicy.Verification.AllowManual,
+					"performPeriodicChange":                 tp.CredentialsManagementPolicy.Change.PerformAutomatic,
+					"requirePasswordChangeEveryXDays":       tp.CredentialsManagementPolicy.Change.RequirePasswordEveryXDays,
+					"allowManualChange":                     tp.CredentialsManagementPolicy.Change.AllowManual,
+					"automaticReconcileWhenUnsynched":       tp.CredentialsManagementPolicy.Reconcile.AutomaticReconcileWhenUnsynced,
+					"allowManualReconciliation":             tp.CredentialsManagementPolicy.Reconcile.AllowManual,
+					"changePasswordInResetMode":             tp.CredentialsManagementPolicy.SecretUpdateConfiguration.ChangePasswordInResetMode,
+
+					// Credential management exception flags
+					"verificationFrequencyIsException": tp.CredentialsManagementPolicy.Verification.IsRequirePasswordEveryXDaysAnException,
+					"changeFrequencyIsException":       tp.CredentialsManagementPolicy.Change.IsRequirePasswordEveryXDaysAnException,
+
 					"dataSource": "targets-fallback",
 				}
 				og.MergeNode(&Node{
@@ -477,6 +501,7 @@ func BuildOpenGraph(
 				node.Properties["dualControlIsException"] = tp.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval.IsAnException
 				node.Properties["exclusiveAccessIsException"] = tp.PrivilegedAccessWorkflows.EnforceCheckinCheckoutExclusiveAccess.IsAnException
 				node.Properties["otpIsException"] = tp.PrivilegedAccessWorkflows.EnforceOnetimePasswordAccess.IsAnException
+				node.Properties["reasonForAccessIsException"] = tp.PrivilegedAccessWorkflows.RequireUsersToSpecifyReasonForAccess.IsAnException
 				node.Properties["sessionMonitoringIsException"] = tp.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation.IsAnException
 				node.Properties["sessionRecordingIsException"] = tp.SessionManagement.RecordAndSaveSessionActivity.IsAnException
 			}
