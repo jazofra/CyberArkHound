@@ -754,3 +754,130 @@ func (c *Client) ListGroups(limitCount *int, concurrency int) ([]models.Group, e
 	c.Logger.Infof("Collected %d groups (enriched)", len(enrichedGroups))
 	return enrichedGroups, nil
 }
+
+// GetPlatformPSMConnectors retrieves PSM connection components for a specific platform
+func (c *Client) GetPlatformPSMConnectors(platformID string) ([]models.PSMConnector, error) {
+	connURL := fmt.Sprintf("%s/PasswordVault/API/Platforms/Targets/%s/PrivilegedSessionManagement",
+		c.BaseURL, url.PathEscape(platformID))
+
+	resp, err := c.requestWithRetries("GET", connURL, nil, c.ReqTimeout, 3)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get PSM connectors for platform %s: %w", platformID, err)
+	}
+	defer resp.Body.Close()
+
+	var config models.PlatformPSMConfig
+	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
+		return nil, fmt.Errorf("failed to decode PSM connectors response for platform %s: %w", platformID, err)
+	}
+
+	return config.PSMConnectors, nil
+}
+
+// GetAllPlatformPSMConnectors fetches PSM connectors for multiple platforms concurrently.
+// Returns a map of platformID -> enabled connector IDs.
+func (c *Client) GetAllPlatformPSMConnectors(platformIDs []string, concurrency int) map[string][]string {
+	if concurrency <= 0 {
+		concurrency = 50
+	}
+
+	result := make(map[string][]string)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	semaphore := make(chan struct{}, concurrency)
+
+	for _, pid := range platformIDs {
+		wg.Add(1)
+		go func(platformID string) {
+			defer wg.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			connectors, err := c.GetPlatformPSMConnectors(platformID)
+			if err != nil {
+				c.Logger.Warnf("Failed to fetch PSM connectors for platform %s: %v", platformID, err)
+				return
+			}
+
+			var enabled []string
+			for _, conn := range connectors {
+				if conn.Enabled {
+					enabled = append(enabled, conn.PSMConnectorID)
+				}
+			}
+
+			if len(enabled) > 0 {
+				mu.Lock()
+				result[platformID] = enabled
+				mu.Unlock()
+			}
+		}(pid)
+	}
+
+	wg.Wait()
+	return result
+}
+
+// ListTargetPlatforms retrieves platforms via GET /API/Platforms/Targets
+// which includes IsAnException metadata for workflow rules.
+func (c *Client) ListTargetPlatforms() ([]models.TargetPlatform, error) {
+	platformURL := fmt.Sprintf("%s/PasswordVault/API/Platforms/Targets", c.BaseURL)
+
+	resp, err := c.requestWithRetries("GET", platformURL, nil, c.ReqTimeout, 3)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list target platforms: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var data struct {
+		Platforms []models.TargetPlatform `json:"Platforms"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("failed to decode target platforms response: %w", err)
+	}
+
+	c.Logger.Infof("Collected %d target platforms (with exception data)", len(data.Platforms))
+	return data.Platforms, nil
+}
+
+// ListPSMServers retrieves all PSM servers via GET /API/PSM/Servers/
+func (c *Client) ListPSMServers() ([]models.PSMServer, error) {
+	serversURL := fmt.Sprintf("%s/PasswordVault/API/PSM/Servers/", c.BaseURL)
+
+	resp, err := c.requestWithRetries("GET", serversURL, nil, c.ReqTimeout, 3)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list PSM servers: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var data struct {
+		PSMServers []models.PSMServer `json:"PSMServers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("failed to decode PSM servers response: %w", err)
+	}
+
+	c.Logger.Infof("Collected %d PSM servers", len(data.PSMServers))
+	return data.PSMServers, nil
+}
+
+// ListConnectionComponents retrieves all connection components via GET /API/PSM/Connectors/
+func (c *Client) ListConnectionComponents() ([]models.ConnectionComponent, error) {
+	connectorsURL := fmt.Sprintf("%s/PasswordVault/API/PSM/Connectors/", c.BaseURL)
+
+	resp, err := c.requestWithRetries("GET", connectorsURL, nil, c.ReqTimeout, 3)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list connection components: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var data struct {
+		PSMConnectors []models.ConnectionComponent `json:"PSMConnectors"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("failed to decode connection components response: %w", err)
+	}
+
+	c.Logger.Infof("Collected %d connection components", len(data.PSMConnectors))
+	return data.PSMConnectors, nil
+}

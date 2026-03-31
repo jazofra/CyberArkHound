@@ -20,7 +20,11 @@ func BuildOpenGraph(
 	pvwaTag string,
 	accountActivities map[string][]models.AccountActivity,
 	platforms []models.Platform,
+	platformConnectors map[string][]string,
+	targetPlatforms []models.TargetPlatform,
 	linkedAccounts map[string][]models.LinkedAccount,
+	psmServers []models.PSMServer,
+	connectionComponents []models.ConnectionComponent,
 	logger *logrus.Logger,
 	debug bool,
 	logLevel string,
@@ -321,6 +325,9 @@ func BuildOpenGraph(
 	// Process Platforms (if provided)
 	platformsByID := make(map[string]string)              // platformID (string) -> platformNodeID
 	platformDualControl := make(map[string]bool)          // platformID (lowercase) -> requireDualControlPasswordAccessApproval
+	platformSessionMonitoring := make(map[string]bool)   // platformID (lowercase) -> requirePrivilegedSessionMonitoringAndIsolation
+	platformSessionRecording := make(map[string]bool)    // platformID (lowercase) -> recordAndSaveSessionActivity
+	platformPSMServerID := make(map[string]string)       // platformID (lowercase) -> PSMServerID
 	if len(platforms) > 0 {
 		logger.Infof("Processing %d platforms...", len(platforms))
 		for _, p := range platforms {
@@ -388,6 +395,13 @@ func BuildOpenGraph(
 				"enforceOnetimePasswordAccess":             p.PrivilegedAccessWorkflows.EnforceOnetimePasswordAccess,
 			}
 
+			// Add connection components if available
+			if platformConnectors != nil {
+				if connectors, ok := platformConnectors[pid]; ok {
+					props["connectionComponents"] = connectors
+				}
+			}
+
 			og.MergeNode(&Node{
 				ID:         platformNodeID,
 				Kinds:      []string{"CyberArkPlatform", "CyberArkBase"},
@@ -397,8 +411,104 @@ func BuildOpenGraph(
 			platformsByID[pid] = platformNodeID
 			platformsByID[strings.ToLower(pid)] = platformNodeID
 			platformDualControl[strings.ToLower(pid)] = p.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval
+			platformSessionMonitoring[strings.ToLower(pid)] = p.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation
+			platformSessionRecording[strings.ToLower(pid)] = p.SessionManagement.RecordAndSaveSessionActivity
+			if p.SessionManagement.PSMServerID != "" {
+				platformPSMServerID[strings.ToLower(pid)] = p.SessionManagement.PSMServerID
+			}
 		}
 		logger.Infof("Indexed %d platform IDs for matching", len(platformsByID))
+	}
+
+	// Enrich platform nodes with Master Policy exception flags from Targets endpoint.
+	// When /API/Platforms/ fails (e.g., HTTP 500), create fallback platform nodes from
+	// the Targets data so that account→platform and platform→PSMServer edges still work.
+	if len(targetPlatforms) > 0 {
+		fallbackCount := 0
+		logger.Infof("Processing %d target platform exception flags...", len(targetPlatforms))
+		for _, tp := range targetPlatforms {
+			tpID := tp.PlatformID
+			if tpID == "" {
+				tpID = tp.Name
+			}
+			if tpID == "" {
+				continue
+			}
+			platformNodeID, ok := platformsByID[tpID]
+			if !ok {
+				platformNodeID, ok = platformsByID[strings.ToLower(tpID)]
+			}
+
+			if !ok {
+				// Fallback: create a rich platform node from target data when
+				// the full /API/Platforms/ endpoint was unavailable.
+				platformNodeID = strings.ToUpper(fmt.Sprintf("caplatform-%s-%s", tpID, pvwaTag))
+				props := map[string]interface{}{
+					"id":         platformNodeID,
+					"name":       tp.Name,
+					"platformId": tpID,
+					"active":     tp.Active,
+					"systemType": tp.SystemType,
+					"psmServerID": tp.SessionManagement.PSMServerID,
+
+					// Session management (from IsActive flags)
+					"requirePrivilegedSessionMonitoringAndIsolation": tp.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation.IsActive,
+					"recordAndSaveSessionActivity":                   tp.SessionManagement.RecordAndSaveSessionActivity.IsActive,
+
+					// Privileged access workflows
+					"requireDualControlPasswordAccessApproval": tp.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval.IsActive,
+					"enforceCheckinCheckoutExclusiveAccess":    tp.PrivilegedAccessWorkflows.EnforceCheckinCheckoutExclusiveAccess.IsActive,
+					"enforceOnetimePasswordAccess":             tp.PrivilegedAccessWorkflows.EnforceOnetimePasswordAccess.IsActive,
+					"requireUsersToSpecifyReasonForAccess":     tp.PrivilegedAccessWorkflows.RequireUsersToSpecifyReasonForAccess.IsActive,
+
+					// Credentials management
+					"allowedSafes":                          tp.AllowedSafes,
+					"performPeriodicVerification":           tp.CredentialsManagementPolicy.Verification.PerformAutomatic,
+					"requirePasswordVerificationEveryXDays": tp.CredentialsManagementPolicy.Verification.RequirePasswordEveryXDays,
+					"allowManualVerification":               tp.CredentialsManagementPolicy.Verification.AllowManual,
+					"performPeriodicChange":                 tp.CredentialsManagementPolicy.Change.PerformAutomatic,
+					"requirePasswordChangeEveryXDays":       tp.CredentialsManagementPolicy.Change.RequirePasswordEveryXDays,
+					"allowManualChange":                     tp.CredentialsManagementPolicy.Change.AllowManual,
+					"automaticReconcileWhenUnsynched":       tp.CredentialsManagementPolicy.Reconcile.AutomaticReconcileWhenUnsynced,
+					"allowManualReconciliation":             tp.CredentialsManagementPolicy.Reconcile.AllowManual,
+					"changePasswordInResetMode":             tp.CredentialsManagementPolicy.SecretUpdateConfiguration.ChangePasswordInResetMode,
+
+					// Credential management exception flags
+					"verificationFrequencyIsException": tp.CredentialsManagementPolicy.Verification.IsRequirePasswordEveryXDaysAnException,
+					"changeFrequencyIsException":       tp.CredentialsManagementPolicy.Change.IsRequirePasswordEveryXDaysAnException,
+
+					"dataSource": "targets-fallback",
+				}
+				og.MergeNode(&Node{
+					ID:         platformNodeID,
+					Kinds:      []string{"CyberArkPlatform", "CyberArkBase"},
+					Properties: SanitizeProperties(props),
+				})
+				platformsByID[tpID] = platformNodeID
+				platformsByID[strings.ToLower(tpID)] = platformNodeID
+				platformDualControl[strings.ToLower(tpID)] = tp.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval.IsActive
+				platformSessionMonitoring[strings.ToLower(tpID)] = tp.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation.IsActive
+				platformSessionRecording[strings.ToLower(tpID)] = tp.SessionManagement.RecordAndSaveSessionActivity.IsActive
+				if tp.SessionManagement.PSMServerID != "" {
+					platformPSMServerID[strings.ToLower(tpID)] = tp.SessionManagement.PSMServerID
+				}
+				fallbackCount++
+			}
+
+			// Merge exception flags into the existing platform node
+			node := og.Nodes[platformNodeID]
+			if node != nil {
+				node.Properties["dualControlIsException"] = tp.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval.IsAnException
+				node.Properties["exclusiveAccessIsException"] = tp.PrivilegedAccessWorkflows.EnforceCheckinCheckoutExclusiveAccess.IsAnException
+				node.Properties["otpIsException"] = tp.PrivilegedAccessWorkflows.EnforceOnetimePasswordAccess.IsAnException
+				node.Properties["reasonForAccessIsException"] = tp.PrivilegedAccessWorkflows.RequireUsersToSpecifyReasonForAccess.IsAnException
+				node.Properties["sessionMonitoringIsException"] = tp.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation.IsAnException
+				node.Properties["sessionRecordingIsException"] = tp.SessionManagement.RecordAndSaveSessionActivity.IsAnException
+			}
+		}
+		if fallbackCount > 0 {
+			logger.Infof("Created %d fallback platform nodes from Targets endpoint data", fallbackCount)
+		}
 	}
 
 	// Process Accounts
@@ -712,9 +822,9 @@ func BuildOpenGraph(
 			// permissions, we assume dual control is likely intended.
 			accountsInSafe := accountsBySafe[sm.SafeName]
 			for _, accountNodeID := range accountsInSafe {
+				platID := accountPlatformID[accountNodeID]
 				requiresApproval := false
 				if !accessWithoutConfirmation {
-					platID := accountPlatformID[accountNodeID]
 					_, platformLoaded := platformDualControl[platID]
 					if platID != "" && platformLoaded {
 						// Platform data available: use the authoritative policy setting,
@@ -727,12 +837,22 @@ func BuildOpenGraph(
 						requiresApproval = safesWithApprovers[sm.SafeName]
 					}
 				}
+				// Look up session management properties from the account's platform
+				requiresSessionMonitoring := false
+				recordsSessionActivity := false
+				if platID != "" {
+					requiresSessionMonitoring = platformSessionMonitoring[platID]
+					recordsSessionActivity = platformSessionRecording[platID]
+				}
+
 				og.AddEdge("CyberArkHasAccessTo", memberNodeID, accountNodeID,
 					"id", "id", map[string]interface{}{
-						"safeName":         sm.SafeName,
-						"permissions":      matchedPermNames,
-						"inferred":         false,
-						"requiresApproval": requiresApproval,
+						"safeName":                  sm.SafeName,
+						"permissions":               matchedPermNames,
+						"inferred":                  false,
+						"requiresApproval":          requiresApproval,
+						"requiresSessionMonitoring": requiresSessionMonitoring,
+						"recordsSessionActivity":    recordsSessionActivity,
 					}, false)
 			}
 		}
@@ -932,6 +1052,124 @@ func BuildOpenGraph(
 		}
 
 		logger.Infof("Created %d CyberArkLinkedTo edges from linked account data", linkedEdgeCount)
+	}
+
+	// Process PSM Servers (if provided)
+	psmServersByID := make(map[string]string) // PSMServerID -> psmServerNodeID
+	if len(psmServers) > 0 {
+		logger.Infof("Processing %d PSM servers...", len(psmServers))
+		for _, ps := range psmServers {
+			if ps.ID == "" {
+				continue
+			}
+			psmNodeID := strings.ToUpper(fmt.Sprintf("capsmserver-%s-%s", ps.ID, pvwaTag))
+
+			og.MergeNode(&Node{
+				ID:    psmNodeID,
+				Kinds: []string{"CyberArkPSMServer", "CyberArkBase"},
+				Properties: SanitizeProperties(map[string]interface{}{
+					"id":          psmNodeID,
+					"psmServerId": ps.ID,
+					"name":        ps.Name,
+					"address":     ps.Address,
+				}),
+			})
+
+			psmServersByID[ps.ID] = psmNodeID
+		}
+		logger.Infof("Created %d CyberArkPSMServer nodes", len(psmServersByID))
+
+		// Create CyberArkUsesPSMServer edges (Platform → PSM Server)
+		psmEdgeCount := 0
+		for platID, psmSrvID := range platformPSMServerID {
+			platNodeID, ok := platformsByID[platID]
+			if !ok {
+				continue
+			}
+			psmNodeID, ok := psmServersByID[psmSrvID]
+			if !ok {
+				if debug {
+					logger.Debugf("Platform %s references PSMServerID '%s' but no matching PSM server node found", platID, psmSrvID)
+				}
+				continue
+			}
+			og.AddEdge("CyberArkUsesPSMServer", platNodeID, psmNodeID,
+				"id", "id", nil, false)
+			psmEdgeCount++
+		}
+		logger.Infof("Created %d CyberArkUsesPSMServer edges", psmEdgeCount)
+
+		// Create CyberArkManagedByPSM edges (Account → PSM Server)
+		accountPSMEdgeCount := 0
+		for accountNodeID, platID := range accountPlatformID {
+			psmSrvID, ok := platformPSMServerID[platID]
+			if !ok {
+				continue
+			}
+			psmNodeID, ok := psmServersByID[psmSrvID]
+			if !ok {
+				continue
+			}
+			og.AddEdge("CyberArkManagedByPSM", accountNodeID, psmNodeID,
+				"id", "id", nil, false)
+			accountPSMEdgeCount++
+		}
+		logger.Infof("Created %d CyberArkManagedByPSM edges", accountPSMEdgeCount)
+	}
+
+	// Process Connection Components (if provided)
+	if len(connectionComponents) > 0 {
+		logger.Infof("Processing %d connection components...", len(connectionComponents))
+		connCompNodeCount := 0
+		connCompsByID := make(map[string]string) // connectorID -> connCompNodeID
+
+		for _, cc := range connectionComponents {
+			if cc.ID == "" {
+				continue
+			}
+			connCompNodeID := strings.ToUpper(fmt.Sprintf("caconncomp-%s-%s", cc.ID, pvwaTag))
+
+			og.MergeNode(&Node{
+				ID:    connCompNodeID,
+				Kinds: []string{"CyberArkConnectionComponent", "CyberArkBase"},
+				Properties: SanitizeProperties(map[string]interface{}{
+					"id":          connCompNodeID,
+					"connectorId": cc.ID,
+					"displayName": cc.DisplayName,
+				}),
+			})
+
+			connCompsByID[cc.ID] = connCompNodeID
+			connCompNodeCount++
+		}
+		logger.Infof("Created %d CyberArkConnectionComponent nodes", connCompNodeCount)
+
+		// Create CyberArkHasConnectionComponent edges (Platform → Connection Component)
+		if platformConnectors != nil {
+			connCompEdgeCount := 0
+			for platID, connectorIDs := range platformConnectors {
+				platNodeID, ok := platformsByID[platID]
+				if !ok {
+					platNodeID, ok = platformsByID[strings.ToLower(platID)]
+				}
+				if !ok {
+					continue
+				}
+				for _, connID := range connectorIDs {
+					connCompNodeID, ok := connCompsByID[connID]
+					if !ok {
+						if debug {
+							logger.Debugf("Platform %s references connector '%s' but no matching connection component node found", platID, connID)
+						}
+						continue
+					}
+					og.AddEdge("CyberArkHasConnectionComponent", platNodeID, connCompNodeID,
+						"id", "id", map[string]interface{}{"enabled": true}, false)
+					connCompEdgeCount++
+				}
+			}
+			logger.Infof("Created %d CyberArkHasConnectionComponent edges", connCompEdgeCount)
+		}
 	}
 
 	if debug {

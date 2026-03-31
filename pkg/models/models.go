@@ -213,3 +213,98 @@ type Platform struct {
 	SessionManagement        PlatformSessionManagement         `json:"sessionManagement"`
 	PrivilegedAccessWorkflows PlatformPrivilegedAccessWorkflows `json:"privilegedAccessWorkflows"`
 }
+
+// PSMConnector represents a PSM connection component for a platform
+type PSMConnector struct {
+	PSMConnectorID string `json:"PSMConnectorID"`
+	Enabled        bool   `json:"Enabled"`
+}
+
+// PlatformPSMConfig represents the privileged session management config from the Targets endpoint
+type PlatformPSMConfig struct {
+	PSMConnectors []PSMConnector `json:"PSMConnectors"`
+}
+
+// WorkflowRule represents a workflow setting with Master Policy exception info
+type WorkflowRule struct {
+	IsActive      bool `json:"IsActive"`
+	IsAnException bool `json:"IsAnException"`
+}
+
+// TargetPlatformWorkflows holds workflow rules from GET /API/Platforms/Targets
+type TargetPlatformWorkflows struct {
+	RequireDualControlPasswordAccessApproval WorkflowRule `json:"RequireDualControlPasswordAccessApproval"`
+	EnforceCheckinCheckoutExclusiveAccess    WorkflowRule `json:"EnforceCheckinCheckoutExclusiveAccess"`
+	EnforceOnetimePasswordAccess             WorkflowRule `json:"EnforceOnetimePasswordAccess"`
+	RequireUsersToSpecifyReasonForAccess     WorkflowRule `json:"RequireUsersToSpecifyReasonForAccess"`
+}
+
+// TargetCredentialVerification holds verification policy from the Targets endpoint
+type TargetCredentialVerification struct {
+	PerformAutomatic                      bool `json:"PerformAutomatic"`
+	RequirePasswordEveryXDays             int  `json:"RequirePasswordEveryXDays"`
+	AutoOnAdd                             bool `json:"AutoOnAdd"`
+	IsRequirePasswordEveryXDaysAnException bool `json:"IsRequirePasswordEveryXDaysAnException"`
+	AllowManual                           bool `json:"AllowManual"`
+}
+
+// TargetCredentialChange holds change policy from the Targets endpoint
+type TargetCredentialChange struct {
+	PerformAutomatic                      bool `json:"PerformAutomatic"`
+	RequirePasswordEveryXDays             int  `json:"RequirePasswordEveryXDays"`
+	AutoOnAdd                             bool `json:"AutoOnAdd"`
+	IsRequirePasswordEveryXDaysAnException bool `json:"IsRequirePasswordEveryXDaysAnException"`
+	AllowManual                           bool `json:"AllowManual"`
+}
+
+// TargetCredentialReconcile holds reconcile policy from the Targets endpoint
+type TargetCredentialReconcile struct {
+	AutomaticReconcileWhenUnsynced bool `json:"AutomaticReconcileWhenUnsynced"`
+	AllowManual                    bool `json:"AllowManual"`
+}
+
+// TargetSecretUpdateConfiguration holds secret update config from the Targets endpoint
+type TargetSecretUpdateConfiguration struct {
+	ChangePasswordInResetMode bool `json:"ChangePasswordInResetMode"`
+}
+
+// TargetCredentialsManagementPolicy holds the full credentials management policy from Targets
+type TargetCredentialsManagementPolicy struct {
+	Verification              TargetCredentialVerification     `json:"Verification"`
+	Change                    TargetCredentialChange           `json:"Change"`
+	Reconcile                 TargetCredentialReconcile        `json:"Reconcile"`
+	SecretUpdateConfiguration TargetSecretUpdateConfiguration  `json:"SecretUpdateConfiguration"`
+}
+
+// TargetPlatformSessionManagement holds session management from the Targets endpoint
+type TargetPlatformSessionManagement struct {
+	RequirePrivilegedSessionMonitoringAndIsolation WorkflowRule `json:"RequirePrivilegedSessionMonitoringAndIsolation"`
+	RecordAndSaveSessionActivity                   WorkflowRule `json:"RecordAndSaveSessionActivity"`
+	PSMServerID                                    string       `json:"PSMServerId"`
+}
+
+// TargetPlatform represents a platform from GET /API/Platforms/Targets with exception metadata
+type TargetPlatform struct {
+	ID                           int                                `json:"ID"`
+	PlatformID                   string                             `json:"PlatformID"`
+	Name                         string                             `json:"Name"`
+	Active                       bool                               `json:"Active"`
+	SystemType                   string                             `json:"SystemType"`
+	AllowedSafes                 string                             `json:"AllowedSafes"`
+	PrivilegedAccessWorkflows    TargetPlatformWorkflows            `json:"PrivilegedAccessWorkflows"`
+	CredentialsManagementPolicy  TargetCredentialsManagementPolicy  `json:"CredentialsManagementPolicy"`
+	SessionManagement            TargetPlatformSessionManagement    `json:"PrivilegedSessionManagement"`
+}
+
+// PSMServer represents a PSM server from GET /API/PSM/Servers/
+type PSMServer struct {
+	ID      string `json:"Id"`
+	Name    string `json:"Name"`
+	Address string `json:"Address"`
+}
+
+// ConnectionComponent represents a PSM connection component from GET /API/PSM/Connectors/
+type ConnectionComponent struct {
+	ID          string `json:"Id"`
+	DisplayName string `json:"DisplayName"`
+}

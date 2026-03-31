@@ -45,7 +45,10 @@ The resulting `cyberark_export.json` file can be directly imported into BloodHou
 - **Linked account chain analysis**: Optional CyberArkLinkedTo edges mapping logon/reconcile/enable account dependencies for credential chain traversal
 - **Safe creator and CPM tracking**: CyberArkCreated and CyberArkManagedBy edges showing who created and manages each safe
 - **Platform-based grouping**: Optional CyberArkPlatform nodes and CyberArkUsesPlatform edges for shared attack surface analysis
+- **PSM infrastructure mapping**: Optional CyberArkPSMServer and CyberArkConnectionComponent nodes with edges showing which PSM servers and connection protocols (RDP, SSH, etc.) each platform and account uses
 - **Dual control awareness**: Per-account `requiresApproval` derived from platform Master Policy settings (with approver-presence fallback); CyberArkCanApprove edges identify who can authorize dual-controlled access
+- **Master Policy exception detection**: Flags on platform nodes identify deviations from Master Policy defaults for audit and compliance
+- **Resilient platform data**: Automatic fallback to `/API/Platforms/Targets` when `/API/Platforms/` is unavailable, preserving all security-relevant properties
 - **Enriched metadata**: Personal details, vault authorizations, safe permissions, account management status
 - **Safe permission tracking**: Per-user/group safe access with permission details
 - **External edges preserved**: AD sync relationships stored separately for cross-domain analysis
@@ -91,7 +94,11 @@ With 'list' and 'View Safe Members' on each safe, the tool can:
 - `GET /API/Accounts/{accountId}` - Get account details
 - `GET /API/Accounts/{accountId}/Activities` - Get account activity logs (optional, requires `--include-activity`)
 - `GET /API/Accounts/{accountId}/LinkedAccounts` - Get linked accounts: logon, reconcile, enable (optional, requires `--include-linked-accounts`)
-- `GET /API/Platforms/Targets` - List target platforms (optional, requires `--include-platforms`)
+- `GET /API/Platforms/` - List all platforms with full configuration (optional, requires `--include-platforms`)
+- `GET /API/Platforms/Targets` - List target platforms with exception flags (optional, requires `--include-platforms`; also used as fallback when `/API/Platforms/` fails)
+- `GET /API/Platforms/Targets/{id}/PrivilegedSessionManagement` - Get per-platform PSM connectors (optional, requires `--include-platforms`)
+- `GET /API/PSM/Servers/` - List all PSM servers (optional, requires `--include-psm`)
+- `GET /API/PSM/Connectors/` - List all connection components (optional, requires `--include-psm`)
 - `GET /API/Users` - List all users
 - `GET /API/UserGroups` - List all groups
 - `GET /API/UserGroups/{groupId}` - Get group details with members
@@ -200,6 +207,7 @@ Download pre-compiled binaries from the [Releases](https://github.com/jazofra/Cy
 **Linked Accounts & Platforms:**
 - `--include-linked-accounts` Include linked account data (creates CyberArkLinkedTo edges for logon/reconcile/enable account chains)
 - `--include-platforms` Include platform data (creates CyberArkPlatform nodes and CyberArkUsesPlatform edges)
+- `--include-psm` Include PSM server and connection component data (creates CyberArkPSMServer and CyberArkConnectionComponent nodes with linking edges)
 
 **Testing/Development:**
 - `--limit-users` Limit number of users to process (0 = no limit)
@@ -264,6 +272,9 @@ RETURN u.name, s.safeName
 | `CyberArkCreated` | User → Safe | Existing `Safe.Creator` field | Shows who created each safe (implicit ownership/access) |
 | `CyberArkManagedBy` | CPM User → Safe | Existing `Safe.ManagingCPM` field | CPM accounts have privileged password management access |
 | `CyberArkUsesPlatform` | Account → Platform | `GET /API/Platforms/Targets` | Shared platform config = shared attack surface |
+| `CyberArkUsesPSMServer` | Platform → PSM Server | Platform `PSMServerID` field | Which PSM server handles sessions for each platform |
+| `CyberArkManagedByPSM` | Account → PSM Server | Derived via account's platform | Direct link for querying which PSM server manages an account's sessions |
+| `CyberArkHasConnectionComponent` | Platform → Connection Component | `GET /API/Platforms/Targets/{id}/PrivilegedSessionManagement` | Which connection protocols (RDP, SSH, etc.) are enabled per platform |
 | `CyberArkMemberOf` | User/Group → Group | Group membership data | Group-based permission inheritance |
 | `CyberArkContains` | Safe → Account | Account's `safeName` field | Safe-account containment relationship |
 | `SyncsToCyberArkUser` | AD User → CyberArkUser | LDAP DN with `DC=` | External edge — AD-to-CyberArk identity mapping |
@@ -370,6 +381,8 @@ When `--include-platforms` is not used, the platform policy cannot be checked. I
 
 **Edge Properties on CyberArkHasAccessTo:**
 - `requiresApproval`: `true` if the member needs approval from a dual control authorizer before retrieving passwords
+- `requiresSessionMonitoring`: `true` if the account's platform requires PSM session monitoring and isolation
+- `recordsSessionActivity`: `true` if the account's platform records and saves session activity
 
 **CyberArkCanApprove Edge Properties:**
 - `approvalLevel`: Authorization level (1 or 2) — maps to `requestsAuthorizationLevel1` / `requestsAuthorizationLevel2` permissions
@@ -407,6 +420,45 @@ MATCH (a:CyberArkAccount)-[:CyberArkUsesPlatform]->(p:CyberArkPlatform {requireD
 MATCH (s:CyberArkSafe)-[:CyberArkContains]->(a)
 WHERE NOT ()-[:CyberArkCanApprove]->(s)
 RETURN a.name, s.safeName, p.name AS platform
+
+// High-risk: accounts accessible WITHOUT session monitoring
+MATCH (u:CyberArkUser)-[r:CyberArkHasAccessTo {requiresSessionMonitoring: false}]->(a:CyberArkAccount)
+RETURN u.name, a.name, a.safeName
+
+// Platforms that support RDP connections
+MATCH (p:CyberArkPlatform)
+WHERE 'PSM-RDP' IN p.connectionComponents
+RETURN p.name, p.connectionComponents
+
+// Platforms where dual control is DISABLED as an exception to Master Policy (high priority audit finding)
+MATCH (p:CyberArkPlatform)
+WHERE p.requireDualControlPasswordAccessApproval = false AND p.dualControlIsException = true
+RETURN p.name, p.systemType
+
+// Platforms where session monitoring is disabled as a Master Policy exception
+MATCH (p:CyberArkPlatform)
+WHERE p.requirePrivilegedSessionMonitoringAndIsolation = false AND p.sessionMonitoringIsException = true
+RETURN p.name, p.systemType
+
+// Find all PSM servers and their connected platforms
+MATCH (p:CyberArkPlatform)-[:CyberArkUsesPSMServer]->(psm:CyberArkPSMServer)
+RETURN psm.name, psm.address, COLLECT(p.name) AS platforms
+
+// Find accounts managed by a specific PSM server
+MATCH (a:CyberArkAccount)-[:CyberArkManagedByPSM]->(psm:CyberArkPSMServer {name: "PSM Server Main"})
+RETURN a.name, a.userName, a.safeName
+
+// Find platforms with RDP connection components enabled
+MATCH (p:CyberArkPlatform)-[:CyberArkHasConnectionComponent]->(cc:CyberArkConnectionComponent {connectorId: "PSM-RDP"})
+RETURN p.name, p.systemType
+
+// List all connection components and which platforms use them
+MATCH (p:CyberArkPlatform)-[:CyberArkHasConnectionComponent]->(cc:CyberArkConnectionComponent)
+RETURN cc.connectorId, cc.displayName, COLLECT(p.name) AS platforms
+
+// Find accounts on platforms created from fallback data (investigate /API/Platforms/ failure)
+MATCH (a:CyberArkAccount)-[:CyberArkUsesPlatform]->(p:CyberArkPlatform {dataSource: "targets-fallback"})
+RETURN p.name, COUNT(a) AS accountCount
 ```
 
 #### CyberArkLinkedTo (Account → Account) - Optional
@@ -549,8 +601,26 @@ RETURN p.name, COUNT(a) as accountsOnInactivePlatform
 
 #### CyberArkPlatform Properties (requires `--include-platforms`)
 - **Identity**: `platformId`, `name`
-- **Configuration**: `systemType`, `active`
-- **Metadata**: `description`
+- **Configuration**: `systemType`, `active`, `platformBaseID`, `platformType`
+- **Metadata**: `description`, `allowedSafes`
+- **Properties**: `requiredProperties`, `optionalProperties` (field definitions)
+- **Linked Accounts**: `linkedAccountTypes` (e.g., LogonAccount, ReconcileAccount)
+- **Connection Components**: `connectionComponents` (list of enabled PSM connector IDs, e.g., `["PSM-RDP", "PSM-SSH"]`)
+- **Session Management**: `psmServerID`, `requirePrivilegedSessionMonitoringAndIsolation`, `recordAndSaveSessionActivity`
+- **Credentials Management**: `allowManualChange`, `performPeriodicChange`, `requirePasswordChangeEveryXDays`, `allowManualVerification`, `performPeriodicVerification`, `requirePasswordVerificationEveryXDays`, `allowManualReconciliation`, `automaticReconcileWhenUnsynched`
+- **Privileged Access Workflows**: `requireDualControlPasswordAccessApproval`, `enforceCheckinCheckoutExclusiveAccess`, `enforceOnetimePasswordAccess`, `requireUsersToSpecifyReasonForAccess`
+- **Master Policy Exception Flags**: `dualControlIsException`, `exclusiveAccessIsException`, `otpIsException`, `reasonForAccessIsException`, `sessionMonitoringIsException`, `sessionRecordingIsException`, `verificationFrequencyIsException`, `changeFrequencyIsException` — `true` when the platform's setting deviates from the Master Policy default
+- **Data Source**: `dataSource` — set to `"targets-fallback"` when the node was created from `/API/Platforms/Targets` instead of `/API/Platforms/` (see fallback behavior below)
+
+**Platform data fallback:** When `GET /API/Platforms/` fails (e.g., HTTP 500 due to corrupted platform definitions), CyberArkHound creates platform nodes from the `GET /API/Platforms/Targets` response instead. These fallback nodes contain most security-relevant properties (workflows, credentials management, PSM server, exception flags) but lack `description`, `platformBaseID`, `platformType`, `requiredProperties`, `optionalProperties`, and `linkedAccountTypes`. Fallback nodes are tagged with `dataSource: "targets-fallback"`.
+
+#### CyberArkPSMServer Properties (requires `--include-psm`)
+- **Identity**: `psmServerId` (e.g., `"PSMServer_7ec0ecb"`)
+- **Configuration**: `name` (e.g., `"PSM Server CYB-IS-12345"`), `address` (e.g., `"10.10.10.20"`)
+
+#### CyberArkConnectionComponent Properties (requires `--include-psm`)
+- **Identity**: `connectorId` (e.g., `"PSM-RDP"`, `"PSM-SSH"`)
+- **Display**: `displayName` (e.g., `"RDP"`, `"SSH"`)
 
 ### Output
 The resulting JSON structure follows BloodHound OpenGraph schema:
@@ -642,6 +712,9 @@ flowchart TD
  CyberArkUser -. CyberArkManagedBy<br>(CPM) .-> CyberArkSafe
  CyberArkAccount -. CyberArkLinkedTo<br>(logon/reconcile/enable) .-> CyberArkAccount
  CyberArkAccount -- CyberArkUsesPlatform --> CyberArkPlatform["fa:fa-server CyberArkPlatform"]
+ CyberArkAccount -- CyberArkManagedByPSM --> CyberArkPSMServer["fa:fa-desktop CyberArkPSMServer"]
+ CyberArkPlatform -- CyberArkUsesPSMServer --> CyberArkPSMServer
+ CyberArkPlatform -- CyberArkHasConnectionComponent --> CyberArkConnectionComponent["fa:fa-plug CyberArkConnectionComponent"]
  style User fill:#17E625,stroke:#0B8A14,stroke-width:2px
  style Computer fill:#FCAEA3,stroke:DF7E71,stroke-widthg:2px
  style CyberArkUser fill:#BFD6E3,stroke:#7BA3C0,stroke-width:2px
@@ -650,10 +723,12 @@ flowchart TD
  style CyberArkAccount fill:#E7C8C8,stroke:#C09999,stroke-width:2px
  style CyberArkSafe fill:#E8D8B3,stroke:#C0AC7F,stroke-width:2px
  style CyberArkPlatform fill:#D4B8D9,stroke:#A98CB3,stroke-width:2px
+ style CyberArkPSMServer fill:#A8D5BA,stroke:#7BB898,stroke-width:2px
+ style CyberArkConnectionComponent fill:#B8C9E0,stroke:#8EA6C4,stroke-width:2px
 ```
 
 **Legend:**
-- **Solid Lines** (→): Internal CyberArk relationships (membership, containment, platform)
+- **Solid Lines** (→): Internal CyberArk relationships (membership, containment, platform, PSM server, connection components)
 - **Thick Lines** (⇒): Direct account access edges (permission-based or actual usage)
 - **Dashed Lines** (⇢): External sync relationships, privilege escalation, dual control approval, linked accounts, creator/CPM management
 
@@ -663,11 +738,13 @@ The file `cyberark_model.json` defines custom node types (icons & colors) for Bl
 ```json
 {
 	"custom_types": {
-		"CyberArkAccount":  {"icon": {"type": "font-awesome", "name": "user-secret", "color": "#E7C8C8"}},
-		"CyberArkGroup":    {"icon": {"type": "font-awesome", "name": "user-group",  "color": "#C8DCC0"}},
-		"CyberArkSafe":     {"icon": {"type": "font-awesome", "name": "vault",       "color": "#E8D8B3"}},
-		"CyberArkUser":     {"icon": {"type": "font-awesome", "name": "user",        "color": "#BFD6E3"}},
-		"CyberArkPlatform": {"icon": {"type": "font-awesome", "name": "server",      "color": "#D4B8D9"}}
+		"CyberArkAccount":             {"icon": {"type": "font-awesome", "name": "user-secret", "color": "#E7C8C8"}},
+		"CyberArkGroup":               {"icon": {"type": "font-awesome", "name": "user-group",  "color": "#C8DCC0"}},
+		"CyberArkSafe":                {"icon": {"type": "font-awesome", "name": "vault",       "color": "#E8D8B3"}},
+		"CyberArkUser":                {"icon": {"type": "font-awesome", "name": "user",        "color": "#BFD6E3"}},
+		"CyberArkPlatform":            {"icon": {"type": "font-awesome", "name": "server",      "color": "#D4B8D9"}},
+		"CyberArkPSMServer":           {"icon": {"type": "font-awesome", "name": "desktop",     "color": "#A8D5BA"}},
+		"CyberArkConnectionComponent": {"icon": {"type": "font-awesome", "name": "plug",        "color": "#B8C9E0"}}
 	}
 }
 ```
