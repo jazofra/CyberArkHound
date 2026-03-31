@@ -839,3 +839,45 @@ func (c *Client) ListTargetPlatforms() ([]models.TargetPlatform, error) {
 	c.Logger.Infof("Collected %d target platforms (with exception data)", len(data.Platforms))
 	return data.Platforms, nil
 }
+
+// ListPSMServers retrieves all PSM servers via GET /API/PSM/Servers/
+func (c *Client) ListPSMServers() ([]models.PSMServer, error) {
+	serversURL := fmt.Sprintf("%s/PasswordVault/API/PSM/Servers/", c.BaseURL)
+
+	resp, err := c.requestWithRetries("GET", serversURL, nil, c.ReqTimeout, 3)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list PSM servers: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var data struct {
+		PSMServers []models.PSMServer `json:"PSMServers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("failed to decode PSM servers response: %w", err)
+	}
+
+	c.Logger.Infof("Collected %d PSM servers", len(data.PSMServers))
+	return data.PSMServers, nil
+}
+
+// ListConnectionComponents retrieves all connection components via GET /API/PSM/Connectors/
+func (c *Client) ListConnectionComponents() ([]models.ConnectionComponent, error) {
+	connectorsURL := fmt.Sprintf("%s/PasswordVault/API/PSM/Connectors/", c.BaseURL)
+
+	resp, err := c.requestWithRetries("GET", connectorsURL, nil, c.ReqTimeout, 3)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list connection components: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var data struct {
+		PSMConnectors []models.ConnectionComponent `json:"PSMConnectors"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("failed to decode connection components response: %w", err)
+	}
+
+	c.Logger.Infof("Collected %d connection components", len(data.PSMConnectors))
+	return data.PSMConnectors, nil
+}

@@ -44,6 +44,7 @@ func main() {
 	// Linked accounts and platforms flags
 	includeLinkedAccounts := pflag.Bool("include-linked-accounts", true, "Include linked account data (creates CyberArkLinkedTo edges for logon/reconcile/enable chains)")
 	includePlatforms := pflag.Bool("include-platforms", true, "Include platform data (creates CyberArkPlatform nodes and CyberArkUsesPlatform edges)")
+	includePSM := pflag.Bool("include-psm", true, "Include PSM server and connection component data (creates CyberArkPSMServer and CyberArkConnectionComponent nodes)")
 
 	// Testing limits
 	limitUsers := pflag.Int("limit-users", 0, "Limit number of users (0 = no limit)")
@@ -203,6 +204,25 @@ func main() {
 		if err != nil {
 			logger.Warnf("Failed to fetch target platform data: %v (exception flags will be omitted)", err)
 			targetPlatforms = nil
+		}
+	}
+
+	// Fetch PSM servers and connection components if requested
+	var psmServers []models.PSMServer
+	var connComponents []models.ConnectionComponent
+	if *includePSM {
+		logger.Info("Fetching PSM servers...")
+		psmServers, err = apiClient.ListPSMServers()
+		if err != nil {
+			logger.Warnf("Failed to fetch PSM servers: %v", err)
+			psmServers = nil
+		}
+
+		logger.Info("Fetching connection components...")
+		connComponents, err = apiClient.ListConnectionComponents()
+		if err != nil {
+			logger.Warnf("Failed to fetch connection components: %v", err)
+			connComponents = nil
 		}
 	}
 
@@ -424,6 +444,8 @@ func main() {
 		platformConnectors,
 		targetPlatforms,
 		linkedAccounts,
+		psmServers,
+		connComponents,
 		logger,
 		*debug,
 		*logLevel,

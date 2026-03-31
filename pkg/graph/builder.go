@@ -23,6 +23,8 @@ func BuildOpenGraph(
 	platformConnectors map[string][]string,
 	targetPlatforms []models.TargetPlatform,
 	linkedAccounts map[string][]models.LinkedAccount,
+	psmServers []models.PSMServer,
+	connectionComponents []models.ConnectionComponent,
 	logger *logrus.Logger,
 	debug bool,
 	logLevel string,
@@ -325,6 +327,7 @@ func BuildOpenGraph(
 	platformDualControl := make(map[string]bool)          // platformID (lowercase) -> requireDualControlPasswordAccessApproval
 	platformSessionMonitoring := make(map[string]bool)   // platformID (lowercase) -> requirePrivilegedSessionMonitoringAndIsolation
 	platformSessionRecording := make(map[string]bool)    // platformID (lowercase) -> recordAndSaveSessionActivity
+	platformPSMServerID := make(map[string]string)       // platformID (lowercase) -> PSMServerID
 	if len(platforms) > 0 {
 		logger.Infof("Processing %d platforms...", len(platforms))
 		for _, p := range platforms {
@@ -410,6 +413,9 @@ func BuildOpenGraph(
 			platformDualControl[strings.ToLower(pid)] = p.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval
 			platformSessionMonitoring[strings.ToLower(pid)] = p.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation
 			platformSessionRecording[strings.ToLower(pid)] = p.SessionManagement.RecordAndSaveSessionActivity
+			if p.SessionManagement.PSMServerID != "" {
+				platformPSMServerID[strings.ToLower(pid)] = p.SessionManagement.PSMServerID
+			}
 		}
 		logger.Infof("Indexed %d platform IDs for matching", len(platformsByID))
 	}
@@ -986,6 +992,124 @@ func BuildOpenGraph(
 		}
 
 		logger.Infof("Created %d CyberArkLinkedTo edges from linked account data", linkedEdgeCount)
+	}
+
+	// Process PSM Servers (if provided)
+	psmServersByID := make(map[string]string) // PSMServerID -> psmServerNodeID
+	if len(psmServers) > 0 {
+		logger.Infof("Processing %d PSM servers...", len(psmServers))
+		for _, ps := range psmServers {
+			if ps.ID == "" {
+				continue
+			}
+			psmNodeID := strings.ToUpper(fmt.Sprintf("capsmserver-%s-%s", ps.ID, pvwaTag))
+
+			og.MergeNode(&Node{
+				ID:    psmNodeID,
+				Kinds: []string{"CyberArkPSMServer", "CyberArkBase"},
+				Properties: SanitizeProperties(map[string]interface{}{
+					"id":          psmNodeID,
+					"psmServerId": ps.ID,
+					"name":        ps.Name,
+					"address":     ps.Address,
+				}),
+			})
+
+			psmServersByID[ps.ID] = psmNodeID
+		}
+		logger.Infof("Created %d CyberArkPSMServer nodes", len(psmServersByID))
+
+		// Create CyberArkUsesPSMServer edges (Platform → PSM Server)
+		psmEdgeCount := 0
+		for platID, psmSrvID := range platformPSMServerID {
+			platNodeID, ok := platformsByID[platID]
+			if !ok {
+				continue
+			}
+			psmNodeID, ok := psmServersByID[psmSrvID]
+			if !ok {
+				if debug {
+					logger.Debugf("Platform %s references PSMServerID '%s' but no matching PSM server node found", platID, psmSrvID)
+				}
+				continue
+			}
+			og.AddEdge("CyberArkUsesPSMServer", platNodeID, psmNodeID,
+				"id", "id", nil, false)
+			psmEdgeCount++
+		}
+		logger.Infof("Created %d CyberArkUsesPSMServer edges", psmEdgeCount)
+
+		// Create CyberArkManagedByPSM edges (Account → PSM Server)
+		accountPSMEdgeCount := 0
+		for accountNodeID, platID := range accountPlatformID {
+			psmSrvID, ok := platformPSMServerID[platID]
+			if !ok {
+				continue
+			}
+			psmNodeID, ok := psmServersByID[psmSrvID]
+			if !ok {
+				continue
+			}
+			og.AddEdge("CyberArkManagedByPSM", accountNodeID, psmNodeID,
+				"id", "id", nil, false)
+			accountPSMEdgeCount++
+		}
+		logger.Infof("Created %d CyberArkManagedByPSM edges", accountPSMEdgeCount)
+	}
+
+	// Process Connection Components (if provided)
+	if len(connectionComponents) > 0 {
+		logger.Infof("Processing %d connection components...", len(connectionComponents))
+		connCompNodeCount := 0
+		connCompsByID := make(map[string]string) // connectorID -> connCompNodeID
+
+		for _, cc := range connectionComponents {
+			if cc.ID == "" {
+				continue
+			}
+			connCompNodeID := strings.ToUpper(fmt.Sprintf("caconncomp-%s-%s", cc.ID, pvwaTag))
+
+			og.MergeNode(&Node{
+				ID:    connCompNodeID,
+				Kinds: []string{"CyberArkConnectionComponent", "CyberArkBase"},
+				Properties: SanitizeProperties(map[string]interface{}{
+					"id":          connCompNodeID,
+					"connectorId": cc.ID,
+					"displayName": cc.DisplayName,
+				}),
+			})
+
+			connCompsByID[cc.ID] = connCompNodeID
+			connCompNodeCount++
+		}
+		logger.Infof("Created %d CyberArkConnectionComponent nodes", connCompNodeCount)
+
+		// Create CyberArkHasConnectionComponent edges (Platform → Connection Component)
+		if platformConnectors != nil {
+			connCompEdgeCount := 0
+			for platID, connectorIDs := range platformConnectors {
+				platNodeID, ok := platformsByID[platID]
+				if !ok {
+					platNodeID, ok = platformsByID[strings.ToLower(platID)]
+				}
+				if !ok {
+					continue
+				}
+				for _, connID := range connectorIDs {
+					connCompNodeID, ok := connCompsByID[connID]
+					if !ok {
+						if debug {
+							logger.Debugf("Platform %s references connector '%s' but no matching connection component node found", platID, connID)
+						}
+						continue
+					}
+					og.AddEdge("CyberArkHasConnectionComponent", platNodeID, connCompNodeID,
+						"id", "id", map[string]interface{}{"enabled": true}, false)
+					connCompEdgeCount++
+				}
+			}
+			logger.Infof("Created %d CyberArkHasConnectionComponent edges", connCompEdgeCount)
+		}
 	}
 
 	if debug {

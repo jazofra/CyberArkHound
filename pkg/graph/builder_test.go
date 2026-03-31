@@ -47,6 +47,8 @@ func buildWithAccounts(accounts []models.Account, targetDomains []string) *OpenG
 		nil,           // platformConnectors
 		nil,           // targetPlatforms
 		nil,           // linkedAccounts
+		nil,           // psmServers
+		nil,           // connectionComponents
 		logger,
 		false,  // debug
 		"WARNING",
@@ -214,6 +216,8 @@ func buildDualControlGraph(platforms []models.Platform, accounts []models.Accoun
 		nil,           // platformConnectors
 		nil,           // targetPlatforms
 		nil,           // linkedAccounts
+		nil,           // psmServers
+		nil,           // connectionComponents
 		logger,
 		false,   // debug
 		"WARNING",
@@ -601,23 +605,31 @@ func TestSessionMonitoring_PartialSettings(t *testing.T) {
 
 // buildPlatformGraph creates a graph with platforms, connectors, and target platforms for testing.
 func buildPlatformGraph(platforms []models.Platform, platformConnectors map[string][]string, targetPlatforms []models.TargetPlatform) *OpenGraph {
+	return buildFullPlatformGraph(platforms, platformConnectors, targetPlatforms, nil, nil, nil)
+}
+
+// buildFullPlatformGraph creates a graph with platforms, connectors, target platforms, PSM servers,
+// connection components, and accounts for testing.
+func buildFullPlatformGraph(platforms []models.Platform, platformConnectors map[string][]string, targetPlatforms []models.TargetPlatform, psmServers []models.PSMServer, connectionComponents []models.ConnectionComponent, accounts []models.Account) *OpenGraph {
 	logger := logrus.New()
 	logger.SetLevel(logrus.WarnLevel)
 
 	og, _ := BuildOpenGraph(
-		nil,                // users
-		nil,                // groups
-		nil,                // safes
-		nil,                // safeMembers
-		nil,                // accounts
-		nil,                // targetDomains
-		false,              // parseSAMAccountNameFromDN
-		"PVWA",             // pvwaTag
-		nil,                // accountActivities
-		platforms,          // platforms
-		platformConnectors, // platformConnectors
-		targetPlatforms,    // targetPlatforms
-		nil,                // linkedAccounts
+		nil,                  // users
+		nil,                  // groups
+		nil,                  // safes
+		nil,                  // safeMembers
+		accounts,             // accounts
+		nil,                  // targetDomains
+		false,                // parseSAMAccountNameFromDN
+		"PVWA",               // pvwaTag
+		nil,                  // accountActivities
+		platforms,            // platforms
+		platformConnectors,   // platformConnectors
+		targetPlatforms,      // targetPlatforms
+		nil,                  // linkedAccounts
+		psmServers,           // psmServers
+		connectionComponents, // connectionComponents
 		logger,
 		false,  // debug
 		"WARNING",
@@ -761,5 +773,164 @@ func TestPlatformExceptionFlags_NoTargetData(t *testing.T) {
 		if _, ok := node.Properties[key]; ok {
 			t.Errorf("expected %s to be absent when no target data, but it was present", key)
 		}
+	}
+}
+
+func TestPSMServerNodes(t *testing.T) {
+	psmServers := []models.PSMServer{
+		{ID: "PSMServer_abc123", Name: "PSM Server Main", Address: "10.10.10.20"},
+		{ID: "PSMServer_def456", Name: "PSM Server DR", Address: "10.10.10.21"},
+	}
+
+	og := buildFullPlatformGraph(nil, nil, nil, psmServers, nil, nil)
+
+	node1 := og.Nodes["CAPSMSERVER-PSMSERVER_ABC123-PVWA"]
+	if node1 == nil {
+		t.Fatal("expected CyberArkPSMServer node for PSMServer_abc123, got nil")
+	}
+	if node1.Properties["psmServerId"] != "PSMServer_abc123" {
+		t.Errorf("expected psmServerId=PSMServer_abc123, got %v", node1.Properties["psmServerId"])
+	}
+	if node1.Properties["name"] != "PSM Server Main" {
+		t.Errorf("expected name='PSM Server Main', got %v", node1.Properties["name"])
+	}
+	if node1.Properties["address"] != "10.10.10.20" {
+		t.Errorf("expected address=10.10.10.20, got %v", node1.Properties["address"])
+	}
+
+	node2 := og.Nodes["CAPSMSERVER-PSMSERVER_DEF456-PVWA"]
+	if node2 == nil {
+		t.Fatal("expected CyberArkPSMServer node for PSMServer_def456, got nil")
+	}
+}
+
+func TestConnectionComponentNodes(t *testing.T) {
+	connComponents := []models.ConnectionComponent{
+		{ID: "PSM-RDP", DisplayName: "RDP"},
+		{ID: "PSM-SSH", DisplayName: "SSH"},
+	}
+
+	og := buildFullPlatformGraph(nil, nil, nil, nil, connComponents, nil)
+
+	node1 := og.Nodes["CACONNCOMP-PSM-RDP-PVWA"]
+	if node1 == nil {
+		t.Fatal("expected CyberArkConnectionComponent node for PSM-RDP, got nil")
+	}
+	if node1.Properties["connectorId"] != "PSM-RDP" {
+		t.Errorf("expected connectorId=PSM-RDP, got %v", node1.Properties["connectorId"])
+	}
+	if node1.Properties["displayName"] != "RDP" {
+		t.Errorf("expected displayName=RDP, got %v", node1.Properties["displayName"])
+	}
+
+	node2 := og.Nodes["CACONNCOMP-PSM-SSH-PVWA"]
+	if node2 == nil {
+		t.Fatal("expected CyberArkConnectionComponent node for PSM-SSH, got nil")
+	}
+}
+
+func TestPSMServer_NilInput(t *testing.T) {
+	og := buildFullPlatformGraph(nil, nil, nil, nil, nil, nil)
+	for _, node := range og.Nodes {
+		for _, kind := range node.Kinds {
+			if kind == "CyberArkPSMServer" || kind == "CyberArkConnectionComponent" {
+				t.Errorf("expected no PSM/connector nodes when input is nil, got %s", kind)
+			}
+		}
+	}
+}
+
+func TestCyberArkUsesPSMServer_Edge(t *testing.T) {
+	platforms := []models.Platform{{
+		General: models.PlatformGeneral{ID: "WinServer", Name: "WinServer"},
+		SessionManagement: models.PlatformSessionManagement{
+			PSMServerID: "PSMServer_abc123",
+		},
+	}}
+	psmServers := []models.PSMServer{
+		{ID: "PSMServer_abc123", Name: "PSM Server Main", Address: "10.10.10.20"},
+	}
+
+	og := buildFullPlatformGraph(platforms, nil, nil, psmServers, nil, nil)
+
+	edges := edgesByKind(og, "CyberArkUsesPSMServer")
+	if len(edges) != 1 {
+		t.Fatalf("expected 1 CyberArkUsesPSMServer edge, got %d", len(edges))
+	}
+	if edges[0].Start.Value != "CAPLATFORM-WINSERVER-PVWA" {
+		t.Errorf("expected start=CAPLATFORM-WINSERVER-PVWA, got %s", edges[0].Start.Value)
+	}
+	if edges[0].End.Value != "CAPSMSERVER-PSMSERVER_ABC123-PVWA" {
+		t.Errorf("expected end=CAPSMSERVER-PSMSERVER_ABC123-PVWA, got %s", edges[0].End.Value)
+	}
+}
+
+func TestCyberArkManagedByPSM_Edge(t *testing.T) {
+	platforms := []models.Platform{{
+		General: models.PlatformGeneral{ID: "WinServer", Name: "WinServer"},
+		SessionManagement: models.PlatformSessionManagement{
+			PSMServerID: "PSMServer_abc123",
+		},
+	}}
+	psmServers := []models.PSMServer{
+		{ID: "PSMServer_abc123", Name: "PSM Server Main", Address: "10.10.10.20"},
+	}
+	accounts := []models.Account{
+		{ID: "123_45", Name: "TestAccount", PlatformID: "WinServer", SafeName: "TestSafe"},
+	}
+
+	og := buildFullPlatformGraph(platforms, nil, nil, psmServers, nil, accounts)
+
+	edges := edgesByKind(og, "CyberArkManagedByPSM")
+	if len(edges) != 1 {
+		t.Fatalf("expected 1 CyberArkManagedByPSM edge, got %d", len(edges))
+	}
+	if edges[0].End.Value != "CAPSMSERVER-PSMSERVER_ABC123-PVWA" {
+		t.Errorf("expected end=CAPSMSERVER-PSMSERVER_ABC123-PVWA, got %s", edges[0].End.Value)
+	}
+}
+
+func TestCyberArkHasConnectionComponent_Edge(t *testing.T) {
+	platforms := []models.Platform{{
+		General: models.PlatformGeneral{ID: "WinServer", Name: "WinServer"},
+	}}
+	connectors := map[string][]string{
+		"WinServer": {"PSM-RDP", "PSM-SSH"},
+	}
+	connComponents := []models.ConnectionComponent{
+		{ID: "PSM-RDP", DisplayName: "RDP"},
+		{ID: "PSM-SSH", DisplayName: "SSH"},
+	}
+
+	og := buildFullPlatformGraph(platforms, connectors, nil, nil, connComponents, nil)
+
+	edges := edgesByKind(og, "CyberArkHasConnectionComponent")
+	if len(edges) != 2 {
+		t.Fatalf("expected 2 CyberArkHasConnectionComponent edges, got %d", len(edges))
+	}
+
+	for _, e := range edges {
+		if e.Start.Value != "CAPLATFORM-WINSERVER-PVWA" {
+			t.Errorf("expected start=CAPLATFORM-WINSERVER-PVWA, got %s", e.Start.Value)
+		}
+		if e.Props["enabled"] != true {
+			t.Errorf("expected enabled=true, got %v", e.Props["enabled"])
+		}
+	}
+}
+
+func TestCyberArkHasConnectionComponent_NoConnectors(t *testing.T) {
+	platforms := []models.Platform{{
+		General: models.PlatformGeneral{ID: "WinServer", Name: "WinServer"},
+	}}
+	connComponents := []models.ConnectionComponent{
+		{ID: "PSM-RDP", DisplayName: "RDP"},
+	}
+
+	og := buildFullPlatformGraph(platforms, nil, nil, nil, connComponents, nil)
+
+	edges := edgesByKind(og, "CyberArkHasConnectionComponent")
+	if len(edges) != 0 {
+		t.Errorf("expected 0 CyberArkHasConnectionComponent edges when no platformConnectors, got %d", len(edges))
 	}
 }

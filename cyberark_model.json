@@ -34,6 +34,20 @@
         "name": "server",
         "color": "#D4B8D9"
       }
+    },
+    "CyberArkPSMServer": {
+      "icon": {
+        "type": "font-awesome",
+        "name": "desktop",
+        "color": "#A8D5BA"
+      }
+    },
+    "CyberArkConnectionComponent": {
+      "icon": {
+        "type": "font-awesome",
+        "name": "plug",
+        "color": "#B8C9E0"
+      }
     }
   }
 }

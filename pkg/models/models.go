@@ -253,3 +253,16 @@ type TargetPlatform struct {
 	PrivilegedAccessWorkflows TargetPlatformWorkflows          `json:"PrivilegedAccessWorkflows"`
 	SessionManagement         TargetPlatformSessionManagement  `json:"PrivilegedSessionManagement"`
 }
+
+// PSMServer represents a PSM server from GET /API/PSM/Servers/
+type PSMServer struct {
+	ID      string `json:"Id"`
+	Name    string `json:"Name"`
+	Address string `json:"Address"`
+}
+
+// ConnectionComponent represents a PSM connection component from GET /API/PSM/Connectors/
+type ConnectionComponent struct {
+	ID          string `json:"Id"`
+	DisplayName string `json:"DisplayName"`
+}
