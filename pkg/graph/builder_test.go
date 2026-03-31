@@ -934,3 +934,96 @@ func TestCyberArkHasConnectionComponent_NoConnectors(t *testing.T) {
 		t.Errorf("expected 0 CyberArkHasConnectionComponent edges when no platformConnectors, got %d", len(edges))
 	}
 }
+
+func TestPlatformFallbackFromTargets(t *testing.T) {
+	// Simulate /API/Platforms/ failure: no platforms, but target platforms available
+	targetPlatforms := []models.TargetPlatform{
+		{
+			PlatformID: "WinServer",
+			Name:       "WinServer",
+			PrivilegedAccessWorkflows: models.TargetPlatformWorkflows{
+				RequireDualControlPasswordAccessApproval: models.WorkflowRule{IsActive: true, IsAnException: true},
+			},
+			SessionManagement: models.TargetPlatformSessionManagement{
+				PSMServerID:                                    "PSMServer_abc123",
+				RequirePrivilegedSessionMonitoringAndIsolation: models.WorkflowRule{IsActive: true, IsAnException: false},
+				RecordAndSaveSessionActivity:                   models.WorkflowRule{IsActive: false, IsAnException: false},
+			},
+		},
+	}
+	psmServers := []models.PSMServer{
+		{ID: "PSMServer_abc123", Name: "PSM Main", Address: "10.10.10.20"},
+	}
+	accounts := []models.Account{
+		{ID: "acc1", Name: "TestAccount", PlatformID: "WinServer", SafeName: "TestSafe"},
+	}
+
+	// No platforms passed (simulating 500 error), but targetPlatforms are available
+	og := buildFullPlatformGraph(nil, nil, targetPlatforms, psmServers, nil, accounts)
+
+	// Fallback platform node should be created from target data
+	node := og.Nodes["CAPLATFORM-WINSERVER-PVWA"]
+	if node == nil {
+		t.Fatal("expected fallback CyberArkPlatform node from Targets data, got nil")
+	}
+	if node.Properties["dataSource"] != "targets-fallback" {
+		t.Errorf("expected dataSource=targets-fallback, got %v", node.Properties["dataSource"])
+	}
+	if node.Properties["psmServerID"] != "PSMServer_abc123" {
+		t.Errorf("expected psmServerID=PSMServer_abc123, got %v", node.Properties["psmServerID"])
+	}
+
+	// Exception flags should still be set
+	if node.Properties["dualControlIsException"] != true {
+		t.Errorf("expected dualControlIsException=true, got %v", node.Properties["dualControlIsException"])
+	}
+
+	// CyberArkUsesPSMServer edge should exist
+	psmEdges := edgesByKind(og, "CyberArkUsesPSMServer")
+	if len(psmEdges) != 1 {
+		t.Fatalf("expected 1 CyberArkUsesPSMServer edge from fallback, got %d", len(psmEdges))
+	}
+
+	// CyberArkUsesPlatform edge (Account → Platform) should exist
+	platEdges := edgesByKind(og, "CyberArkUsesPlatform")
+	if len(platEdges) != 1 {
+		t.Fatalf("expected 1 CyberArkUsesPlatform edge from fallback, got %d", len(platEdges))
+	}
+
+	// CyberArkManagedByPSM edge (Account → PSM Server) should exist
+	managedEdges := edgesByKind(og, "CyberArkManagedByPSM")
+	if len(managedEdges) != 1 {
+		t.Fatalf("expected 1 CyberArkManagedByPSM edge from fallback, got %d", len(managedEdges))
+	}
+}
+
+func TestPlatformFallbackNotUsedWhenPlatformsExist(t *testing.T) {
+	// When /API/Platforms/ succeeds, target data should enrich, not create duplicates
+	platforms := []models.Platform{{
+		General: models.PlatformGeneral{ID: "WinServer", Name: "WinServer"},
+	}}
+	targetPlatforms := []models.TargetPlatform{{
+		PlatformID: "WinServer",
+		Name:       "WinServer",
+		PrivilegedAccessWorkflows: models.TargetPlatformWorkflows{
+			RequireDualControlPasswordAccessApproval: models.WorkflowRule{IsActive: true, IsAnException: true},
+		},
+	}}
+
+	og := buildFullPlatformGraph(platforms, nil, targetPlatforms, nil, nil, nil)
+
+	node := og.Nodes["CAPLATFORM-WINSERVER-PVWA"]
+	if node == nil {
+		t.Fatal("expected CyberArkPlatform node, got nil")
+	}
+
+	// Should NOT have dataSource=targets-fallback since full platform data was available
+	if node.Properties["dataSource"] == "targets-fallback" {
+		t.Error("expected full platform data, not fallback")
+	}
+
+	// Exception flags should still be merged
+	if node.Properties["dualControlIsException"] != true {
+		t.Errorf("expected dualControlIsException=true, got %v", node.Properties["dualControlIsException"])
+	}
+}

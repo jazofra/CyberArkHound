@@ -420,8 +420,11 @@ func BuildOpenGraph(
 		logger.Infof("Indexed %d platform IDs for matching", len(platformsByID))
 	}
 
-	// Enrich platform nodes with Master Policy exception flags from Targets endpoint
+	// Enrich platform nodes with Master Policy exception flags from Targets endpoint.
+	// When /API/Platforms/ fails (e.g., HTTP 500), create fallback platform nodes from
+	// the Targets data so that account→platform and platform→PSMServer edges still work.
 	if len(targetPlatforms) > 0 {
+		fallbackCount := 0
 		logger.Infof("Processing %d target platform exception flags...", len(targetPlatforms))
 		for _, tp := range targetPlatforms {
 			tpID := tp.PlatformID
@@ -435,8 +438,37 @@ func BuildOpenGraph(
 			if !ok {
 				platformNodeID, ok = platformsByID[strings.ToLower(tpID)]
 			}
+
 			if !ok {
-				continue
+				// Fallback: create a basic platform node from target data when
+				// the full /API/Platforms/ endpoint was unavailable.
+				platformNodeID = strings.ToUpper(fmt.Sprintf("caplatform-%s-%s", tpID, pvwaTag))
+				props := map[string]interface{}{
+					"id":         platformNodeID,
+					"name":       tp.Name,
+					"platformId": tpID,
+					"psmServerID": tp.SessionManagement.PSMServerID,
+					"requirePrivilegedSessionMonitoringAndIsolation": tp.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation.IsActive,
+					"recordAndSaveSessionActivity":                   tp.SessionManagement.RecordAndSaveSessionActivity.IsActive,
+					"requireDualControlPasswordAccessApproval":       tp.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval.IsActive,
+					"enforceCheckinCheckoutExclusiveAccess":          tp.PrivilegedAccessWorkflows.EnforceCheckinCheckoutExclusiveAccess.IsActive,
+					"enforceOnetimePasswordAccess":                   tp.PrivilegedAccessWorkflows.EnforceOnetimePasswordAccess.IsActive,
+					"dataSource": "targets-fallback",
+				}
+				og.MergeNode(&Node{
+					ID:         platformNodeID,
+					Kinds:      []string{"CyberArkPlatform", "CyberArkBase"},
+					Properties: SanitizeProperties(props),
+				})
+				platformsByID[tpID] = platformNodeID
+				platformsByID[strings.ToLower(tpID)] = platformNodeID
+				platformDualControl[strings.ToLower(tpID)] = tp.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval.IsActive
+				platformSessionMonitoring[strings.ToLower(tpID)] = tp.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation.IsActive
+				platformSessionRecording[strings.ToLower(tpID)] = tp.SessionManagement.RecordAndSaveSessionActivity.IsActive
+				if tp.SessionManagement.PSMServerID != "" {
+					platformPSMServerID[strings.ToLower(tpID)] = tp.SessionManagement.PSMServerID
+				}
+				fallbackCount++
 			}
 
 			// Merge exception flags into the existing platform node
@@ -448,6 +480,9 @@ func BuildOpenGraph(
 				node.Properties["sessionMonitoringIsException"] = tp.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation.IsAnException
 				node.Properties["sessionRecordingIsException"] = tp.SessionManagement.RecordAndSaveSessionActivity.IsAnException
 			}
+		}
+		if fallbackCount > 0 {
+			logger.Infof("Created %d fallback platform nodes from Targets endpoint data", fallbackCount)
 		}
 	}
 
