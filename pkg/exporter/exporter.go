@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/siemens-healthineers/cyberarkhound/pkg/graph"
 	"github.com/sirupsen/logrus"
@@ -160,5 +162,36 @@ func ExportToBloodHoundJSON(og *graph.OpenGraph, outputFile string, logger *logr
 	logger.Infof("Export complete: nodes=%d internal_edges=%d external_edges=%d total=%d",
 		totalNodes, totalInternalEdges, totalExternalEdges, totalEdges)
 
+	return nil
+}
+
+// edgeInfoPath derives the edge info output path from the main output path.
+// Examples: "output.json" → "output_edge_info.json", "output" → "output_edge_info.json"
+func edgeInfoPath(outputFile string) string {
+	ext := filepath.Ext(outputFile)
+	if ext != "" {
+		base := strings.TrimSuffix(outputFile, ext)
+		return base + "_edge_info" + ext
+	}
+	return outputFile + "_edge_info.json"
+}
+
+// ExportEdgeInfo writes a JSON file containing security documentation for all
+// CyberArkHound edge types (description, Windows/Linux abuse, OPSEC notes, references).
+// The output file is derived from the main output path by appending "_edge_info" before the extension.
+func ExportEdgeInfo(outputFile string, logger *logrus.Logger) error {
+	infoPath := edgeInfoPath(outputFile)
+	logger.Infof("Writing edge info to: %s", infoPath)
+
+	data, err := json.MarshalIndent(graph.EdgeInfoMap, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal edge info: %w", err)
+	}
+
+	if err := os.WriteFile(infoPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write edge info file: %w", err)
+	}
+
+	logger.Infof("Edge info written: %d edge types documented", len(graph.EdgeInfoMap))
 	return nil
 }
