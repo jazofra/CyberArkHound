@@ -18,6 +18,16 @@ func edgesByKind(og *OpenGraph, kind string) []*Edge {
 	return out
 }
 
+func externalEdgesByKind(og *OpenGraph, kind string) []*Edge {
+	var out []*Edge
+	for _, e := range og.ExternalEdges {
+		if e.Kind == kind {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // helper: collect SyncsToADUser edges from ExternalEdges
 func syncsToADUserEdges(og *OpenGraph) []*Edge {
 	var out []*Edge
@@ -1063,5 +1073,76 @@ func TestPlatformFallbackNotUsedWhenPlatformsExist(t *testing.T) {
 	// Exception flags should still be merged
 	if node.Properties["dualControlIsException"] != true {
 		t.Errorf("expected dualControlIsException=true, got %v", node.Properties["dualControlIsException"])
+	}
+}
+
+func TestCyberArkHasConnectionComponent_CaseInsensitive(t *testing.T) {
+	platforms := []models.Platform{{
+		General: models.PlatformGeneral{ID: "WinServer", Name: "WinServer"},
+	}}
+	// Connector IDs from per-platform endpoint use different casing
+	connectors := map[string][]string{
+		"WinServer": {"psm-rdp", "PSM-SSH"},
+	}
+	// Connection component IDs from global endpoint use original casing
+	connComponents := []models.ConnectionComponent{
+		{ID: "PSM-RDP", DisplayName: "RDP"},
+		{ID: "psm-ssh", DisplayName: "SSH"},
+	}
+
+	og := buildFullPlatformGraph(platforms, connectors, nil, nil, connComponents, nil)
+
+	edges := edgesByKind(og, "CyberArkHasConnectionComponent")
+	if len(edges) != 2 {
+		t.Fatalf("expected 2 CyberArkHasConnectionComponent edges with case-insensitive matching, got %d", len(edges))
+	}
+}
+
+func TestCyberArkPSMServerHostedOn_Edge(t *testing.T) {
+	psmServers := []models.PSMServer{
+		{ID: "PSMServer_abc123", Name: "PSM Server Main", Address: "server01.domain.com"},
+		{ID: "PSMServer_def456", Name: "PSM Server DR", Address: "10.10.10.21"},
+	}
+
+	og := buildFullPlatformGraph(nil, nil, nil, psmServers, nil, nil)
+
+	edges := externalEdgesByKind(og, "CyberArkPSMServerHostedOn")
+	if len(edges) != 2 {
+		t.Fatalf("expected 2 CyberArkPSMServerHostedOn edges, got %d", len(edges))
+	}
+
+	// Verify address is uppercased in edge end value
+	endValues := map[string]bool{}
+	for _, e := range edges {
+		endValues[e.End.Value] = true
+		if e.End.MatchBy != "name" {
+			t.Errorf("expected end match_by=name, got %s", e.End.MatchBy)
+		}
+		if e.Start.MatchBy != "id" {
+			t.Errorf("expected start match_by=id, got %s", e.Start.MatchBy)
+		}
+	}
+	if !endValues["SERVER01.DOMAIN.COM"] {
+		t.Error("expected edge end value SERVER01.DOMAIN.COM")
+	}
+	if !endValues["10.10.10.21"] {
+		t.Error("expected edge end value 10.10.10.21")
+	}
+}
+
+func TestCyberArkPSMServerHostedOn_EmptyAddress(t *testing.T) {
+	psmServers := []models.PSMServer{
+		{ID: "PSMServer_abc123", Name: "PSM Server Main", Address: ""},
+		{ID: "PSMServer_def456", Name: "PSM Server DR", Address: "10.10.10.21"},
+	}
+
+	og := buildFullPlatformGraph(nil, nil, nil, psmServers, nil, nil)
+
+	edges := externalEdgesByKind(og, "CyberArkPSMServerHostedOn")
+	if len(edges) != 1 {
+		t.Fatalf("expected 1 CyberArkPSMServerHostedOn edge (empty address skipped), got %d", len(edges))
+	}
+	if edges[0].End.Value != "10.10.10.21" {
+		t.Errorf("expected end value 10.10.10.21, got %s", edges[0].End.Value)
 	}
 }
