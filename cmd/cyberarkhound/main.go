@@ -460,6 +460,11 @@ func main() {
 		logger.Fatalf("Failed to export: %v", err)
 	}
 
+	// Export edge info (description, abuse, OPSEC, references for each edge type)
+	if err := exporter.ExportEdgeInfo(*outputFile, logger); err != nil {
+		logger.Warnf("Failed to export edge info: %v", err)
+	}
+
 	// Logoff
 	if err := apiClient.Logoff(); err != nil {
 		logger.Warnf("Logoff failed: %v", err)
