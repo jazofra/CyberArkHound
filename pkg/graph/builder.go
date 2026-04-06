@@ -1115,13 +1115,30 @@ func BuildOpenGraph(
 			accountPSMEdgeCount++
 		}
 		logger.Infof("Created %d CyberArkManagedByPSM edges", accountPSMEdgeCount)
+
+		// Create CyberArkPSMServerHostedOn external edges (PSM Server → AD Computer)
+		psmHostedOnCount := 0
+		for _, ps := range psmServers {
+			addr := strings.TrimSpace(ps.Address)
+			if addr == "" {
+				continue
+			}
+			psmNodeID, ok := psmServersByID[ps.ID]
+			if !ok {
+				continue
+			}
+			og.AddEdge("CyberArkPSMServerHostedOn", psmNodeID, strings.ToUpper(addr),
+				"id", "name", nil, true)
+			psmHostedOnCount++
+		}
+		logger.Infof("Created %d CyberArkPSMServerHostedOn edges", psmHostedOnCount)
 	}
 
 	// Process Connection Components (if provided)
 	if len(connectionComponents) > 0 {
 		logger.Infof("Processing %d connection components...", len(connectionComponents))
 		connCompNodeCount := 0
-		connCompsByID := make(map[string]string) // connectorID -> connCompNodeID
+		connCompsByID := make(map[string]string) // connectorID (lowercase) -> connCompNodeID
 
 		for _, cc := range connectionComponents {
 			if cc.ID == "" {
@@ -1139,7 +1156,7 @@ func BuildOpenGraph(
 				}),
 			})
 
-			connCompsByID[cc.ID] = connCompNodeID
+			connCompsByID[strings.ToLower(cc.ID)] = connCompNodeID
 			connCompNodeCount++
 		}
 		logger.Infof("Created %d CyberArkConnectionComponent nodes", connCompNodeCount)
@@ -1153,10 +1170,13 @@ func BuildOpenGraph(
 					platNodeID, ok = platformsByID[strings.ToLower(platID)]
 				}
 				if !ok {
+					if debug {
+						logger.Debugf("Platform '%s' from platformConnectors not found in platformsByID", platID)
+					}
 					continue
 				}
 				for _, connID := range connectorIDs {
-					connCompNodeID, ok := connCompsByID[connID]
+					connCompNodeID, ok := connCompsByID[strings.ToLower(connID)]
 					if !ok {
 						if debug {
 							logger.Debugf("Platform %s references connector '%s' but no matching connection component node found", platID, connID)
@@ -1169,6 +1189,8 @@ func BuildOpenGraph(
 				}
 			}
 			logger.Infof("Created %d CyberArkHasConnectionComponent edges", connCompEdgeCount)
+		} else {
+			logger.Infof("No platform-to-connector mapping available; skipping CyberArkHasConnectionComponent edges")
 		}
 	}
 

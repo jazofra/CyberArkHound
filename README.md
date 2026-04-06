@@ -45,7 +45,7 @@ The resulting `cyberark_export.json` file can be directly imported into BloodHou
 - **Linked account chain analysis**: Optional CyberArkLinkedTo edges mapping logon/reconcile/enable account dependencies for credential chain traversal
 - **Safe creator and CPM tracking**: CyberArkCreated and CyberArkManagedBy edges showing who created and manages each safe
 - **Platform-based grouping**: Optional CyberArkPlatform nodes and CyberArkUsesPlatform edges for shared attack surface analysis
-- **PSM infrastructure mapping**: Optional CyberArkPSMServer and CyberArkConnectionComponent nodes with edges showing which PSM servers and connection protocols (RDP, SSH, etc.) each platform and account uses
+- **PSM infrastructure mapping**: Optional CyberArkPSMServer and CyberArkConnectionComponent nodes with edges showing which PSM servers and connection protocols (RDP, SSH, etc.) each platform and account uses; CyberArkPSMServerHostedOn external edges link PSM servers to their AD Computer objects
 - **Dual control awareness**: Per-account `requiresApproval` derived from platform Master Policy settings (with approver-presence fallback); CyberArkCanApprove edges identify who can authorize dual-controlled access
 - **Master Policy exception detection**: Flags on platform nodes identify deviations from Master Policy defaults for audit and compliance
 - **Resilient platform data**: Automatic fallback to `/API/Platforms/Targets` when `/API/Platforms/` is unavailable, preserving all security-relevant properties
@@ -275,6 +275,7 @@ RETURN u.name, s.safeName
 | `CyberArkUsesPSMServer` | Platform → PSM Server | Platform `PSMServerID` field | Which PSM server handles sessions for each platform |
 | `CyberArkManagedByPSM` | Account → PSM Server | Derived via account's platform | Direct link for querying which PSM server manages an account's sessions |
 | `CyberArkHasConnectionComponent` | Platform → Connection Component | `GET /API/Platforms/Targets/{id}/PrivilegedSessionManagement` | Which connection protocols (RDP, SSH, etc.) are enabled per platform |
+| `CyberArkPSMServerHostedOn` | PSM Server → AD Computer | PSM Server `Address` field (uppercased) | External edge — maps PSM server to its AD Computer object |
 | `CyberArkMemberOf` | User/Group → Group | Group membership data | Group-based permission inheritance |
 | `CyberArkContains` | Safe → Account | Account's `safeName` field | Safe-account containment relationship |
 | `SyncsToCyberArkUser` | AD User → CyberArkUser | LDAP DN with `DC=` | External edge — AD-to-CyberArk identity mapping |
@@ -455,6 +456,10 @@ RETURN p.name, p.systemType
 // List all connection components and which platforms use them
 MATCH (p:CyberArkPlatform)-[:CyberArkHasConnectionComponent]->(cc:CyberArkConnectionComponent)
 RETURN cc.connectorId, cc.displayName, COLLECT(p.name) AS platforms
+
+// Find AD Computers hosting PSM servers
+MATCH (psm:CyberArkPSMServer)-[:CyberArkPSMServerHostedOn]->(c:Computer)
+RETURN psm.name, c.name
 
 // Find accounts on platforms created from fallback data (investigate /API/Platforms/ failure)
 MATCH (a:CyberArkAccount)-[:CyberArkUsesPlatform]->(p:CyberArkPlatform {dataSource: "targets-fallback"})
@@ -683,7 +688,7 @@ Note: CyberArk node `id` values are namespaced with a 4-character PVWA tag deriv
 	}
 }
 ```
-External edges (SyncsToCyberArkUser / SyncsToCyberArkGroup / SyncsToADUser / CyberArkCanConnect) are included with `match_by` set to `name` where appropriate.
+External edges (SyncsToCyberArkUser / SyncsToCyberArkGroup / SyncsToADUser / CyberArkCanConnect / CyberArkPSMServerHostedOn) are included with `match_by` set to `name` where appropriate.
 
 ### Data Flow Diagram
 High-level relationship visualization between CyberArk entities and inferred external AD objects:
@@ -715,6 +720,7 @@ flowchart TD
  CyberArkAccount -- CyberArkManagedByPSM --> CyberArkPSMServer["fa:fa-desktop CyberArkPSMServer"]
  CyberArkPlatform -- CyberArkUsesPSMServer --> CyberArkPSMServer
  CyberArkPlatform -- CyberArkHasConnectionComponent --> CyberArkConnectionComponent["fa:fa-plug CyberArkConnectionComponent"]
+ CyberArkPSMServer -. CyberArkPSMServerHostedOn .-> Computer
  style User fill:#17E625,stroke:#0B8A14,stroke-width:2px
  style Computer fill:#FCAEA3,stroke:DF7E71,stroke-widthg:2px
  style CyberArkUser fill:#BFD6E3,stroke:#7BA3C0,stroke-width:2px
@@ -839,6 +845,7 @@ Use `--log-level` to control progress reporting frequency:
 [2025-11-24 10:16:45] INFO cyberarkhound:   SyncsToCyberArkUser: 480
 [2025-11-24 10:16:45] INFO cyberarkhound:   SyncsToCyberArkGroup: 60
 [2025-11-24 10:16:45] INFO cyberarkhound:   SyncsToADUser: 1140
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkPSMServerHostedOn: 4
 [2025-11-24 10:16:45] INFO cyberarkhound: Memory stats: Alloc=85MB Sys=142MB NumGC=12
 [2025-11-24 10:16:45] INFO cyberarkhound: Writing JSON to file: export.json
 [2025-11-24 10:16:45] INFO cyberarkhound:   Writing compact JSON format...
