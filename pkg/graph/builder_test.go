@@ -1146,3 +1146,61 @@ func TestCyberArkPSMServerHostedOn_EmptyAddress(t *testing.T) {
 		t.Errorf("expected end value 10.10.10.21, got %s", edges[0].End.Value)
 	}
 }
+
+func TestCyberArkInstance_RootNodeAndContainment(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.WarnLevel)
+
+	og, _ := BuildOpenGraph(
+		[]models.User{{ID: "u1", Username: "alice", Source: "CyberArk"}},
+		[]models.Group{{ID: "g1", GroupName: "Admins"}},
+		[]models.Safe{{SafeName: "TestSafe", SafeUrlId: "TestSafe"}},
+		nil, // safeMembers
+		[]models.Account{{ID: "acc1", UserName: "svc", SafeName: "TestSafe"}},
+		nil,    // targetDomains
+		false,  // parseSAMAccountNameFromDN
+		"PVWA", // pvwaTag
+		nil, nil, nil, nil, nil, nil, nil,
+		logger,
+		false,
+		"WARNING",
+	)
+
+	instanceID := "CAINSTANCE-PVWA"
+	inst, ok := og.Nodes[instanceID]
+	if !ok {
+		t.Fatalf("expected CyberArkInstance node %s to exist", instanceID)
+	}
+	hasKind := false
+	for _, k := range inst.Kinds {
+		if k == "CyberArkInstance" {
+			hasKind = true
+		}
+	}
+	if !hasKind {
+		t.Errorf("expected node %s to carry kind CyberArkInstance, got %v", instanceID, inst.Kinds)
+	}
+
+	contained := map[string]bool{}
+	for _, e := range edgesByKind(og, "CyberArkInstanceContains") {
+		if e.Start.Value != instanceID {
+			t.Errorf("CyberArkInstanceContains should start at %s, got %s", instanceID, e.Start.Value)
+		}
+		contained[e.End.Value] = true
+	}
+
+	for _, want := range []string{
+		"CAUSER-ALICE-PVWA",
+		"CAGROUP-ADMINS-PVWA",
+		"CASAFE-TESTSAFE-PVWA",
+	} {
+		if !contained[want] {
+			t.Errorf("expected CyberArkInstanceContains edge to %s", want)
+		}
+	}
+
+	// Accounts must NOT be directly contained — they nest under their safe.
+	if contained["CAACCOUNT-ACC1-PVWA"] {
+		t.Errorf("account should not be directly contained by the instance; it nests under its safe")
+	}
+}

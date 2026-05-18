@@ -278,6 +278,7 @@ RETURN u.name, s.safeName
 | `CyberArkPSMServerHostedOn` | PSM Server → AD Computer | PSM Server `Address` field (uppercased) | External edge — maps PSM server to its AD Computer object |
 | `CyberArkMemberOf` | User/Group → Group | Group membership data | Group-based permission inheritance |
 | `CyberArkContains` | Safe → Account | Account's `safeName` field | Safe-account containment relationship |
+| `CyberArkInstanceContains` | Instance → User/Group/Safe/Platform/PSM Server/Connection Component | Derived (one root per PVWA tag) | Environment root containment — scopes all objects to their PVWA instance |
 | `SyncsToCyberArkUser` | AD User → CyberArkUser | LDAP DN with `DC=` | External edge — AD-to-CyberArk identity mapping |
 | `SyncsToCyberArkGroup` | AD Group → CyberArkGroup | LDAP DN with `DC=` | External edge — AD-to-CyberArk group mapping |
 | `SyncsToADUser` | CyberArkAccount → AD User | Account address matches target domain | External edge — credential-to-AD-user mapping |
@@ -569,6 +570,10 @@ RETURN p.name, COUNT(a) as accountsOnInactivePlatform
 ```
 
 ### Node Properties
+
+#### CyberArkInstance Properties
+- **Identity**: `name`, `pvwaTag` (the 4-character PVWA tag derived from `--pvwa`)
+- The environment root node. One `CyberArkInstance` node is emitted per run and is linked to every top-level object (users, groups, safes, platforms, PSM servers, connection components) via `CyberArkInstanceContains`. Accounts are reached transitively through their safe (`CyberArkInstance` → `CyberArkSafe` → `CyberArkContains` → `CyberArkAccount`).
 
 #### CyberArkUser Properties
 - **Identity**: `userId`, `name`, `userType`, `source`, `isLDAPSynced`

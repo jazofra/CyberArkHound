@@ -6,6 +6,10 @@
 # JSON artifacts
 *.json
 
+# Schema / model definitions are tracked, not runtime export artifacts
+!cyberark_model.json
+!extension/schema.json
+
 # Debug artifacts
 *_debug
 *_debug.*
