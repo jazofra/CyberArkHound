@@ -1,48 +1,48 @@
 {
   "custom_types": {
-    "CyberArkAccount": {
+    "CyberArk_Account": {
       "icon": {
         "type": "font-awesome",
         "name": "user-secret",
         "color": "#E7C8C8"
       }
     },
-    "CyberArkGroup": {
+    "CyberArk_Group": {
       "icon": {
         "type": "font-awesome",
         "name": "user-group",
         "color": "#C8DCC0"
       }
     },
-    "CyberArkSafe": {
+    "CyberArk_Safe": {
       "icon": {
         "type": "font-awesome",
         "name": "vault",
         "color": "#E8D8B3"
       }
     },
-    "CyberArkUser": {
+    "CyberArk_User": {
       "icon": {
         "type": "font-awesome",
         "name": "user",
         "color": "#BFD6E3"
       }
     },
-    "CyberArkPlatform": {
+    "CyberArk_Platform": {
       "icon": {
         "type": "font-awesome",
         "name": "server",
         "color": "#D4B8D9"
       }
     },
-    "CyberArkPSMServer": {
+    "CyberArk_PSMServer": {
       "icon": {
         "type": "font-awesome",
         "name": "desktop",
         "color": "#A8D5BA"
       }
     },
-    "CyberArkConnectionComponent": {
+    "CyberArk_ConnectionComponent": {
       "icon": {
         "type": "font-awesome",
         "name": "plug",

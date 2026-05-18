@@ -41,12 +41,12 @@ The resulting `cyberark_export.json` file can be directly imported into BloodHou
 - **Permission-based access modeling**: Direct account access vs privilege escalation paths
 - **LDAP/Directory sync tracking**: Identify synced vs local users and groups
 - **External AD entity inference**: Automatic detection of relationships to Active Directory
-- **Account activity tracking**: Optional CyberArkUsedAccount edges showing actual usage patterns
-- **Linked account chain analysis**: Optional CyberArkLinkedTo edges mapping logon/reconcile/enable account dependencies for credential chain traversal
-- **Safe creator and CPM tracking**: CyberArkCreated and CyberArkManagedBy edges showing who created and manages each safe
-- **Platform-based grouping**: Optional CyberArkPlatform nodes and CyberArkUsesPlatform edges for shared attack surface analysis
-- **PSM infrastructure mapping**: Optional CyberArkPSMServer and CyberArkConnectionComponent nodes with edges showing which PSM servers and connection protocols (RDP, SSH, etc.) each platform and account uses; CyberArkPSMServerHostedOn external edges link PSM servers to their AD Computer objects
-- **Dual control awareness**: Per-account `requiresApproval` derived from platform Master Policy settings (with approver-presence fallback); CyberArkCanApprove edges identify who can authorize dual-controlled access
+- **Account activity tracking**: Optional CyberArk_UsedAccount edges showing actual usage patterns
+- **Linked account chain analysis**: Optional CyberArk_LinkedTo edges mapping logon/reconcile/enable account dependencies for credential chain traversal
+- **Safe creator and CPM tracking**: CyberArk_Created and CyberArk_ManagedBy edges showing who created and manages each safe
+- **Platform-based grouping**: Optional CyberArk_Platform nodes and CyberArk_UsesPlatform edges for shared attack surface analysis
+- **PSM infrastructure mapping**: Optional CyberArk_PSMServer and CyberArk_ConnectionComponent nodes with edges showing which PSM servers and connection protocols (RDP, SSH, etc.) each platform and account uses; CyberArk_PSMServerHostedOn external edges link PSM servers to their AD Computer objects
+- **Dual control awareness**: Per-account `requiresApproval` derived from platform Master Policy settings (with approver-presence fallback); CyberArk_CanApprove edges identify who can authorize dual-controlled access
 - **Master Policy exception detection**: Flags on platform nodes identify deviations from Master Policy defaults for audit and compliance
 - **Resilient platform data**: Automatic fallback to `/API/Platforms/Targets` when `/API/Platforms/` is unavailable, preserving all security-relevant properties
 - **Enriched metadata**: Personal details, vault authorizations, safe permissions, account management status
@@ -200,14 +200,14 @@ Download pre-compiled binaries from the [Releases](https://github.com/jazofra/Cy
 - `--max-reauth-attempts` Max re-authentication attempts on HTTP 401 before giving up (default: 5)
 
 **Activity Tracking:**
-- `--include-activity` Include account activity data (creates CyberArkUsedAccount edges)
+- `--include-activity` Include account activity data (creates CyberArk_UsedAccount edges)
 - `--activity-days` Number of days to look back for activity (default: 3)
 - `--activity-limit` Max activities per account to fetch from API (default: 100)
 
 **Linked Accounts & Platforms:**
-- `--include-linked-accounts` Include linked account data (creates CyberArkLinkedTo edges for logon/reconcile/enable account chains)
-- `--include-platforms` Include platform data (creates CyberArkPlatform nodes and CyberArkUsesPlatform edges)
-- `--include-psm` Include PSM server and connection component data (creates CyberArkPSMServer and CyberArkConnectionComponent nodes with linking edges)
+- `--include-linked-accounts` Include linked account data (creates CyberArk_LinkedTo edges for logon/reconcile/enable account chains)
+- `--include-platforms` Include platform data (creates CyberArk_Platform nodes and CyberArk_UsesPlatform edges)
+- `--include-psm` Include PSM server and connection component data (creates CyberArk_PSMServer and CyberArk_ConnectionComponent nodes with linking edges)
 
 **Testing/Development:**
 - `--limit-users` Limit number of users to process (0 = no limit)
@@ -219,7 +219,7 @@ Download pre-compiled binaries from the [Releases](https://github.com/jazofra/Cy
 
 The tool creates different edge types based on the permissions a user/group has on a safe:
 
-#### CyberArkHasAccessTo (User/Group → Account)
+#### CyberArk_HasAccessTo (User/Group → Account)
 **Direct account access** - User/group can immediately use or retrieve account credentials:
 - `useAccounts`: Use accounts via PSM connections without viewing passwords
 - `retrieveAccounts`: Retrieve and view account passwords
@@ -229,19 +229,19 @@ The tool creates different edge types based on the permissions a user/group has 
 **BloodHound Query Examples:**
 ```cypher
 // Find all accounts a user can access
-MATCH (u:CyberArkUser {name: "jdoe"})-[:CyberArkHasAccessTo]->(a:CyberArkAccount)
+MATCH (u:CyberArk_User {name: "jdoe"})-[:CyberArk_HasAccessTo]->(a:CyberArk_Account)
 RETURN a.name
 
 // Find all users who can access a specific account
-MATCH (u:CyberArkUser)-[:CyberArkHasAccessTo]->(a:CyberArkAccount {name: "prod-db-admin"})
+MATCH (u:CyberArk_User)-[:CyberArk_HasAccessTo]->(a:CyberArk_Account {name: "prod-db-admin"})
 RETURN u.name
 
 // Find LDAP users with direct account access
-MATCH (u:CyberArkUser {isLDAPSynced: true})-[:CyberArkHasAccessTo]->(a:CyberArkAccount)
+MATCH (u:CyberArk_User {isLDAPSynced: true})-[:CyberArk_HasAccessTo]->(a:CyberArk_Account)
 RETURN u.name, a.name
 ```
 
-#### CyberArkCanGrantAccessTo (User/Group → Safe)
+#### CyberArk_CanGrantAccessTo (User/Group → Safe)
 **Privilege escalation** - User/group can modify safe to grant themselves account access:
 - `manageSafe`: Update safe properties, recover safe, delete safe
 - `manageSafeMembers`: Add/remove safe members and modify their permissions
@@ -251,11 +251,11 @@ RETURN u.name, a.name
 **BloodHound Query Examples:**
 ```cypher
 // Find privilege escalation paths to accounts
-MATCH (u:CyberArkUser)-[:CyberArkCanGrantAccessTo]->(s:CyberArkSafe)-[:CyberArkContains]->(a:CyberArkAccount)
+MATCH (u:CyberArk_User)-[:CyberArk_CanGrantAccessTo]->(s:CyberArk_Safe)-[:CyberArk_Contains]->(a:CyberArk_Account)
 RETURN u.name, s.name, a.name
 
 // Find users who can grant themselves access to production safes
-MATCH (u:CyberArkUser)-[:CyberArkCanGrantAccessTo]->(s:CyberArkSafe)
+MATCH (u:CyberArk_User)-[:CyberArk_CanGrantAccessTo]->(s:CyberArk_Safe)
 WHERE s.safeName CONTAINS "prod"
 RETURN u.name, s.safeName
 ```
@@ -264,29 +264,29 @@ RETURN u.name, s.safeName
 
 | Edge | Direction | Source | Security Value |
 |------|-----------|--------|----------------|
-| `CyberArkHasAccessTo` | User/Group → Account | Safe member `useAccounts`/`retrieveAccounts` | Direct credential access; `requiresApproval` shows if dual control blocks retrieval |
-| `CyberArkCanGrantAccessTo` | User/Group → Safe | Safe member `manageSafe`/`manageSafeMembers` | Privilege escalation — can grant themselves account access |
-| `CyberArkCanApprove` | User/Group → Safe | Safe member `requestsAuthorizationLevel1`/`Level2` | Can approve dual-controlled access requests (L1/L2) |
-| `CyberArkUsedAccount` | User → Account | `GET /API/Accounts/{id}/Activities` | Actual usage audit trail — who really accessed what |
-| `CyberArkLinkedTo` | Account → Account | `GET /API/Accounts/{id}/LinkedAccounts` | Logon/reconcile/enable credential chains — compromising one propagates to all dependents |
-| `CyberArkCreated` | User → Safe | Existing `Safe.Creator` field | Shows who created each safe (implicit ownership/access) |
-| `CyberArkManagedBy` | CPM User → Safe | Existing `Safe.ManagingCPM` field | CPM accounts have privileged password management access |
-| `CyberArkUsesPlatform` | Account → Platform | `GET /API/Platforms/Targets` | Shared platform config = shared attack surface |
-| `CyberArkUsesPSMServer` | Platform → PSM Server | Platform `PSMServerID` field | Which PSM server handles sessions for each platform |
-| `CyberArkManagedByPSM` | Account → PSM Server | Derived via account's platform | Direct link for querying which PSM server manages an account's sessions |
-| `CyberArkHasConnectionComponent` | Platform → Connection Component | `GET /API/Platforms/Targets/{id}/PrivilegedSessionManagement` | Which connection protocols (RDP, SSH, etc.) are enabled per platform |
-| `CyberArkPSMServerHostedOn` | PSM Server → AD Computer | PSM Server `Address` field (uppercased) | External edge — maps PSM server to its AD Computer object |
-| `CyberArkMemberOf` | User/Group → Group | Group membership data | Group-based permission inheritance |
-| `CyberArkContains` | Safe → Account | Account's `safeName` field | Safe-account containment relationship |
-| `CyberArkInstanceContains` | Instance → User/Group/Safe/Platform/PSM Server/Connection Component | Derived (one root per PVWA tag) | Environment root containment — scopes all objects to their PVWA instance |
-| `SyncsToCyberArkUser` | AD User → CyberArkUser | LDAP DN with `DC=` | External edge — AD-to-CyberArk identity mapping |
-| `SyncsToCyberArkGroup` | AD Group → CyberArkGroup | LDAP DN with `DC=` | External edge — AD-to-CyberArk group mapping |
-| `SyncsToADUser` | CyberArkAccount → AD User | Account address matches target domain | External edge — credential-to-AD-user mapping |
-| `CyberArkCanConnect` | CyberArkAccount → AD Computer | Account address matches address subdomain of the target domain (Local accounts) | External edge — credential-to-AD-computer mapping |
+| `CyberArk_HasAccessTo` | User/Group → Account | Safe member `useAccounts`/`retrieveAccounts` | Direct credential access; `requiresApproval` shows if dual control blocks retrieval |
+| `CyberArk_CanGrantAccessTo` | User/Group → Safe | Safe member `manageSafe`/`manageSafeMembers` | Privilege escalation — can grant themselves account access |
+| `CyberArk_CanApprove` | User/Group → Safe | Safe member `requestsAuthorizationLevel1`/`Level2` | Can approve dual-controlled access requests (L1/L2) |
+| `CyberArk_UsedAccount` | User → Account | `GET /API/Accounts/{id}/Activities` | Actual usage audit trail — who really accessed what |
+| `CyberArk_LinkedTo` | Account → Account | `GET /API/Accounts/{id}/LinkedAccounts` | Logon/reconcile/enable credential chains — compromising one propagates to all dependents |
+| `CyberArk_Created` | User → Safe | Existing `Safe.Creator` field | Shows who created each safe (implicit ownership/access) |
+| `CyberArk_ManagedBy` | CPM User → Safe | Existing `Safe.ManagingCPM` field | CPM accounts have privileged password management access |
+| `CyberArk_UsesPlatform` | Account → Platform | `GET /API/Platforms/Targets` | Shared platform config = shared attack surface |
+| `CyberArk_UsesPSMServer` | Platform → PSM Server | Platform `PSMServerID` field | Which PSM server handles sessions for each platform |
+| `CyberArk_ManagedByPSM` | Account → PSM Server | Derived via account's platform | Direct link for querying which PSM server manages an account's sessions |
+| `CyberArk_HasConnectionComponent` | Platform → Connection Component | `GET /API/Platforms/Targets/{id}/PrivilegedSessionManagement` | Which connection protocols (RDP, SSH, etc.) are enabled per platform |
+| `CyberArk_PSMServerHostedOn` | PSM Server → AD Computer | PSM Server `Address` field (uppercased) | External edge — maps PSM server to its AD Computer object |
+| `CyberArk_MemberOf` | User/Group → Group | Group membership data | Group-based permission inheritance |
+| `CyberArk_Contains` | Safe → Account | Account's `safeName` field | Safe-account containment relationship |
+| `CyberArk_InstanceContains` | Instance → User/Group/Safe/Platform/PSM Server/Connection Component | Derived (one root per PVWA tag) | Environment root containment — scopes all objects to their PVWA instance |
+| `CyberArk_SyncsToUser` | AD User → CyberArk_User | LDAP DN with `DC=` | External edge — AD-to-CyberArk identity mapping |
+| `CyberArk_SyncsToGroup` | AD Group → CyberArk_Group | LDAP DN with `DC=` | External edge — AD-to-CyberArk group mapping |
+| `CyberArk_SyncsToADUser` | CyberArk_Account → AD User | Account address matches target domain | External edge — credential-to-AD-user mapping |
+| `CyberArk_CanConnect` | CyberArk_Account → AD Computer | Account address matches address subdomain of the target domain (Local accounts) | External edge — credential-to-AD-computer mapping |
 
 **Note**: Permissions like `listAccounts`, `viewAuditLog`, `addAccounts`, `updateAccountContent` do **not** create access edges as they don't allow password retrieval or account usage.
 
-#### CyberArkUsedAccount (User → Account) - Optional
+#### CyberArk_UsedAccount (User → Account) - Optional
 **Actual account usage** - Tracks when users have actually retrieved or used accounts (not just permission):
 - Created when `--include-activity` flag is used
 - Based on CyberArk activity/audit logs via `/API/Accounts/{accountId}/Activities`
@@ -312,23 +312,23 @@ RETURN u.name, s.safeName
 **BloodHound Query Examples:**
 ```cypher
 // Find who actually used high-value accounts
-MATCH (u:CyberArkUser)-[r:CyberArkUsedAccount]->(a:CyberArkAccount)
+MATCH (u:CyberArk_User)-[r:CyberArk_UsedAccount]->(a:CyberArk_Account)
 WHERE a.safeName CONTAINS "prod"
 RETURN u.name, a.name, r.lastUsedTime, r.lastActivity, r.usageCount
 ORDER BY r.lastUsedTime DESC
 
 // Find accounts with access permissions but no actual usage (dormant/unused)
-MATCH (u:CyberArkUser)-[:CyberArkHasAccessTo]->(a:CyberArkAccount)
-WHERE NOT (u)-[:CyberArkUsedAccount]->(a)
+MATCH (u:CyberArk_User)-[:CyberArk_HasAccessTo]->(a:CyberArk_Account)
+WHERE NOT (u)-[:CyberArk_UsedAccount]->(a)
 RETURN u.name, a.name, a.safeName
 
 // Find users who accessed accounts they shouldn't have permission for (privilege escalation)
-MATCH (u:CyberArkUser)-[:CyberArkUsedAccount]->(a:CyberArkAccount)
-WHERE NOT (u)-[:CyberArkHasAccessTo]->(a)
+MATCH (u:CyberArk_User)-[:CyberArk_UsedAccount]->(a:CyberArk_Account)
+WHERE NOT (u)-[:CyberArk_HasAccessTo]->(a)
 RETURN u.name, a.name
 
 // Find most active users
-MATCH (u:CyberArkUser)-[r:CyberArkUsedAccount]->(a:CyberArkAccount)
+MATCH (u:CyberArk_User)-[r:CyberArk_UsedAccount]->(a:CyberArk_Account)
 RETURN u.name, COUNT(a) as accountsUsed, SUM(r.usageCount) as totalAccesses
 ORDER BY totalAccesses DESC
 LIMIT 10
@@ -351,7 +351,7 @@ Dual control is governed by the **Master Policy** rule "Require dual control pas
 
 **How CyberArkHound determines `requiresApproval`:**
 
-The `requiresApproval` property on `CyberArkHasAccessTo` edges is computed **per-account** using a layered approach:
+The `requiresApproval` property on `CyberArk_HasAccessTo` edges is computed **per-account** using a layered approach:
 
 | Layer | Source | Check |
 |-------|--------|-------|
@@ -381,93 +381,93 @@ When `--include-platforms` is not used, the platform policy cannot be checked. I
 |-------|--------|---------|
 | `requireDualControlPasswordAccessApproval` | `GET /API/Platforms/` → `privilegedAccessWorkflows` | The effective Master Policy setting for this platform, including any platform-level exceptions |
 
-**Edge Properties on CyberArkHasAccessTo:**
+**Edge Properties on CyberArk_HasAccessTo:**
 - `requiresApproval`: `true` if the member needs approval from a dual control authorizer before retrieving passwords
 - `requiresSessionMonitoring`: `true` if the account's platform requires PSM session monitoring and isolation
 - `recordsSessionActivity`: `true` if the account's platform records and saves session activity
 
-**CyberArkCanApprove Edge Properties:**
+**CyberArk_CanApprove Edge Properties:**
 - `approvalLevel`: Authorization level (1 or 2) — maps to `requestsAuthorizationLevel1` / `requestsAuthorizationLevel2` permissions
 
 **BloodHound Query Examples:**
 ```cypher
 // Users who can retrieve passwords WITHOUT any approval (highest risk)
-MATCH (u:CyberArkUser)-[r:CyberArkHasAccessTo {requiresApproval: false}]->(a:CyberArkAccount)
+MATCH (u:CyberArk_User)-[r:CyberArk_HasAccessTo {requiresApproval: false}]->(a:CyberArk_Account)
 RETURN u.name, a.name, a.safeName
 
 // Users who REQUIRE approval — attack needs both accessor + approver
-MATCH (u:CyberArkUser)-[r:CyberArkHasAccessTo {requiresApproval: true}]->(a:CyberArkAccount)
+MATCH (u:CyberArk_User)-[r:CyberArk_HasAccessTo {requiresApproval: true}]->(a:CyberArk_Account)
 RETURN u.name, a.name, a.safeName
 
 // Find approvers who can unlock access for dual-controlled safes
-MATCH (approver)-[r:CyberArkCanApprove]->(s:CyberArkSafe)-[:CyberArkContains]->(a:CyberArkAccount)
+MATCH (approver)-[r:CyberArk_CanApprove]->(s:CyberArk_Safe)-[:CyberArk_Contains]->(a:CyberArk_Account)
 RETURN approver.name, r.approvalLevel, s.safeName, COLLECT(a.name)
 
 // Full dual control attack path: need BOTH a user with access AND an approver
-MATCH (u:CyberArkUser)-[access:CyberArkHasAccessTo {requiresApproval: true}]->(a:CyberArkAccount)
-MATCH (a)<-[:CyberArkContains]-(s:CyberArkSafe)<-[approve:CyberArkCanApprove]-(approver)
+MATCH (u:CyberArk_User)-[access:CyberArk_HasAccessTo {requiresApproval: true}]->(a:CyberArk_Account)
+MATCH (a)<-[:CyberArk_Contains]-(s:CyberArk_Safe)<-[approve:CyberArk_CanApprove]-(approver)
 RETURN u.name AS accessor, a.name AS account, approver.name AS approver, approve.approvalLevel
 
 // Users who are BOTH accessor and approver on the same safe (dual control bypass risk)
-MATCH (u)-[access:CyberArkHasAccessTo {requiresApproval: true}]->(a:CyberArkAccount)
-MATCH (a)<-[:CyberArkContains]-(s:CyberArkSafe)<-[:CyberArkCanApprove]-(u)
+MATCH (u)-[access:CyberArk_HasAccessTo {requiresApproval: true}]->(a:CyberArk_Account)
+MATCH (a)<-[:CyberArk_Contains]-(s:CyberArk_Safe)<-[:CyberArk_CanApprove]-(u)
 RETURN u.name, s.safeName, COLLECT(a.name) AS selfApprovableAccounts
 
 // Find platforms where dual control is enabled
-MATCH (p:CyberArkPlatform {requireDualControlPasswordAccessApproval: true})
+MATCH (p:CyberArk_Platform {requireDualControlPasswordAccessApproval: true})
 RETURN p.name, p.systemType
 
 // Accounts on dual-control platforms but in safes without approvers (policy misconfiguration)
-MATCH (a:CyberArkAccount)-[:CyberArkUsesPlatform]->(p:CyberArkPlatform {requireDualControlPasswordAccessApproval: true})
-MATCH (s:CyberArkSafe)-[:CyberArkContains]->(a)
-WHERE NOT ()-[:CyberArkCanApprove]->(s)
+MATCH (a:CyberArk_Account)-[:CyberArk_UsesPlatform]->(p:CyberArk_Platform {requireDualControlPasswordAccessApproval: true})
+MATCH (s:CyberArk_Safe)-[:CyberArk_Contains]->(a)
+WHERE NOT ()-[:CyberArk_CanApprove]->(s)
 RETURN a.name, s.safeName, p.name AS platform
 
 // High-risk: accounts accessible WITHOUT session monitoring
-MATCH (u:CyberArkUser)-[r:CyberArkHasAccessTo {requiresSessionMonitoring: false}]->(a:CyberArkAccount)
+MATCH (u:CyberArk_User)-[r:CyberArk_HasAccessTo {requiresSessionMonitoring: false}]->(a:CyberArk_Account)
 RETURN u.name, a.name, a.safeName
 
 // Platforms that support RDP connections
-MATCH (p:CyberArkPlatform)
+MATCH (p:CyberArk_Platform)
 WHERE 'PSM-RDP' IN p.connectionComponents
 RETURN p.name, p.connectionComponents
 
 // Platforms where dual control is DISABLED as an exception to Master Policy (high priority audit finding)
-MATCH (p:CyberArkPlatform)
+MATCH (p:CyberArk_Platform)
 WHERE p.requireDualControlPasswordAccessApproval = false AND p.dualControlIsException = true
 RETURN p.name, p.systemType
 
 // Platforms where session monitoring is disabled as a Master Policy exception
-MATCH (p:CyberArkPlatform)
+MATCH (p:CyberArk_Platform)
 WHERE p.requirePrivilegedSessionMonitoringAndIsolation = false AND p.sessionMonitoringIsException = true
 RETURN p.name, p.systemType
 
 // Find all PSM servers and their connected platforms
-MATCH (p:CyberArkPlatform)-[:CyberArkUsesPSMServer]->(psm:CyberArkPSMServer)
+MATCH (p:CyberArk_Platform)-[:CyberArk_UsesPSMServer]->(psm:CyberArk_PSMServer)
 RETURN psm.name, psm.address, COLLECT(p.name) AS platforms
 
 // Find accounts managed by a specific PSM server
-MATCH (a:CyberArkAccount)-[:CyberArkManagedByPSM]->(psm:CyberArkPSMServer {name: "PSM Server Main"})
+MATCH (a:CyberArk_Account)-[:CyberArk_ManagedByPSM]->(psm:CyberArk_PSMServer {name: "PSM Server Main"})
 RETURN a.name, a.userName, a.safeName
 
 // Find platforms with RDP connection components enabled
-MATCH (p:CyberArkPlatform)-[:CyberArkHasConnectionComponent]->(cc:CyberArkConnectionComponent {connectorId: "PSM-RDP"})
+MATCH (p:CyberArk_Platform)-[:CyberArk_HasConnectionComponent]->(cc:CyberArk_ConnectionComponent {connectorId: "PSM-RDP"})
 RETURN p.name, p.systemType
 
 // List all connection components and which platforms use them
-MATCH (p:CyberArkPlatform)-[:CyberArkHasConnectionComponent]->(cc:CyberArkConnectionComponent)
+MATCH (p:CyberArk_Platform)-[:CyberArk_HasConnectionComponent]->(cc:CyberArk_ConnectionComponent)
 RETURN cc.connectorId, cc.displayName, COLLECT(p.name) AS platforms
 
 // Find AD Computers hosting PSM servers
-MATCH (psm:CyberArkPSMServer)-[:CyberArkPSMServerHostedOn]->(c:Computer)
+MATCH (psm:CyberArk_PSMServer)-[:CyberArk_PSMServerHostedOn]->(c:Computer)
 RETURN psm.name, c.name
 
 // Find accounts on platforms created from fallback data (investigate /API/Platforms/ failure)
-MATCH (a:CyberArkAccount)-[:CyberArkUsesPlatform]->(p:CyberArkPlatform {dataSource: "targets-fallback"})
+MATCH (a:CyberArk_Account)-[:CyberArk_UsesPlatform]->(p:CyberArk_Platform {dataSource: "targets-fallback"})
 RETURN p.name, COUNT(a) AS accountCount
 ```
 
-#### CyberArkLinkedTo (Account → Account) - Optional
+#### CyberArk_LinkedTo (Account → Account) - Optional
 **Linked account dependencies** - Maps credential chains where one account depends on another for logon, reconciliation, or enablement:
 - Created when `--include-linked-accounts` flag is used
 - Based on CyberArk linked accounts via `/API/Accounts/{accountId}/LinkedAccounts`
@@ -482,25 +482,25 @@ RETURN p.name, COUNT(a) AS accountCount
 **BloodHound Query Examples:**
 ```cypher
 // Find all accounts that depend on a specific logon account
-MATCH (logon:CyberArkAccount {name: "svc-logon"})<-[r:CyberArkLinkedTo {linkType: "logon"}]-(a:CyberArkAccount)
+MATCH (logon:CyberArk_Account {name: "svc-logon"})<-[r:CyberArk_LinkedTo {linkType: "logon"}]-(a:CyberArk_Account)
 RETURN a.name, a.safeName
 
 // Find credential chains: accounts linked through logon accounts
-MATCH path = (a:CyberArkAccount)-[:CyberArkLinkedTo*1..3]->(target:CyberArkAccount)
+MATCH path = (a:CyberArk_Account)-[:CyberArk_LinkedTo*1..3]->(target:CyberArk_Account)
 RETURN path
 
 // Find all reconcile account dependencies
-MATCH (a:CyberArkAccount)-[r:CyberArkLinkedTo {linkType: "reconcile"}]->(reconciler:CyberArkAccount)
+MATCH (a:CyberArk_Account)-[r:CyberArk_LinkedTo {linkType: "reconcile"}]->(reconciler:CyberArk_Account)
 RETURN a.name, reconciler.name, reconciler.safeName
 
 // Attack path: user with access to a logon account can reach all dependent accounts
-MATCH (u:CyberArkUser)-[:CyberArkHasAccessTo]->(logon:CyberArkAccount)<-[:CyberArkLinkedTo {linkType: "logon"}]-(dependent:CyberArkAccount)
+MATCH (u:CyberArk_User)-[:CyberArk_HasAccessTo]->(logon:CyberArk_Account)<-[:CyberArk_LinkedTo {linkType: "logon"}]-(dependent:CyberArk_Account)
 RETURN u.name, logon.name, COLLECT(dependent.name) as dependentAccounts
 ```
 
 **Performance Note**: Linked account fetching adds one API call per account. Runs in parallel (50 workers by default).
 
-#### CyberArkCreated (User → Safe)
+#### CyberArk_Created (User → Safe)
 **Safe creator relationship** - Shows which user created each safe:
 - Always emitted (no extra API calls — uses existing `Safe.Creator` field)
 - Useful for understanding implicit access and ownership
@@ -511,21 +511,21 @@ RETURN u.name, logon.name, COLLECT(dependent.name) as dependentAccounts
 **BloodHound Query Examples:**
 ```cypher
 // Find all safes created by a user
-MATCH (u:CyberArkUser)-[:CyberArkCreated]->(s:CyberArkSafe)
+MATCH (u:CyberArk_User)-[:CyberArk_Created]->(s:CyberArk_Safe)
 RETURN u.name, s.safeName
 
 // Find who created production safes
-MATCH (u:CyberArkUser)-[:CyberArkCreated]->(s:CyberArkSafe)
+MATCH (u:CyberArk_User)-[:CyberArk_Created]->(s:CyberArk_Safe)
 WHERE s.safeName CONTAINS "prod"
 RETURN u.name, s.safeName
 
 // Find users who created safes AND can grant access to them
-MATCH (u:CyberArkUser)-[:CyberArkCreated]->(s:CyberArkSafe)
-WHERE (u)-[:CyberArkCanGrantAccessTo]->(s)
+MATCH (u:CyberArk_User)-[:CyberArk_Created]->(s:CyberArk_Safe)
+WHERE (u)-[:CyberArk_CanGrantAccessTo]->(s)
 RETURN u.name, s.safeName
 ```
 
-#### CyberArkManagedBy (CPM User → Safe)
+#### CyberArk_ManagedBy (CPM User → Safe)
 **CPM management relationship** - Shows which CPM component manages password rotation for each safe:
 - Always emitted (no extra API calls — uses existing `Safe.ManagingCPM` field)
 - CPM accounts have privileged access to manage and rotate passwords
@@ -533,49 +533,49 @@ RETURN u.name, s.safeName
 **BloodHound Query Examples:**
 ```cypher
 // Find all safes managed by a specific CPM
-MATCH (cpm:CyberArkUser)-[:CyberArkManagedBy]->(s:CyberArkSafe)
+MATCH (cpm:CyberArk_User)-[:CyberArk_ManagedBy]->(s:CyberArk_Safe)
 WHERE cpm.name CONTAINS "CPM"
 RETURN cpm.name, COLLECT(s.safeName) as managedSafes
 
 // Find safes without CPM management (unmanaged passwords)
-MATCH (s:CyberArkSafe)
-WHERE NOT ()-[:CyberArkManagedBy]->(s)
+MATCH (s:CyberArk_Safe)
+WHERE NOT ()-[:CyberArk_ManagedBy]->(s)
 RETURN s.safeName
 
 // Find all accounts reachable through a CPM's managed safes
-MATCH (cpm:CyberArkUser)-[:CyberArkManagedBy]->(s:CyberArkSafe)-[:CyberArkContains]->(a:CyberArkAccount)
+MATCH (cpm:CyberArk_User)-[:CyberArk_ManagedBy]->(s:CyberArk_Safe)-[:CyberArk_Contains]->(a:CyberArk_Account)
 RETURN cpm.name, COUNT(a) as accountCount
 ```
 
-#### CyberArkUsesPlatform (Account → Platform) - Optional
+#### CyberArk_UsesPlatform (Account → Platform) - Optional
 **Platform association** - Shows which platform configuration each account uses:
 - Created when `--include-platforms` flag is used
-- Creates `CyberArkPlatform` nodes from `/API/Platforms/Targets`
+- Creates `CyberArk_Platform` nodes from `/API/Platforms/Targets`
 - Accounts sharing a platform share configuration, policies, and potential vulnerabilities
 
 **BloodHound Query Examples:**
 ```cypher
 // Find all accounts using a specific platform
-MATCH (a:CyberArkAccount)-[:CyberArkUsesPlatform]->(p:CyberArkPlatform {name: "WinServerLocal"})
+MATCH (a:CyberArk_Account)-[:CyberArk_UsesPlatform]->(p:CyberArk_Platform {name: "WinServerLocal"})
 RETURN a.name, a.safeName
 
 // Find platforms with the most accounts (highest blast radius)
-MATCH (a:CyberArkAccount)-[:CyberArkUsesPlatform]->(p:CyberArkPlatform)
+MATCH (a:CyberArk_Account)-[:CyberArk_UsesPlatform]->(p:CyberArk_Platform)
 RETURN p.name, p.systemType, COUNT(a) as accountCount
 ORDER BY accountCount DESC
 
 // Find inactive platforms still in use
-MATCH (a:CyberArkAccount)-[:CyberArkUsesPlatform]->(p:CyberArkPlatform {active: false})
+MATCH (a:CyberArk_Account)-[:CyberArk_UsesPlatform]->(p:CyberArk_Platform {active: false})
 RETURN p.name, COUNT(a) as accountsOnInactivePlatform
 ```
 
 ### Node Properties
 
-#### CyberArkInstance Properties
+#### CyberArk_Instance Properties
 - **Identity**: `name`, `pvwaTag` (the 4-character PVWA tag derived from `--pvwa`)
-- The environment root node. One `CyberArkInstance` node is emitted per run and is linked to every top-level object (users, groups, safes, platforms, PSM servers, connection components) via `CyberArkInstanceContains`. Accounts are reached transitively through their safe (`CyberArkInstance` → `CyberArkSafe` → `CyberArkContains` → `CyberArkAccount`).
+- The environment root node. One `CyberArk_Instance` node is emitted per run and is linked to every top-level object (users, groups, safes, platforms, PSM servers, connection components) via `CyberArk_InstanceContains`. Accounts are reached transitively through their safe (`CyberArk_Instance` → `CyberArk_Safe` → `CyberArk_Contains` → `CyberArk_Account`).
 
-#### CyberArkUser Properties
+#### CyberArk_User Properties
 - **Identity**: `userId`, `name`, `userType`, `source`, `isLDAPSynced`
 - **Status**: `enabled`, `suspended`, `componentUser`
 - **Authentication**: `allowedAuthenticationMethods`, `vaultAuthorization`
@@ -584,14 +584,14 @@ RETURN p.name, COUNT(a) as accountsOnInactivePlatform
 - **Memberships**: `groupsMembership` (list of group names)
 - **Permissions**: `safePermissions` (JSON array with safeName, permissions, hasDirectAccess, canGrantAccess)
 
-#### CyberArkGroup Properties
+#### CyberArk_Group Properties
 - **Identity**: `groupId`, `name`, `groupType`, `isDirectorySynced`
 - **Directory**: `directory`, `distinguishedName`, `location`
 - **Metadata**: `description`, `memberCount`
 - **Members**: `members` (list of usernames)
 - **Permissions**: `safePermissions` (JSON array with safe access details)
 
-#### CyberArkSafe Properties
+#### CyberArk_Safe Properties
 - **Identity**: `safeName`, `safeUrlId`, `safeNumber`
 - **Metadata**: `description`, `location`, `creator`
 - **CPM**: `managingCPM`, `olacEnabled`
@@ -599,7 +599,7 @@ RETURN p.name, COUNT(a) as accountsOnInactivePlatform
 - **Timestamps**: `creationTime`, `lastModificationTime`
 - **Settings**: `isExpiredMembershipEnable`
 
-#### CyberArkAccount Properties
+#### CyberArk_Account Properties
 - **Identity**: `accountId`, `userName`, `platformId`, `address`
 - **BloodHound name**: `name` (set to `userName` to avoid collisions with AD user names in OpenGraph matching)
 - **Safe**: `safeName`, `safeUrlId`
@@ -609,7 +609,7 @@ RETURN p.name, COUNT(a) as accountsOnInactivePlatform
 - **CPM**: `lastModifiedBy`
 - **Extended**: `platformAccountProperties` (JSON), `secretManagement` (JSON)
 
-#### CyberArkPlatform Properties (requires `--include-platforms`)
+#### CyberArk_Platform Properties (requires `--include-platforms`)
 - **Identity**: `platformId`, `name`
 - **Configuration**: `systemType`, `active`, `platformBaseID`, `platformType`
 - **Metadata**: `description`, `allowedSafes`
@@ -624,11 +624,11 @@ RETURN p.name, COUNT(a) as accountsOnInactivePlatform
 
 **Platform data fallback:** When `GET /API/Platforms/` fails (e.g., HTTP 500 due to corrupted platform definitions), CyberArkHound creates platform nodes from the `GET /API/Platforms/Targets` response instead. These fallback nodes contain most security-relevant properties (workflows, credentials management, PSM server, exception flags) but lack `description`, `platformBaseID`, `platformType`, `requiredProperties`, `optionalProperties`, and `linkedAccountTypes`. Fallback nodes are tagged with `dataSource: "targets-fallback"`.
 
-#### CyberArkPSMServer Properties (requires `--include-psm`)
+#### CyberArk_PSMServer Properties (requires `--include-psm`)
 - **Identity**: `psmServerId` (e.g., `"PSMServer_7ec0ecb"`)
 - **Configuration**: `name` (e.g., `"PSM Server CYB-IS-12345"`), `address` (e.g., `"10.10.10.20"`)
 
-#### CyberArkConnectionComponent Properties (requires `--include-psm`)
+#### CyberArk_ConnectionComponent Properties (requires `--include-psm`)
 - **Identity**: `connectorId` (e.g., `"PSM-RDP"`, `"PSM-SSH"`)
 - **Display**: `displayName` (e.g., `"RDP"`, `"SSH"`)
 
@@ -645,7 +645,7 @@ Note: CyberArk node `id` values are namespaced with a 4-character PVWA tag deriv
     "nodes": [
       {
         "id": "causer-jdoe-APVA",
-        "kinds": ["CyberArkUser", "CyberArkBase"],
+        "kinds": ["CyberArk_User", "CyberArkBase"],
         "properties": {
           "name": "jdoe",
           "isLDAPSynced": true,
@@ -657,7 +657,7 @@ Note: CyberArk node `id` values are namespaced with a 4-character PVWA tag deriv
       },
       {
         "id": "caaccount-12345-APVA",
-        "kinds": ["CyberArkAccount", "CyberArkBase"],
+        "kinds": ["CyberArk_Account", "CyberArkBase"],
         "properties": {
           "name": "prod-db-admin",
           "platformId": "WinServerLocal",
@@ -669,7 +669,7 @@ Note: CyberArk node `id` values are namespaced with a 4-character PVWA tag deriv
     ],
     "edges": [
       {
-        "kind": "CyberArkHasAccessTo",
+        "kind": "CyberArk_HasAccessTo",
         "start": "causer-jdoe-APVA",
         "end": "caaccount-12345-APVA",
         "properties": {
@@ -688,12 +688,12 @@ Note: CyberArk node `id` values are namespaced with a 4-character PVWA tag deriv
 {
 	"metadata": { "source_kind": "CyberArkBase" },
 	"graph": {
-		"nodes": [ { "id": "...", "kinds": ["CyberArkUser"], "properties": {"name": "..."} } ],
-		"edges": [ { "kind": "CyberArkHasAccessTo", "start": {"value": "...", "match_by": "id"}, "end": {"value": "...", "match_by": "id"} } ]
+		"nodes": [ { "id": "...", "kinds": ["CyberArk_User"], "properties": {"name": "..."} } ],
+		"edges": [ { "kind": "CyberArk_HasAccessTo", "start": {"value": "...", "match_by": "id"}, "end": {"value": "...", "match_by": "id"} } ]
 	}
 }
 ```
-External edges (SyncsToCyberArkUser / SyncsToCyberArkGroup / SyncsToADUser / CyberArkCanConnect / CyberArkPSMServerHostedOn) are included with `match_by` set to `name` where appropriate.
+External edges (CyberArk_SyncsToUser / CyberArk_SyncsToGroup / CyberArk_SyncsToADUser / CyberArk_CanConnect / CyberArk_PSMServerHostedOn) are included with `match_by` set to `name` where appropriate.
 
 ### Data Flow Diagram
 High-level relationship visualization between CyberArk entities and inferred external AD objects:
@@ -704,38 +704,38 @@ config:
  layout: elk
 ---
 flowchart TD
- User["fa:fa-user User"] -. SyncsToCyberArkUser<br>(LDAP) .-> CyberArkUser["fa:fa-user CyberArkUser"]
- Group["fa:fa-user-group Group"] -. SyncsToCyberArkGroup<br>(Directory) .-> CyberArkGroup["fa:fa-user-group CyberArkGroup"]
- CyberArkAccount["fa:fa-user-secret CyberArkAccount"] -. SyncsToADUser<br>(Domain Match) .-> User
- CyberArkAccount -. CyberArkCanConnect<br>(Domain Match) .-> Computer["fa:fa-computer Computer"]
- CyberArkUser -- CyberArkMemberOf --> CyberArkGroup
- CyberArkGroup -- CyberArkMemberOf --> CyberArkGroup
- CyberArkUser == CyberArkHasAccessTo<br>(useAccounts/retrieveAccounts) ==> CyberArkAccount
- CyberArkGroup == CyberArkHasAccessTo<br>(useAccounts/retrieveAccounts) ==> CyberArkAccount
- CyberArkUser == CyberArkUsedAccount<br>(actual usage) ==> CyberArkAccount
- CyberArkUser -. CyberArkCanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArkSafe["fa:fa-vault CyberArkSafe"]
- CyberArkGroup -. CyberArkCanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArkSafe
- CyberArkUser -. CyberArkCanApprove<br>(dual control) .-> CyberArkSafe
- CyberArkGroup -. CyberArkCanApprove<br>(dual control) .-> CyberArkSafe
- CyberArkSafe -- CyberArkContains --> CyberArkAccount
- CyberArkUser -. CyberArkCreated .-> CyberArkSafe
- CyberArkUser -. CyberArkManagedBy<br>(CPM) .-> CyberArkSafe
- CyberArkAccount -. CyberArkLinkedTo<br>(logon/reconcile/enable) .-> CyberArkAccount
- CyberArkAccount -- CyberArkUsesPlatform --> CyberArkPlatform["fa:fa-server CyberArkPlatform"]
- CyberArkAccount -- CyberArkManagedByPSM --> CyberArkPSMServer["fa:fa-desktop CyberArkPSMServer"]
- CyberArkPlatform -- CyberArkUsesPSMServer --> CyberArkPSMServer
- CyberArkPlatform -- CyberArkHasConnectionComponent --> CyberArkConnectionComponent["fa:fa-plug CyberArkConnectionComponent"]
- CyberArkPSMServer -. CyberArkPSMServerHostedOn .-> Computer
+ User["fa:fa-user User"] -. CyberArk_SyncsToUser<br>(LDAP) .-> CyberArk_User["fa:fa-user CyberArk_User"]
+ Group["fa:fa-user-group Group"] -. CyberArk_SyncsToGroup<br>(Directory) .-> CyberArk_Group["fa:fa-user-group CyberArk_Group"]
+ CyberArk_Account["fa:fa-user-secret CyberArk_Account"] -. CyberArk_SyncsToADUser<br>(Domain Match) .-> User
+ CyberArk_Account -. CyberArk_CanConnect<br>(Domain Match) .-> Computer["fa:fa-computer Computer"]
+ CyberArk_User -- CyberArk_MemberOf --> CyberArk_Group
+ CyberArk_Group -- CyberArk_MemberOf --> CyberArk_Group
+ CyberArk_User == CyberArk_HasAccessTo<br>(useAccounts/retrieveAccounts) ==> CyberArk_Account
+ CyberArk_Group == CyberArk_HasAccessTo<br>(useAccounts/retrieveAccounts) ==> CyberArk_Account
+ CyberArk_User == CyberArk_UsedAccount<br>(actual usage) ==> CyberArk_Account
+ CyberArk_User -. CyberArk_CanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArk_Safe["fa:fa-vault CyberArk_Safe"]
+ CyberArk_Group -. CyberArk_CanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArk_Safe
+ CyberArk_User -. CyberArk_CanApprove<br>(dual control) .-> CyberArk_Safe
+ CyberArk_Group -. CyberArk_CanApprove<br>(dual control) .-> CyberArk_Safe
+ CyberArk_Safe -- CyberArk_Contains --> CyberArk_Account
+ CyberArk_User -. CyberArk_Created .-> CyberArk_Safe
+ CyberArk_User -. CyberArk_ManagedBy<br>(CPM) .-> CyberArk_Safe
+ CyberArk_Account -. CyberArk_LinkedTo<br>(logon/reconcile/enable) .-> CyberArk_Account
+ CyberArk_Account -- CyberArk_UsesPlatform --> CyberArk_Platform["fa:fa-server CyberArk_Platform"]
+ CyberArk_Account -- CyberArk_ManagedByPSM --> CyberArk_PSMServer["fa:fa-desktop CyberArk_PSMServer"]
+ CyberArk_Platform -- CyberArk_UsesPSMServer --> CyberArk_PSMServer
+ CyberArk_Platform -- CyberArk_HasConnectionComponent --> CyberArk_ConnectionComponent["fa:fa-plug CyberArk_ConnectionComponent"]
+ CyberArk_PSMServer -. CyberArk_PSMServerHostedOn .-> Computer
  style User fill:#17E625,stroke:#0B8A14,stroke-width:2px
  style Computer fill:#FCAEA3,stroke:DF7E71,stroke-widthg:2px
- style CyberArkUser fill:#BFD6E3,stroke:#7BA3C0,stroke-width:2px
+ style CyberArk_User fill:#BFD6E3,stroke:#7BA3C0,stroke-width:2px
  style Group fill:#FFED29,stroke:#CCB900,stroke-width:2px
- style CyberArkGroup fill:#C8DCC0,stroke:#8FB888,stroke-width:2px
- style CyberArkAccount fill:#E7C8C8,stroke:#C09999,stroke-width:2px
- style CyberArkSafe fill:#E8D8B3,stroke:#C0AC7F,stroke-width:2px
- style CyberArkPlatform fill:#D4B8D9,stroke:#A98CB3,stroke-width:2px
- style CyberArkPSMServer fill:#A8D5BA,stroke:#7BB898,stroke-width:2px
- style CyberArkConnectionComponent fill:#B8C9E0,stroke:#8EA6C4,stroke-width:2px
+ style CyberArk_Group fill:#C8DCC0,stroke:#8FB888,stroke-width:2px
+ style CyberArk_Account fill:#E7C8C8,stroke:#C09999,stroke-width:2px
+ style CyberArk_Safe fill:#E8D8B3,stroke:#C0AC7F,stroke-width:2px
+ style CyberArk_Platform fill:#D4B8D9,stroke:#A98CB3,stroke-width:2px
+ style CyberArk_PSMServer fill:#A8D5BA,stroke:#7BB898,stroke-width:2px
+ style CyberArk_ConnectionComponent fill:#B8C9E0,stroke:#8EA6C4,stroke-width:2px
 ```
 
 **Legend:**
@@ -749,13 +749,13 @@ The file `cyberark_model.json` defines custom node types (icons & colors) for Bl
 ```json
 {
 	"custom_types": {
-		"CyberArkAccount":             {"icon": {"type": "font-awesome", "name": "user-secret", "color": "#E7C8C8"}},
-		"CyberArkGroup":               {"icon": {"type": "font-awesome", "name": "user-group",  "color": "#C8DCC0"}},
-		"CyberArkSafe":                {"icon": {"type": "font-awesome", "name": "vault",       "color": "#E8D8B3"}},
-		"CyberArkUser":                {"icon": {"type": "font-awesome", "name": "user",        "color": "#BFD6E3"}},
-		"CyberArkPlatform":            {"icon": {"type": "font-awesome", "name": "server",      "color": "#D4B8D9"}},
-		"CyberArkPSMServer":           {"icon": {"type": "font-awesome", "name": "desktop",     "color": "#A8D5BA"}},
-		"CyberArkConnectionComponent": {"icon": {"type": "font-awesome", "name": "plug",        "color": "#B8C9E0"}}
+		"CyberArk_Account":             {"icon": {"type": "font-awesome", "name": "user-secret", "color": "#E7C8C8"}},
+		"CyberArk_Group":               {"icon": {"type": "font-awesome", "name": "user-group",  "color": "#C8DCC0"}},
+		"CyberArk_Safe":                {"icon": {"type": "font-awesome", "name": "vault",       "color": "#E8D8B3"}},
+		"CyberArk_User":                {"icon": {"type": "font-awesome", "name": "user",        "color": "#BFD6E3"}},
+		"CyberArk_Platform":            {"icon": {"type": "font-awesome", "name": "server",      "color": "#D4B8D9"}},
+		"CyberArk_PSMServer":           {"icon": {"type": "font-awesome", "name": "desktop",     "color": "#A8D5BA"}},
+		"CyberArk_ConnectionComponent": {"icon": {"type": "font-awesome", "name": "plug",        "color": "#B8C9E0"}}
 	}
 }
 ```
@@ -828,29 +828,29 @@ Use `--log-level` to control progress reporting frequency:
 [2025-11-24 10:16:45] INFO cyberarkhound: === Collection Summary ===
 [2025-11-24 10:16:45] INFO cyberarkhound: Total Nodes: 3780
 [2025-11-24 10:16:45] INFO cyberarkhound: Nodes by Type:
-[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkUser: 500
-[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkGroup: 80
-[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkSafe: 150
-[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkAccount: 3000
-[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkPlatform: 50
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_User: 500
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_Group: 80
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_Safe: 150
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_Account: 3000
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_Platform: 50
 [2025-11-24 10:16:45] INFO cyberarkhound: Total Internal Edges: 12350
 [2025-11-24 10:16:45] INFO cyberarkhound: Internal Edges by Type:
-[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkMemberOf: 620
-[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkContains: 3000
-[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkHasAccessTo: 4200
-[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkCanGrantAccessTo: 310
-[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkCanApprove: 95
-[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkCreated: 150
-[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkManagedBy: 140
-[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkUsedAccount: 785
-[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkLinkedTo: 2100
-[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkUsesPlatform: 950
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_MemberOf: 620
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_Contains: 3000
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_HasAccessTo: 4200
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_CanGrantAccessTo: 310
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_CanApprove: 95
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_Created: 150
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_ManagedBy: 140
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_UsedAccount: 785
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_LinkedTo: 2100
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_UsesPlatform: 950
 [2025-11-24 10:16:45] INFO cyberarkhound: Total External Edges: 1680
 [2025-11-24 10:16:45] INFO cyberarkhound: External Edges by Type:
-[2025-11-24 10:16:45] INFO cyberarkhound:   SyncsToCyberArkUser: 480
-[2025-11-24 10:16:45] INFO cyberarkhound:   SyncsToCyberArkGroup: 60
-[2025-11-24 10:16:45] INFO cyberarkhound:   SyncsToADUser: 1140
-[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArkPSMServerHostedOn: 4
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_SyncsToUser: 480
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_SyncsToGroup: 60
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_SyncsToADUser: 1140
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_PSMServerHostedOn: 4
 [2025-11-24 10:16:45] INFO cyberarkhound: Memory stats: Alloc=85MB Sys=142MB NumGC=12
 [2025-11-24 10:16:45] INFO cyberarkhound: Writing JSON to file: export.json
 [2025-11-24 10:16:45] INFO cyberarkhound:   Writing compact JSON format...

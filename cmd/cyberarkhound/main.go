@@ -21,8 +21,8 @@ func main() {
 	username := pflag.String("username", "", "API username (required)")
 	password := pflag.String("password", "", "API password (required)")
 	outputFile := pflag.String("output", "", "Output JSON file (required)")
-	targetDomains := pflag.StringSlice("target-domains", []string{}, "Target AD domain(s) for SyncsToADUser edges (required)")
-	parseSAMAccountName := pflag.Bool("parse-samaccountname", false, "Parse sAMAccountName/GID from LDAP distinguishedName CN for SyncsToCyberArkUser edges (optional)")
+	targetDomains := pflag.StringSlice("target-domains", []string{}, "Target AD domain(s) for CyberArk_SyncsToADUser edges (required)")
+	parseSAMAccountName := pflag.Bool("parse-samaccountname", false, "Parse sAMAccountName/GID from LDAP distinguishedName CN for CyberArk_SyncsToUser edges (optional)")
 
 	workers := pflag.Int("workers", 50, "Concurrent workers for account detail retrieval")
 
@@ -37,14 +37,14 @@ func main() {
 	maxReauthAttempts := pflag.Int("max-reauth-attempts", 5, "Max re-authentication attempts on HTTP 401 before giving up")
 
 	// Activity tracking flags
-	includeActivity := pflag.Bool("include-activity", true, "Include account activity data (creates CyberArkUsedAccount edges)")
+	includeActivity := pflag.Bool("include-activity", true, "Include account activity data (creates CyberArk_UsedAccount edges)")
 	activityDays := pflag.Int("activity-days", 3, "Number of days to look back for activity")
 	activityLimit := pflag.Int("activity-limit", 100, "Max activities per account")
 
 	// Linked accounts and platforms flags
-	includeLinkedAccounts := pflag.Bool("include-linked-accounts", true, "Include linked account data (creates CyberArkLinkedTo edges for logon/reconcile/enable chains)")
-	includePlatforms := pflag.Bool("include-platforms", true, "Include platform data (creates CyberArkPlatform nodes and CyberArkUsesPlatform edges)")
-	includePSM := pflag.Bool("include-psm", true, "Include PSM server and connection component data (creates CyberArkPSMServer and CyberArkConnectionComponent nodes)")
+	includeLinkedAccounts := pflag.Bool("include-linked-accounts", true, "Include linked account data (creates CyberArk_LinkedTo edges for logon/reconcile/enable chains)")
+	includePlatforms := pflag.Bool("include-platforms", true, "Include platform data (creates CyberArk_Platform nodes and CyberArk_UsesPlatform edges)")
+	includePSM := pflag.Bool("include-psm", true, "Include PSM server and connection component data (creates CyberArk_PSMServer and CyberArk_ConnectionComponent nodes)")
 
 	// Testing limits
 	limitUsers := pflag.Int("limit-users", 0, "Limit number of users (0 = no limit)")
@@ -120,7 +120,7 @@ func main() {
 
 	logger.Infof("Target domains: %s", *targetDomains)
 	if *parseSAMAccountName {
-		logger.Info("Enabled: parse sAMAccountName from distinguishedName CN for SyncsToCyberArkUser edges")
+		logger.Info("Enabled: parse sAMAccountName from distinguishedName CN for CyberArk_SyncsToUser edges")
 	}
 
 	// Fetch users

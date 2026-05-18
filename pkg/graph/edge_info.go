@@ -14,7 +14,7 @@ type EdgeInfo struct {
 
 // EdgeInfoMap contains security documentation for all CyberArkHound edge types.
 var EdgeInfoMap = map[string]EdgeInfo{
-	"CyberArkHasAccessTo": {
+	"CyberArk_HasAccessTo": {
 		Description: "The source principal is a member of the safe containing the target account with one or more account access permissions (useAccounts and/or retrieveAccounts). This is the primary credential access edge in CyberArk. " +
 			"The edge properties provide critical context: requiresApproval indicates whether dual-control enforcement is active (access requires an approval workflow before credentials can be retrieved); " +
 			"requiresSessionMonitoring and recordsSessionActivity indicate whether privileged sessions must be routed through PSM and whether session content is recorded.",
@@ -51,7 +51,7 @@ var EdgeInfoMap = map[string]EdgeInfo{
 			"https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/manage-psm-for-windows.htm",
 		},
 	},
-	"CyberArkCanGrantAccessTo": {
+	"CyberArk_CanGrantAccessTo": {
 		Description: "The source principal has manageSafe or manageSafeMembers permission on the target safe. " +
 			"This is a privilege escalation edge: the principal can add new safe members, modify existing member permissions, or remove members. " +
 			"By adding themselves (or a controlled account) to the safe with retrieveAccounts permission, the attacker gains access to all accounts stored in that safe.",
@@ -96,11 +96,11 @@ var EdgeInfoMap = map[string]EdgeInfo{
 			"https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/dv-managing-safes.htm",
 		},
 	},
-	"CyberArkCanApprove": {
+	"CyberArk_CanApprove": {
 		Description: "The source principal has dual-control approval authority over access requests for accounts within the target safe. " +
 			"The approvalLevel property specifies the tier: 1 for first-level approval, 2 for second-level approval. " +
 			"A principal with accessWithoutConfirmation permission bypasses the dual-control workflow entirely. " +
-			"This edge enables dual-control bypass attacks: if the same principal also has CyberArkHasAccessTo on an account in this safe where requiresApproval=true, " +
+			"This edge enables dual-control bypass attacks: if the same principal also has CyberArk_HasAccessTo on an account in this safe where requiresApproval=true, " +
 			"they can approve their own access requests. Two colluding principals can mutually authorize each other's requests.",
 		WindowsAbuse: "List pending incoming access requests (as approver):\n\n" +
 			"$pvwaURL = 'https://<pvwa>'\n" +
@@ -123,17 +123,17 @@ var EdgeInfoMap = map[string]EdgeInfo{
 		OpsecNotes: "All approval actions are recorded in the CyberArk audit trail under the approving user's identity. " +
 			"Self-approval — where the same account submits and approves its own request — may be flagged by security monitoring rules or periodic audit reviews. " +
 			"Mutual approval between two colluding accounts is harder to detect without correlated analysis across request and approval events. " +
-			"Look for accounts that appear in both CyberArkHasAccessTo (with requiresApproval=true) and CyberArkCanApprove edges on the same safe.",
+			"Look for accounts that appear in both CyberArk_HasAccessTo (with requiresApproval=true) and CyberArk_CanApprove edges on the same safe.",
 		References: []string{
 			"https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/approve-request.htm",
 			"https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/dualcontrolworkflow.htm",
 		},
 	},
-	"CyberArkMemberOf": {
+	"CyberArk_MemberOf": {
 		Description: "The source CyberArk user or group is a member of the target CyberArk group. " +
 			"Group membership is cumulative: a user inherits all permissions granted to every group they belong to across all safes. " +
 			"Group edges to safes flow transitively through this membership edge, enabling credential access without direct safe membership.",
-		WindowsAbuse: "Group membership itself does not directly grant credential access — follow the group's outgoing edges (CyberArkHasAccessTo, CyberArkCanGrantAccessTo) " +
+		WindowsAbuse: "Group membership itself does not directly grant credential access — follow the group's outgoing edges (CyberArk_HasAccessTo, CyberArk_CanGrantAccessTo) " +
 			"to identify which accounts and safes are reachable. Enumerate effective group safe memberships:\n\n" +
 			"$pvwaURL = 'https://<pvwa>'\n" +
 			"$headers = @{Authorization = \"Bearer $token\"}\n" +
@@ -152,10 +152,10 @@ var EdgeInfoMap = map[string]EdgeInfo{
 		},
 	},
 
-	"CyberArkContains": {
+	"CyberArk_Contains": {
 		Description: "The source CyberArk safe contains the target account. " +
 			"This is a structural containment relationship: all safe members with account access permissions (useAccounts or retrieveAccounts) can interact with accounts linked through this edge. " +
-			"Used for graph traversal — CyberArkHasAccessTo on the safe's parent combined with this edge maps out full credential exposure.",
+			"Used for graph traversal — CyberArk_HasAccessTo on the safe's parent combined with this edge maps out full credential exposure.",
 		WindowsAbuse: "This edge is used for attack path traversal rather than direct exploitation. " +
 			"Enumerate all accounts within a safe to discover reachable credentials:\n\n" +
 			"$pvwaURL = 'https://<pvwa>'\n" +
@@ -172,7 +172,7 @@ var EdgeInfoMap = map[string]EdgeInfo{
 		},
 	},
 
-	"CyberArkCreated": {
+	"CyberArk_Created": {
 		Description: "The source CyberArk user created the target safe. " +
 			"Safe creators are recorded in safe metadata and may retain implicit administrative access depending on vault configuration. " +
 			"In some CyberArk deployments, the creator is automatically added as a safe member with elevated permissions at creation time.",
@@ -190,7 +190,7 @@ var EdgeInfoMap = map[string]EdgeInfo{
 			"https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/safes-create.htm",
 		},
 	},
-	"CyberArkManagedBy": {
+	"CyberArk_ManagedBy": {
 		Description: "The target safe is managed by the source CyberArk CPM (Central Password Manager) user. " +
 			"The CPM service account has privileged programmatic access to all accounts in managed safes: it performs automated password rotation, verification, and reconciliation. " +
 			"Compromising the CPM service account or the CPM server itself grants implicit access to all managed credentials and the ability to disrupt password management operations.",
@@ -220,7 +220,7 @@ var EdgeInfoMap = map[string]EdgeInfo{
 		},
 	},
 
-	"CyberArkUsesPlatform": {
+	"CyberArk_UsesPlatform": {
 		Description: "The source account is configured to use the target platform definition. " +
 			"The platform governs: password policy (complexity, rotation frequency), connection settings, dual-control requirements, PSM server routing, and Master Policy exception flags. " +
 			"All accounts sharing a platform share the same security policy baseline — a platform-level policy exception affects every account on that platform simultaneously.",
@@ -247,9 +247,9 @@ var EdgeInfoMap = map[string]EdgeInfo{
 			"https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/master-policy.htm",
 		},
 	},
-	"CyberArkUsedAccount": {
+	"CyberArk_UsedAccount": {
 		Description: "The source CyberArk user has historically accessed the target account, as recorded in CyberArk audit logs. " +
-			"Unlike CyberArkHasAccessTo (which shows current permissions), this edge confirms actual historical credential use. " +
+			"Unlike CyberArk_HasAccessTo (which shows current permissions), this edge confirms actual historical credential use. " +
 			"The lastUsedTime property indicates the most recent access timestamp, lastActivity indicates the action type (e.g. RetrievePassword, Connect), " +
 			"and usageCount shows the total number of recorded access events within the collection window.",
 		WindowsAbuse: "This edge is primarily forensic and investigative rather than directly exploitable. " +
@@ -264,13 +264,13 @@ var EdgeInfoMap = map[string]EdgeInfo{
 			"  -H \"Authorization: Bearer $TOKEN\"",
 		OpsecNotes: "This edge is derived from existing audit log data — the historical access events are already recorded. " +
 			"Querying this data does not generate new audit events. " +
-			"Note that a user may have accessed an account historically but no longer have current permissions — always cross-reference with CyberArkHasAccessTo edges to confirm active access rights.",
+			"Note that a user may have accessed an account historically but no longer have current permissions — always cross-reference with CyberArk_HasAccessTo edges to confirm active access rights.",
 		References: []string{
 			"https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/get-activities.htm",
 		},
 	},
 
-	"CyberArkLinkedTo": {
+	"CyberArk_LinkedTo": {
 		Description: "The source account has a credential dependency on the target account. " +
 			"The linkType property specifies the relationship type: " +
 			"'logon' means the target account provides the credentials CyberArk uses to connect to the source account's target system (the logon account is used to authenticate to the machine where the source account lives); " +
@@ -307,7 +307,7 @@ var EdgeInfoMap = map[string]EdgeInfo{
 			"https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/defining-reconcile-account.htm",
 		},
 	},
-	"CyberArkUsesPSMServer": {
+	"CyberArk_UsesPSMServer": {
 		Description: "The source platform routes all privileged session connections through the target PSM (Privileged Session Manager) server. " +
 			"Every account using this platform has its sessions isolated, brokered, and recorded by this PSM server. " +
 			"The PSM server acts as a proxy between the requesting user and the target system — users connect to the PSM server, which then connects to the target using the managed credential.",
@@ -334,7 +334,7 @@ var EdgeInfoMap = map[string]EdgeInfo{
 		},
 	},
 
-	"CyberArkManagedByPSM": {
+	"CyberArk_ManagedByPSM": {
 		Description: "The source account's privileged sessions are managed and recorded by the target PSM server, inferred from the account's platform PSM configuration. " +
 			"This edge directly links a specific account to its session recording infrastructure, identifying which PSM server processes connections to that account's target system.",
 		WindowsAbuse: "Compromising the PSM server identified by this edge grants the ability to intercept sessions for this specific account. " +
@@ -359,11 +359,11 @@ var EdgeInfoMap = map[string]EdgeInfo{
 		},
 	},
 
-	"CyberArkHasConnectionComponent": {
+	"CyberArk_HasConnectionComponent": {
 		Description: "The source platform has the target connection component enabled, defining the session protocols available for accounts on this platform. " +
 			"Common connection components include PSM-RDP (Remote Desktop), PSM-SSH (Secure Shell), PSM-Telnet, PSM-WebApp, and custom components. " +
 			"The enabled property indicates if the component is currently active. " +
-			"This determines which protocols an attacker can use when initiating PSM-brokered sessions through CyberArkHasAccessTo edges.",
+			"This determines which protocols an attacker can use when initiating PSM-brokered sessions through CyberArk_HasAccessTo edges.",
 		WindowsAbuse: "RDP connection components (e.g. PSM-RDP, PSM-RDP-LCL) enable interactive desktop sessions to Windows target systems without exposing the plaintext password:\n\n" +
 			"$pvwaURL = 'https://<pvwa>'\n" +
 			"$headers = @{Authorization = \"Bearer $token\"}\n" +
@@ -389,7 +389,7 @@ var EdgeInfoMap = map[string]EdgeInfo{
 			"https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/psm-connect.htm",
 		},
 	},
-	"SyncsToCyberArkUser": {
+	"CyberArk_SyncsToUser": {
 		Description: "The source Active Directory user is synchronized to the target CyberArk Vault user via LDAP directory integration. " +
 			"The AD user's identity and credentials are mapped directly to the CyberArk user — if LDAP authentication is configured on the PVWA, " +
 			"the AD user's password (or Kerberos ticket) authenticates them to CyberArk without a separate Vault password. " +
@@ -428,7 +428,7 @@ var EdgeInfoMap = map[string]EdgeInfo{
 		},
 	},
 
-	"SyncsToCyberArkGroup": {
+	"CyberArk_SyncsToGroup": {
 		Description: "The source Active Directory group is synchronized to the target CyberArk Vault group via LDAP directory integration. " +
 			"AD group membership changes automatically propagate to CyberArk group membership after each LDAP sync cycle, " +
 			"meaning that adding an account to the AD group grants it all CyberArk safe permissions assigned to the corresponding Vault group — " +
@@ -463,7 +463,7 @@ var EdgeInfoMap = map[string]EdgeInfo{
 			"https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/configuring-directory-mappings.htm",
 		},
 	},
-	"SyncsToADUser": {
+	"CyberArk_SyncsToADUser": {
 		Description: "The source CyberArk account stores credentials for the target Active Directory user account. " +
 			"This relationship is inferred: the account's stored username matches an AD sAMAccountName or UPN in a target domain. " +
 			"Retrieving this credential from CyberArk yields the plaintext password for the AD user, enabling direct AD authentication and lateral movement across the domain. " +
@@ -504,7 +504,7 @@ var EdgeInfoMap = map[string]EdgeInfo{
 		},
 	},
 
-	"CyberArkCanConnect": {
+	"CyberArk_CanConnect": {
 		Description: "The source CyberArk account stores credentials valid for authenticating to the target Active Directory computer. " +
 			"This relationship is inferred: the account's address field matches a hostname or IP that is part of the target domain. " +
 			"If localUser is true in the edge properties, the account stores a local (non-domain) credential for that specific machine, potentially including local administrator access. " +
