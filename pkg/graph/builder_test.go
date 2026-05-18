@@ -28,11 +28,11 @@ func externalEdgesByKind(og *OpenGraph, kind string) []*Edge {
 	return out
 }
 
-// helper: collect SyncsToADUser edges from ExternalEdges
+// helper: collect CyberArk_SyncsToADUser edges from ExternalEdges
 func syncsToADUserEdges(og *OpenGraph) []*Edge {
 	var out []*Edge
 	for _, e := range og.ExternalEdges {
-		if e.Kind == "SyncsToADUser" {
+		if e.Kind == "CyberArk_SyncsToADUser" {
 			out = append(out, e)
 		}
 	}
@@ -79,7 +79,7 @@ func TestSyncsToADUser_MatchingAddress(t *testing.T) {
 
 	edges := syncsToADUserEdges(og)
 	if len(edges) != 1 {
-		t.Fatalf("expected 1 SyncsToADUser edge, got %d", len(edges))
+		t.Fatalf("expected 1 CyberArk_SyncsToADUser edge, got %d", len(edges))
 	}
 	if edges[0].End.Value != "ADMIN@CORP.LOCAL" {
 		t.Errorf("expected end value ADMIN@CORP.LOCAL, got %s", edges[0].End.Value)
@@ -102,7 +102,7 @@ func TestSyncsToADUser_NonMatchingAddress(t *testing.T) {
 
 	edges := syncsToADUserEdges(og)
 	if len(edges) != 0 {
-		t.Fatalf("expected 0 SyncsToADUser edges, got %d", len(edges))
+		t.Fatalf("expected 0 CyberArk_SyncsToADUser edges, got %d", len(edges))
 	}
 }
 
@@ -119,7 +119,7 @@ func TestSyncsToADUser_SubdomainAddress(t *testing.T) {
 
 	edges := syncsToADUserEdges(og)
 	if len(edges) != 0 {
-		t.Fatalf("expected 0 SyncsToADUser edges for subdomain address, got %d", len(edges))
+		t.Fatalf("expected 0 CyberArk_SyncsToADUser edges for subdomain address, got %d", len(edges))
 	}
 }
 
@@ -136,7 +136,7 @@ func TestSyncsToADUser_EmptyUserName(t *testing.T) {
 
 	edges := syncsToADUserEdges(og)
 	if len(edges) != 0 {
-		t.Fatalf("expected 0 SyncsToADUser edges for empty UserName, got %d", len(edges))
+		t.Fatalf("expected 0 CyberArk_SyncsToADUser edges for empty UserName, got %d", len(edges))
 	}
 }
 
@@ -152,7 +152,7 @@ func TestSyncsToADUser_MultipleDomains(t *testing.T) {
 
 	edges := syncsToADUserEdges(og)
 	if len(edges) != 2 {
-		t.Fatalf("expected 2 SyncsToADUser edges, got %d", len(edges))
+		t.Fatalf("expected 2 CyberArk_SyncsToADUser edges, got %d", len(edges))
 	}
 
 	endValues := map[string]bool{}
@@ -180,7 +180,7 @@ func TestSyncsToADUser_UsernameWithoutAtSign(t *testing.T) {
 
 	edges := syncsToADUserEdges(og)
 	if len(edges) != 1 {
-		t.Fatalf("expected 1 SyncsToADUser edge for username without @, got %d", len(edges))
+		t.Fatalf("expected 1 CyberArk_SyncsToADUser edge for username without @, got %d", len(edges))
 	}
 	if edges[0].End.Value != "ADMINISTRATOR@CORP.LOCAL" {
 		t.Errorf("expected ADMINISTRATOR@CORP.LOCAL, got %s", edges[0].End.Value)
@@ -200,7 +200,7 @@ func TestSyncsToADUser_CaseInsensitiveMatching(t *testing.T) {
 
 	edges := syncsToADUserEdges(og)
 	if len(edges) != 1 {
-		t.Fatalf("expected 1 SyncsToADUser edge with case-insensitive matching, got %d", len(edges))
+		t.Fatalf("expected 1 CyberArk_SyncsToADUser edge with case-insensitive matching, got %d", len(edges))
 	}
 }
 
@@ -254,9 +254,9 @@ func TestDualControl_PlatformEnabled_WithApprovers(t *testing.T) {
 	}
 
 	og := buildDualControlGraph(platforms, accounts, members)
-	edges := edgesByKind(og, "CyberArkHasAccessTo")
+	edges := edgesByKind(og, "CyberArk_HasAccessTo")
 	if len(edges) != 1 {
-		t.Fatalf("expected 1 CyberArkHasAccessTo edge, got %d", len(edges))
+		t.Fatalf("expected 1 CyberArk_HasAccessTo edge, got %d", len(edges))
 	}
 	if edges[0].Props["requiresApproval"] != true {
 		t.Errorf("expected requiresApproval=true, got %v", edges[0].Props["requiresApproval"])
@@ -283,9 +283,9 @@ func TestDualControl_PlatformDisabled_WithApprovers(t *testing.T) {
 	}
 
 	og := buildDualControlGraph(platforms, accounts, members)
-	edges := edgesByKind(og, "CyberArkHasAccessTo")
+	edges := edgesByKind(og, "CyberArk_HasAccessTo")
 	if len(edges) != 1 {
-		t.Fatalf("expected 1 CyberArkHasAccessTo edge, got %d", len(edges))
+		t.Fatalf("expected 1 CyberArk_HasAccessTo edge, got %d", len(edges))
 	}
 	if edges[0].Props["requiresApproval"] != false {
 		t.Errorf("expected requiresApproval=false (platform DC disabled), got %v", edges[0].Props["requiresApproval"])
@@ -310,9 +310,9 @@ func TestDualControl_PlatformEnabled_NoApprovers(t *testing.T) {
 	}
 
 	og := buildDualControlGraph(platforms, accounts, members)
-	edges := edgesByKind(og, "CyberArkHasAccessTo")
+	edges := edgesByKind(og, "CyberArk_HasAccessTo")
 	if len(edges) != 1 {
-		t.Fatalf("expected 1 CyberArkHasAccessTo edge, got %d", len(edges))
+		t.Fatalf("expected 1 CyberArk_HasAccessTo edge, got %d", len(edges))
 	}
 	if edges[0].Props["requiresApproval"] != false {
 		t.Errorf("expected requiresApproval=false (no approvers), got %v", edges[0].Props["requiresApproval"])
@@ -342,9 +342,9 @@ func TestDualControl_AccessWithoutConfirmation(t *testing.T) {
 	}
 
 	og := buildDualControlGraph(platforms, accounts, members)
-	edges := edgesByKind(og, "CyberArkHasAccessTo")
+	edges := edgesByKind(og, "CyberArk_HasAccessTo")
 	if len(edges) != 1 {
-		t.Fatalf("expected 1 CyberArkHasAccessTo edge, got %d", len(edges))
+		t.Fatalf("expected 1 CyberArk_HasAccessTo edge, got %d", len(edges))
 	}
 	if edges[0].Props["requiresApproval"] != false {
 		t.Errorf("expected requiresApproval=false (accessWithoutConfirmation), got %v", edges[0].Props["requiresApproval"])
@@ -364,9 +364,9 @@ func TestDualControl_NoPlatformData_FallbackHeuristic(t *testing.T) {
 	}
 
 	og := buildDualControlGraph(nil, accounts, members)
-	edges := edgesByKind(og, "CyberArkHasAccessTo")
+	edges := edgesByKind(og, "CyberArk_HasAccessTo")
 	if len(edges) != 1 {
-		t.Fatalf("expected 1 CyberArkHasAccessTo edge, got %d", len(edges))
+		t.Fatalf("expected 1 CyberArk_HasAccessTo edge, got %d", len(edges))
 	}
 	if edges[0].Props["requiresApproval"] != true {
 		t.Errorf("expected requiresApproval=true (fallback heuristic with approvers), got %v", edges[0].Props["requiresApproval"])
@@ -384,9 +384,9 @@ func TestDualControl_NoPlatformData_NoApprovers(t *testing.T) {
 	}
 
 	og := buildDualControlGraph(nil, accounts, members)
-	edges := edgesByKind(og, "CyberArkHasAccessTo")
+	edges := edgesByKind(og, "CyberArk_HasAccessTo")
 	if len(edges) != 1 {
-		t.Fatalf("expected 1 CyberArkHasAccessTo edge, got %d", len(edges))
+		t.Fatalf("expected 1 CyberArk_HasAccessTo edge, got %d", len(edges))
 	}
 	if edges[0].Props["requiresApproval"] != false {
 		t.Errorf("expected requiresApproval=false (no approvers), got %v", edges[0].Props["requiresApproval"])
@@ -421,9 +421,9 @@ func TestDualControl_MixedPlatforms_PerAccountDetermination(t *testing.T) {
 	}
 
 	og := buildDualControlGraph(platforms, accounts, members)
-	edges := edgesByKind(og, "CyberArkHasAccessTo")
+	edges := edgesByKind(og, "CyberArk_HasAccessTo")
 	if len(edges) != 2 {
-		t.Fatalf("expected 2 CyberArkHasAccessTo edges, got %d", len(edges))
+		t.Fatalf("expected 2 CyberArk_HasAccessTo edges, got %d", len(edges))
 	}
 
 	// Build a map of end node → requiresApproval
@@ -461,9 +461,9 @@ func TestSessionMonitoring_PlatformEnabled(t *testing.T) {
 	}
 
 	og := buildDualControlGraph(platforms, accounts, members)
-	edges := edgesByKind(og, "CyberArkHasAccessTo")
+	edges := edgesByKind(og, "CyberArk_HasAccessTo")
 	if len(edges) != 1 {
-		t.Fatalf("expected 1 CyberArkHasAccessTo edge, got %d", len(edges))
+		t.Fatalf("expected 1 CyberArk_HasAccessTo edge, got %d", len(edges))
 	}
 	if edges[0].Props["requiresSessionMonitoring"] != true {
 		t.Errorf("expected requiresSessionMonitoring=true, got %v", edges[0].Props["requiresSessionMonitoring"])
@@ -491,9 +491,9 @@ func TestSessionMonitoring_PlatformDisabled(t *testing.T) {
 	}
 
 	og := buildDualControlGraph(platforms, accounts, members)
-	edges := edgesByKind(og, "CyberArkHasAccessTo")
+	edges := edgesByKind(og, "CyberArk_HasAccessTo")
 	if len(edges) != 1 {
-		t.Fatalf("expected 1 CyberArkHasAccessTo edge, got %d", len(edges))
+		t.Fatalf("expected 1 CyberArk_HasAccessTo edge, got %d", len(edges))
 	}
 	if edges[0].Props["requiresSessionMonitoring"] != false {
 		t.Errorf("expected requiresSessionMonitoring=false, got %v", edges[0].Props["requiresSessionMonitoring"])
@@ -514,9 +514,9 @@ func TestSessionMonitoring_NoPlatformData(t *testing.T) {
 	}
 
 	og := buildDualControlGraph(nil, accounts, members)
-	edges := edgesByKind(og, "CyberArkHasAccessTo")
+	edges := edgesByKind(og, "CyberArk_HasAccessTo")
 	if len(edges) != 1 {
-		t.Fatalf("expected 1 CyberArkHasAccessTo edge, got %d", len(edges))
+		t.Fatalf("expected 1 CyberArk_HasAccessTo edge, got %d", len(edges))
 	}
 	if edges[0].Props["requiresSessionMonitoring"] != false {
 		t.Errorf("expected requiresSessionMonitoring=false (no platform data), got %v", edges[0].Props["requiresSessionMonitoring"])
@@ -554,9 +554,9 @@ func TestSessionMonitoring_MixedPlatforms(t *testing.T) {
 	}
 
 	og := buildDualControlGraph(platforms, accounts, members)
-	edges := edgesByKind(og, "CyberArkHasAccessTo")
+	edges := edgesByKind(og, "CyberArk_HasAccessTo")
 	if len(edges) != 2 {
-		t.Fatalf("expected 2 CyberArkHasAccessTo edges, got %d", len(edges))
+		t.Fatalf("expected 2 CyberArk_HasAccessTo edges, got %d", len(edges))
 	}
 
 	monByEnd := make(map[string]bool)
@@ -601,9 +601,9 @@ func TestSessionMonitoring_PartialSettings(t *testing.T) {
 	}
 
 	og := buildDualControlGraph(platforms, accounts, members)
-	edges := edgesByKind(og, "CyberArkHasAccessTo")
+	edges := edgesByKind(og, "CyberArk_HasAccessTo")
 	if len(edges) != 1 {
-		t.Fatalf("expected 1 CyberArkHasAccessTo edge, got %d", len(edges))
+		t.Fatalf("expected 1 CyberArk_HasAccessTo edge, got %d", len(edges))
 	}
 	if edges[0].Props["requiresSessionMonitoring"] != true {
 		t.Errorf("expected requiresSessionMonitoring=true, got %v", edges[0].Props["requiresSessionMonitoring"])
@@ -658,7 +658,7 @@ func TestPlatformConnectionComponents(t *testing.T) {
 	og := buildPlatformGraph(platforms, connectors, nil)
 	node := og.Nodes["CAPLATFORM-WINSERVER-PVWA"]
 	if node == nil {
-		t.Fatal("expected CyberArkPlatform node, got nil")
+		t.Fatal("expected CyberArk_Platform node, got nil")
 	}
 
 	cc, ok := node.Properties["connectionComponents"]
@@ -682,7 +682,7 @@ func TestPlatformConnectionComponents_Empty(t *testing.T) {
 	og := buildPlatformGraph(platforms, nil, nil)
 	node := og.Nodes["CAPLATFORM-WINSERVER-PVWA"]
 	if node == nil {
-		t.Fatal("expected CyberArkPlatform node, got nil")
+		t.Fatal("expected CyberArk_Platform node, got nil")
 	}
 
 	if _, ok := node.Properties["connectionComponents"]; ok {
@@ -713,7 +713,7 @@ func TestPlatformExceptionFlags_Set(t *testing.T) {
 	og := buildPlatformGraph(platforms, nil, targetPlatforms)
 	node := og.Nodes["CAPLATFORM-WINSERVER-PVWA"]
 	if node == nil {
-		t.Fatal("expected CyberArkPlatform node, got nil")
+		t.Fatal("expected CyberArk_Platform node, got nil")
 	}
 
 	if node.Properties["dualControlIsException"] != true {
@@ -747,7 +747,7 @@ func TestPlatformExceptionFlags_NotSet(t *testing.T) {
 	og := buildPlatformGraph(platforms, nil, targetPlatforms)
 	node := og.Nodes["CAPLATFORM-WINSERVER-PVWA"]
 	if node == nil {
-		t.Fatal("expected CyberArkPlatform node, got nil")
+		t.Fatal("expected CyberArk_Platform node, got nil")
 	}
 
 	if node.Properties["dualControlIsException"] != false {
@@ -775,7 +775,7 @@ func TestPlatformExceptionFlags_NoTargetData(t *testing.T) {
 	og := buildPlatformGraph(platforms, nil, nil)
 	node := og.Nodes["CAPLATFORM-WINSERVER-PVWA"]
 	if node == nil {
-		t.Fatal("expected CyberArkPlatform node, got nil")
+		t.Fatal("expected CyberArk_Platform node, got nil")
 	}
 
 	// Exception flags should not be present when no target platform data
@@ -796,7 +796,7 @@ func TestPSMServerNodes(t *testing.T) {
 
 	node1 := og.Nodes["CAPSMSERVER-PSMSERVER_ABC123-PVWA"]
 	if node1 == nil {
-		t.Fatal("expected CyberArkPSMServer node for PSMServer_abc123, got nil")
+		t.Fatal("expected CyberArk_PSMServer node for PSMServer_abc123, got nil")
 	}
 	if node1.Properties["psmServerId"] != "PSMServer_abc123" {
 		t.Errorf("expected psmServerId=PSMServer_abc123, got %v", node1.Properties["psmServerId"])
@@ -810,7 +810,7 @@ func TestPSMServerNodes(t *testing.T) {
 
 	node2 := og.Nodes["CAPSMSERVER-PSMSERVER_DEF456-PVWA"]
 	if node2 == nil {
-		t.Fatal("expected CyberArkPSMServer node for PSMServer_def456, got nil")
+		t.Fatal("expected CyberArk_PSMServer node for PSMServer_def456, got nil")
 	}
 }
 
@@ -824,7 +824,7 @@ func TestConnectionComponentNodes(t *testing.T) {
 
 	node1 := og.Nodes["CACONNCOMP-PSM-RDP-PVWA"]
 	if node1 == nil {
-		t.Fatal("expected CyberArkConnectionComponent node for PSM-RDP, got nil")
+		t.Fatal("expected CyberArk_ConnectionComponent node for PSM-RDP, got nil")
 	}
 	if node1.Properties["connectorId"] != "PSM-RDP" {
 		t.Errorf("expected connectorId=PSM-RDP, got %v", node1.Properties["connectorId"])
@@ -835,7 +835,7 @@ func TestConnectionComponentNodes(t *testing.T) {
 
 	node2 := og.Nodes["CACONNCOMP-PSM-SSH-PVWA"]
 	if node2 == nil {
-		t.Fatal("expected CyberArkConnectionComponent node for PSM-SSH, got nil")
+		t.Fatal("expected CyberArk_ConnectionComponent node for PSM-SSH, got nil")
 	}
 }
 
@@ -843,14 +843,14 @@ func TestPSMServer_NilInput(t *testing.T) {
 	og := buildFullPlatformGraph(nil, nil, nil, nil, nil, nil)
 	for _, node := range og.Nodes {
 		for _, kind := range node.Kinds {
-			if kind == "CyberArkPSMServer" || kind == "CyberArkConnectionComponent" {
+			if kind == "CyberArk_PSMServer" || kind == "CyberArk_ConnectionComponent" {
 				t.Errorf("expected no PSM/connector nodes when input is nil, got %s", kind)
 			}
 		}
 	}
 }
 
-func TestCyberArkUsesPSMServer_Edge(t *testing.T) {
+func TestCyberArk_UsesPSMServer_Edge(t *testing.T) {
 	platforms := []models.Platform{{
 		General: models.PlatformGeneral{ID: "WinServer", Name: "WinServer"},
 		SessionManagement: models.PlatformSessionManagement{
@@ -863,9 +863,9 @@ func TestCyberArkUsesPSMServer_Edge(t *testing.T) {
 
 	og := buildFullPlatformGraph(platforms, nil, nil, psmServers, nil, nil)
 
-	edges := edgesByKind(og, "CyberArkUsesPSMServer")
+	edges := edgesByKind(og, "CyberArk_UsesPSMServer")
 	if len(edges) != 1 {
-		t.Fatalf("expected 1 CyberArkUsesPSMServer edge, got %d", len(edges))
+		t.Fatalf("expected 1 CyberArk_UsesPSMServer edge, got %d", len(edges))
 	}
 	if edges[0].Start.Value != "CAPLATFORM-WINSERVER-PVWA" {
 		t.Errorf("expected start=CAPLATFORM-WINSERVER-PVWA, got %s", edges[0].Start.Value)
@@ -875,7 +875,7 @@ func TestCyberArkUsesPSMServer_Edge(t *testing.T) {
 	}
 }
 
-func TestCyberArkManagedByPSM_Edge(t *testing.T) {
+func TestCyberArk_ManagedByPSM_Edge(t *testing.T) {
 	platforms := []models.Platform{{
 		General: models.PlatformGeneral{ID: "WinServer", Name: "WinServer"},
 		SessionManagement: models.PlatformSessionManagement{
@@ -891,16 +891,16 @@ func TestCyberArkManagedByPSM_Edge(t *testing.T) {
 
 	og := buildFullPlatformGraph(platforms, nil, nil, psmServers, nil, accounts)
 
-	edges := edgesByKind(og, "CyberArkManagedByPSM")
+	edges := edgesByKind(og, "CyberArk_ManagedByPSM")
 	if len(edges) != 1 {
-		t.Fatalf("expected 1 CyberArkManagedByPSM edge, got %d", len(edges))
+		t.Fatalf("expected 1 CyberArk_ManagedByPSM edge, got %d", len(edges))
 	}
 	if edges[0].End.Value != "CAPSMSERVER-PSMSERVER_ABC123-PVWA" {
 		t.Errorf("expected end=CAPSMSERVER-PSMSERVER_ABC123-PVWA, got %s", edges[0].End.Value)
 	}
 }
 
-func TestCyberArkHasConnectionComponent_Edge(t *testing.T) {
+func TestCyberArk_HasConnectionComponent_Edge(t *testing.T) {
 	platforms := []models.Platform{{
 		General: models.PlatformGeneral{ID: "WinServer", Name: "WinServer"},
 	}}
@@ -914,9 +914,9 @@ func TestCyberArkHasConnectionComponent_Edge(t *testing.T) {
 
 	og := buildFullPlatformGraph(platforms, connectors, nil, nil, connComponents, nil)
 
-	edges := edgesByKind(og, "CyberArkHasConnectionComponent")
+	edges := edgesByKind(og, "CyberArk_HasConnectionComponent")
 	if len(edges) != 2 {
-		t.Fatalf("expected 2 CyberArkHasConnectionComponent edges, got %d", len(edges))
+		t.Fatalf("expected 2 CyberArk_HasConnectionComponent edges, got %d", len(edges))
 	}
 
 	for _, e := range edges {
@@ -929,7 +929,7 @@ func TestCyberArkHasConnectionComponent_Edge(t *testing.T) {
 	}
 }
 
-func TestCyberArkHasConnectionComponent_NoConnectors(t *testing.T) {
+func TestCyberArk_HasConnectionComponent_NoConnectors(t *testing.T) {
 	platforms := []models.Platform{{
 		General: models.PlatformGeneral{ID: "WinServer", Name: "WinServer"},
 	}}
@@ -939,9 +939,9 @@ func TestCyberArkHasConnectionComponent_NoConnectors(t *testing.T) {
 
 	og := buildFullPlatformGraph(platforms, nil, nil, nil, connComponents, nil)
 
-	edges := edgesByKind(og, "CyberArkHasConnectionComponent")
+	edges := edgesByKind(og, "CyberArk_HasConnectionComponent")
 	if len(edges) != 0 {
-		t.Errorf("expected 0 CyberArkHasConnectionComponent edges when no platformConnectors, got %d", len(edges))
+		t.Errorf("expected 0 CyberArk_HasConnectionComponent edges when no platformConnectors, got %d", len(edges))
 	}
 }
 
@@ -994,7 +994,7 @@ func TestPlatformFallbackFromTargets(t *testing.T) {
 	// Fallback platform node should be created from target data
 	node := og.Nodes["CAPLATFORM-WINSERVER-PVWA"]
 	if node == nil {
-		t.Fatal("expected fallback CyberArkPlatform node from Targets data, got nil")
+		t.Fatal("expected fallback CyberArk_Platform node from Targets data, got nil")
 	}
 	if node.Properties["dataSource"] != "targets-fallback" {
 		t.Errorf("expected dataSource=targets-fallback, got %v", node.Properties["dataSource"])
@@ -1026,22 +1026,22 @@ func TestPlatformFallbackFromTargets(t *testing.T) {
 		t.Errorf("expected dualControlIsException=true, got %v", node.Properties["dualControlIsException"])
 	}
 
-	// CyberArkUsesPSMServer edge should exist
-	psmEdges := edgesByKind(og, "CyberArkUsesPSMServer")
+	// CyberArk_UsesPSMServer edge should exist
+	psmEdges := edgesByKind(og, "CyberArk_UsesPSMServer")
 	if len(psmEdges) != 1 {
-		t.Fatalf("expected 1 CyberArkUsesPSMServer edge from fallback, got %d", len(psmEdges))
+		t.Fatalf("expected 1 CyberArk_UsesPSMServer edge from fallback, got %d", len(psmEdges))
 	}
 
-	// CyberArkUsesPlatform edge (Account → Platform) should exist
-	platEdges := edgesByKind(og, "CyberArkUsesPlatform")
+	// CyberArk_UsesPlatform edge (Account → Platform) should exist
+	platEdges := edgesByKind(og, "CyberArk_UsesPlatform")
 	if len(platEdges) != 1 {
-		t.Fatalf("expected 1 CyberArkUsesPlatform edge from fallback, got %d", len(platEdges))
+		t.Fatalf("expected 1 CyberArk_UsesPlatform edge from fallback, got %d", len(platEdges))
 	}
 
-	// CyberArkManagedByPSM edge (Account → PSM Server) should exist
-	managedEdges := edgesByKind(og, "CyberArkManagedByPSM")
+	// CyberArk_ManagedByPSM edge (Account → PSM Server) should exist
+	managedEdges := edgesByKind(og, "CyberArk_ManagedByPSM")
 	if len(managedEdges) != 1 {
-		t.Fatalf("expected 1 CyberArkManagedByPSM edge from fallback, got %d", len(managedEdges))
+		t.Fatalf("expected 1 CyberArk_ManagedByPSM edge from fallback, got %d", len(managedEdges))
 	}
 }
 
@@ -1062,7 +1062,7 @@ func TestPlatformFallbackNotUsedWhenPlatformsExist(t *testing.T) {
 
 	node := og.Nodes["CAPLATFORM-WINSERVER-PVWA"]
 	if node == nil {
-		t.Fatal("expected CyberArkPlatform node, got nil")
+		t.Fatal("expected CyberArk_Platform node, got nil")
 	}
 
 	// Should NOT have dataSource=targets-fallback since full platform data was available
@@ -1076,7 +1076,7 @@ func TestPlatformFallbackNotUsedWhenPlatformsExist(t *testing.T) {
 	}
 }
 
-func TestCyberArkHasConnectionComponent_CaseInsensitive(t *testing.T) {
+func TestCyberArk_HasConnectionComponent_CaseInsensitive(t *testing.T) {
 	platforms := []models.Platform{{
 		General: models.PlatformGeneral{ID: "WinServer", Name: "WinServer"},
 	}}
@@ -1092,13 +1092,13 @@ func TestCyberArkHasConnectionComponent_CaseInsensitive(t *testing.T) {
 
 	og := buildFullPlatformGraph(platforms, connectors, nil, nil, connComponents, nil)
 
-	edges := edgesByKind(og, "CyberArkHasConnectionComponent")
+	edges := edgesByKind(og, "CyberArk_HasConnectionComponent")
 	if len(edges) != 2 {
-		t.Fatalf("expected 2 CyberArkHasConnectionComponent edges with case-insensitive matching, got %d", len(edges))
+		t.Fatalf("expected 2 CyberArk_HasConnectionComponent edges with case-insensitive matching, got %d", len(edges))
 	}
 }
 
-func TestCyberArkPSMServerHostedOn_Edge(t *testing.T) {
+func TestCyberArk_PSMServerHostedOn_Edge(t *testing.T) {
 	psmServers := []models.PSMServer{
 		{ID: "PSMServer_abc123", Name: "PSM Server Main", Address: "server01.domain.com"},
 		{ID: "PSMServer_def456", Name: "PSM Server DR", Address: "10.10.10.21"},
@@ -1106,9 +1106,9 @@ func TestCyberArkPSMServerHostedOn_Edge(t *testing.T) {
 
 	og := buildFullPlatformGraph(nil, nil, nil, psmServers, nil, nil)
 
-	edges := externalEdgesByKind(og, "CyberArkPSMServerHostedOn")
+	edges := externalEdgesByKind(og, "CyberArk_PSMServerHostedOn")
 	if len(edges) != 2 {
-		t.Fatalf("expected 2 CyberArkPSMServerHostedOn edges, got %d", len(edges))
+		t.Fatalf("expected 2 CyberArk_PSMServerHostedOn edges, got %d", len(edges))
 	}
 
 	// Verify address is uppercased in edge end value
@@ -1130,7 +1130,7 @@ func TestCyberArkPSMServerHostedOn_Edge(t *testing.T) {
 	}
 }
 
-func TestCyberArkPSMServerHostedOn_EmptyAddress(t *testing.T) {
+func TestCyberArk_PSMServerHostedOn_EmptyAddress(t *testing.T) {
 	psmServers := []models.PSMServer{
 		{ID: "PSMServer_abc123", Name: "PSM Server Main", Address: ""},
 		{ID: "PSMServer_def456", Name: "PSM Server DR", Address: "10.10.10.21"},
@@ -1138,16 +1138,16 @@ func TestCyberArkPSMServerHostedOn_EmptyAddress(t *testing.T) {
 
 	og := buildFullPlatformGraph(nil, nil, nil, psmServers, nil, nil)
 
-	edges := externalEdgesByKind(og, "CyberArkPSMServerHostedOn")
+	edges := externalEdgesByKind(og, "CyberArk_PSMServerHostedOn")
 	if len(edges) != 1 {
-		t.Fatalf("expected 1 CyberArkPSMServerHostedOn edge (empty address skipped), got %d", len(edges))
+		t.Fatalf("expected 1 CyberArk_PSMServerHostedOn edge (empty address skipped), got %d", len(edges))
 	}
 	if edges[0].End.Value != "10.10.10.21" {
 		t.Errorf("expected end value 10.10.10.21, got %s", edges[0].End.Value)
 	}
 }
 
-func TestCyberArkInstance_RootNodeAndContainment(t *testing.T) {
+func TestCyberArk_Instance_RootNodeAndContainment(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.WarnLevel)
 
@@ -1169,22 +1169,22 @@ func TestCyberArkInstance_RootNodeAndContainment(t *testing.T) {
 	instanceID := "CAINSTANCE-PVWA"
 	inst, ok := og.Nodes[instanceID]
 	if !ok {
-		t.Fatalf("expected CyberArkInstance node %s to exist", instanceID)
+		t.Fatalf("expected CyberArk_Instance node %s to exist", instanceID)
 	}
 	hasKind := false
 	for _, k := range inst.Kinds {
-		if k == "CyberArkInstance" {
+		if k == "CyberArk_Instance" {
 			hasKind = true
 		}
 	}
 	if !hasKind {
-		t.Errorf("expected node %s to carry kind CyberArkInstance, got %v", instanceID, inst.Kinds)
+		t.Errorf("expected node %s to carry kind CyberArk_Instance, got %v", instanceID, inst.Kinds)
 	}
 
 	contained := map[string]bool{}
-	for _, e := range edgesByKind(og, "CyberArkInstanceContains") {
+	for _, e := range edgesByKind(og, "CyberArk_InstanceContains") {
 		if e.Start.Value != instanceID {
-			t.Errorf("CyberArkInstanceContains should start at %s, got %s", instanceID, e.Start.Value)
+			t.Errorf("CyberArk_InstanceContains should start at %s, got %s", instanceID, e.Start.Value)
 		}
 		contained[e.End.Value] = true
 	}
@@ -1195,7 +1195,7 @@ func TestCyberArkInstance_RootNodeAndContainment(t *testing.T) {
 		"CASAFE-TESTSAFE-PVWA",
 	} {
 		if !contained[want] {
-			t.Errorf("expected CyberArkInstanceContains edge to %s", want)
+			t.Errorf("expected CyberArk_InstanceContains edge to %s", want)
 		}
 	}
 

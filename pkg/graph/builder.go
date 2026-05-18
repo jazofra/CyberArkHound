@@ -142,7 +142,7 @@ func BuildOpenGraph(
 
 		og.MergeNode(&Node{
 			ID:         caNodeID,
-			Kinds:      []string{"CyberArkUser", "CyberArkBase"},
+			Kinds:      []string{"CyberArk_User", "CyberArkBase"},
 			Properties: SanitizeProperties(props),
 		})
 
@@ -156,12 +156,12 @@ func BuildOpenGraph(
 		// Add MemberOf edges
 		for _, gm := range u.GroupsMembership {
 			if gm.GroupName != "" {
-				og.AddEdge("CyberArkMemberOf", caNodeID, strings.ToUpper(fmt.Sprintf("cagroup-%s-%s", gm.GroupName, pvwaTag)),
+				og.AddEdge("CyberArk_MemberOf", caNodeID, strings.ToUpper(fmt.Sprintf("cagroup-%s-%s", gm.GroupName, pvwaTag)),
 					"id", "id", map[string]interface{}{"source": "userDetails"}, false)
 			}
 		}
 
-		// Add SyncsToCyberArkUser edge if LDAP synced
+		// Add CyberArk_SyncsToUser edge if LDAP synced
 		if isLDAP && u.UserDN != "" {
 			domain := ParseDomainFromDN(u.UserDN)
 			if domain != "" {
@@ -173,7 +173,7 @@ func BuildOpenGraph(
 				}
 
 				adUserName := fmt.Sprintf("%s@%s", strings.ToUpper(adKey), strings.ToUpper(domain))
-				og.AddEdge("SyncsToCyberArkUser", adUserName, caNodeID,
+				og.AddEdge("CyberArk_SyncsToUser", adUserName, caNodeID,
 					"name", "id", map[string]interface{}{
 						"inferred": true,
 						"source":   "LDAP",
@@ -233,7 +233,7 @@ func BuildOpenGraph(
 
 		og.MergeNode(&Node{
 			ID:         caGroupID,
-			Kinds:      []string{"CyberArkGroup", "CyberArkBase"},
+			Kinds:      []string{"CyberArk_Group", "CyberArkBase"},
 			Properties: SanitizeProperties(props),
 		})
 
@@ -243,12 +243,12 @@ func BuildOpenGraph(
 		}
 		groupsByName[groupName] = caGroupID
 
-		// Add SyncsToCyberArkGroup edge if directory synced
+		// Add CyberArk_SyncsToGroup edge if directory synced
 		if isDirectorySynced && g.DN != "" {
 			domain := ParseDomainFromDN(g.DN)
 			if domain != "" {
 				adGroupName := fmt.Sprintf("%s@%s", strings.ToUpper(groupName), strings.ToUpper(domain))
-				og.AddEdge("SyncsToCyberArkGroup", adGroupName, caGroupID,
+				og.AddEdge("CyberArk_SyncsToGroup", adGroupName, caGroupID,
 					"name", "id", map[string]interface{}{
 						"inferred": true,
 						"source":   "LDAP",
@@ -293,31 +293,31 @@ func BuildOpenGraph(
 
 		og.MergeNode(&Node{
 			ID:         safeNodeID,
-			Kinds:      []string{"CyberArkSafe", "CyberArkBase"},
+			Kinds:      []string{"CyberArk_Safe", "CyberArkBase"},
 			Properties: SanitizeProperties(props),
 		})
 
 		safesByName[s.SafeName] = safeNodeID
 
-		// CyberArkCreated edge (User → Safe) — safe creator relationship
+		// CyberArk_Created edge (User → Safe) — safe creator relationship
 		if s.Creator.Name != "" {
 			creatorNodeID := usersByUsername[s.Creator.Name]
 			if creatorNodeID == "" {
 				creatorNodeID = strings.ToUpper(fmt.Sprintf("causer-%s-%s", s.Creator.Name, pvwaTag))
 			}
-			og.AddEdge("CyberArkCreated", creatorNodeID, safeNodeID,
+			og.AddEdge("CyberArk_Created", creatorNodeID, safeNodeID,
 				"id", "id", map[string]interface{}{
 					"creatorId": s.Creator.ID,
 				}, false)
 		}
 
-		// CyberArkManagedBy edge (CPM User → Safe) — CPM management relationship
+		// CyberArk_ManagedBy edge (CPM User → Safe) — CPM management relationship
 		if s.ManagingCPM != "" {
 			cpmNodeID := usersByUsername[s.ManagingCPM]
 			if cpmNodeID == "" {
 				cpmNodeID = strings.ToUpper(fmt.Sprintf("causer-%s-%s", s.ManagingCPM, pvwaTag))
 			}
-			og.AddEdge("CyberArkManagedBy", cpmNodeID, safeNodeID,
+			og.AddEdge("CyberArk_ManagedBy", cpmNodeID, safeNodeID,
 				"id", "id", nil, false)
 		}
 	}
@@ -404,7 +404,7 @@ func BuildOpenGraph(
 
 			og.MergeNode(&Node{
 				ID:         platformNodeID,
-				Kinds:      []string{"CyberArkPlatform", "CyberArkBase"},
+				Kinds:      []string{"CyberArk_Platform", "CyberArkBase"},
 				Properties: SanitizeProperties(props),
 			})
 
@@ -481,7 +481,7 @@ func BuildOpenGraph(
 				}
 				og.MergeNode(&Node{
 					ID:         platformNodeID,
-					Kinds:      []string{"CyberArkPlatform", "CyberArkBase"},
+					Kinds:      []string{"CyberArk_Platform", "CyberArkBase"},
 					Properties: SanitizeProperties(props),
 				})
 				platformsByID[tpID] = platformNodeID
@@ -571,7 +571,7 @@ func BuildOpenGraph(
 
 		og.MergeNode(&Node{
 			ID:         accountNodeID,
-			Kinds:      []string{"CyberArkAccount", "CyberArkBase"},
+			Kinds:      []string{"CyberArk_Account", "CyberArkBase"},
 			Properties: SanitizeProperties(props),
 		})
 
@@ -582,14 +582,14 @@ func BuildOpenGraph(
 			accountPlatformID[accountNodeID] = strings.ToLower(a.PlatformID)
 		}
 
-		// CyberArkUsesPlatform edge (Account → Platform)
+		// CyberArk_UsesPlatform edge (Account → Platform)
 		if a.PlatformID != "" {
 			platformNodeID, ok := platformsByID[a.PlatformID]
 			if !ok {
 				platformNodeID, ok = platformsByID[strings.ToLower(a.PlatformID)]
 			}
 			if ok {
-				og.AddEdge("CyberArkUsesPlatform", accountNodeID, platformNodeID,
+				og.AddEdge("CyberArk_UsesPlatform", accountNodeID, platformNodeID,
 					"id", "id", nil, false)
 			} else if len(platformsByID) > 0 && debug {
 				logger.Debugf("Account %s has platformId '%s' but no matching platform node found", a.ID, a.PlatformID)
@@ -600,21 +600,21 @@ func BuildOpenGraph(
 		if a.SafeName != "" {
 			accountsBySafe[a.SafeName] = append(accountsBySafe[a.SafeName], accountNodeID)
 
-			// Add CyberArkContains edge (Safe -> Account)
+			// Add CyberArk_Contains edge (Safe -> Account)
 			safeNodeID := safesByName[a.SafeName]
 			if safeNodeID == "" {
 				safeNodeID = strings.ToUpper(fmt.Sprintf("casafe-%s-%s", a.SafeName, pvwaTag))
 			}
-			og.AddEdge("CyberArkContains", safeNodeID, accountNodeID,
+			og.AddEdge("CyberArk_Contains", safeNodeID, accountNodeID,
 				"id", "id", nil, false)
 		}
 
-		// Add SyncsToADUser and CyberArkCanConnect edges if applicable
+		// Add CyberArk_SyncsToADUser and CyberArk_CanConnect edges if applicable
 		if a.UserName != "" && a.Address != "" {
 			adKey := StripAfterAt(a.UserName)
 			if adKey == "" {
 				if debug {
-					logger.Debugf("SyncsToADUser: skipping account %s — empty username after stripping '@' from '%s'", a.ID, a.UserName)
+					logger.Debugf("CyberArk_SyncsToADUser: skipping account %s — empty username after stripping '@' from '%s'", a.ID, a.UserName)
 				}
 				continue
 			}
@@ -625,7 +625,7 @@ func BuildOpenGraph(
 
 				if addressLower == domainLower {
 					adUserName := fmt.Sprintf("%s@%s", strings.ToUpper(adKey), strings.ToUpper(domain))
-					og.AddEdge("SyncsToADUser", accountNodeID, adUserName,
+					og.AddEdge("CyberArk_SyncsToADUser", accountNodeID, adUserName,
 						"id", "name", map[string]interface{}{
 							"inferred": true,
 							"source":   "CyberArk",
@@ -633,17 +633,17 @@ func BuildOpenGraph(
 						}, true)
 					matched = true
 					if debug {
-						logger.Debugf("SyncsToADUser: account %s (user=%s, address=%s) -> %s", a.ID, a.UserName, a.Address, adUserName)
+						logger.Debugf("CyberArk_SyncsToADUser: account %s (user=%s, address=%s) -> %s", a.ID, a.UserName, a.Address, adUserName)
 					}
 					break
-					// Create CyberArkCanConnect edge from CyberArkUser to AD Computer if address is a subdomain of the target domain
+					// Create CyberArk_CanConnect edge from CyberArk_User to AD Computer if address is a subdomain of the target domain
 				} else if strings.HasSuffix(addressLower, "."+domainLower) {
 					adHostname := StripAfterDot(a.Address)
 					adComputerName := fmt.Sprintf("%s.%s", strings.ToUpper(adHostname), strings.ToUpper(domain))
 
 					// Check if computer name matches the address (prevents the computer.sub.domain.com case)
 					if strings.ToLower(adComputerName) == addressLower {
-						og.AddEdge("CyberArkCanConnect", accountNodeID, adComputerName,
+						og.AddEdge("CyberArk_CanConnect", accountNodeID, adComputerName,
 							"id", "name", map[string]interface{}{
 								"inferred":  true,
 								"source":    "CyberArk",
@@ -655,7 +655,7 @@ func BuildOpenGraph(
 				}
 			}
 			if !matched && debug {
-				logger.Debugf("SyncsToADUser: account %s (user=%s, address=%q [%x]) — no target domain match (domains: %q [%x])", a.ID, a.UserName, a.Address, []byte(a.Address), targetDomains, func() [][]byte {
+				logger.Debugf("CyberArk_SyncsToADUser: account %s (user=%s, address=%q [%x]) — no target domain match (domains: %q [%x])", a.ID, a.UserName, a.Address, []byte(a.Address), targetDomains, func() [][]byte {
 					var bs [][]byte
 					for _, d := range targetDomains {
 						bs = append(bs, []byte(d))
@@ -664,7 +664,7 @@ func BuildOpenGraph(
 				}())
 			}
 		} else if debug && (a.UserName == "" || a.Address == "") {
-			logger.Debugf("SyncsToADUser: skipping account %s — missing userName=%q or address=%q", a.ID, a.UserName, a.Address)
+			logger.Debugf("CyberArk_SyncsToADUser: skipping account %s — missing userName=%q or address=%q", a.ID, a.UserName, a.Address)
 		}
 	}
 
@@ -845,7 +845,7 @@ func BuildOpenGraph(
 					recordsSessionActivity = platformSessionRecording[platID]
 				}
 
-				og.AddEdge("CyberArkHasAccessTo", memberNodeID, accountNodeID,
+				og.AddEdge("CyberArk_HasAccessTo", memberNodeID, accountNodeID,
 					"id", "id", map[string]interface{}{
 						"safeName":                  sm.SafeName,
 						"permissions":               matchedPermNames,
@@ -859,7 +859,7 @@ func BuildOpenGraph(
 
 		if canGrantAccess {
 			// Create edge to the safe (privilege escalation path)
-			og.AddEdge("CyberArkCanGrantAccessTo", memberNodeID, safeNodeID,
+			og.AddEdge("CyberArk_CanGrantAccessTo", memberNodeID, safeNodeID,
 				"id", "id", map[string]interface{}{
 					"permissions": matchedPermNames,
 					"inferred":    false,
@@ -872,7 +872,7 @@ func BuildOpenGraph(
 			if canApproveL2 {
 				approvalLevel = 2
 			}
-			og.AddEdge("CyberArkCanApprove", memberNodeID, safeNodeID,
+			og.AddEdge("CyberArk_CanApprove", memberNodeID, safeNodeID,
 				"id", "id", map[string]interface{}{
 					"approvalLevel": approvalLevel,
 					"inferred":      false,
@@ -899,7 +899,7 @@ func BuildOpenGraph(
 		activityEdgeCount := 0
 
 		if debug {
-			logger.Debug("=== CyberArkUsedAccount Edge Creation Debug ===")
+			logger.Debug("=== CyberArk_UsedAccount Edge Creation Debug ===")
 			logger.Debugf("Total accounts with activities: %d", len(accountActivities))
 		}
 
@@ -993,7 +993,7 @@ func BuildOpenGraph(
 						userNodeID, accountNodeID, userExists, usageData["usageCount"], usageData["lastUsedTime"], usageData["lastAction"])
 				}
 
-				og.AddEdge("CyberArkUsedAccount", userNodeID, accountNodeID,
+				og.AddEdge("CyberArk_UsedAccount", userNodeID, accountNodeID,
 					"id", "id", map[string]interface{}{
 						"lastUsedTime": usageData["lastUsedTime"],
 						"lastActivity": usageData["lastAction"],
@@ -1004,7 +1004,7 @@ func BuildOpenGraph(
 			}
 		}
 
-		logger.Infof("Created %d CyberArkUsedAccount edges from activity data", activityEdgeCount)
+		logger.Infof("Created %d CyberArk_UsedAccount edges from activity data", activityEdgeCount)
 		if debug {
 			logger.Debug("===========================================")
 		}
@@ -1041,7 +1041,7 @@ func BuildOpenGraph(
 					linkType = "reconcile"
 				}
 
-				og.AddEdge("CyberArkLinkedTo", sourceNodeID, targetNodeID,
+				og.AddEdge("CyberArk_LinkedTo", sourceNodeID, targetNodeID,
 					"id", "id", map[string]interface{}{
 						"linkType": linkType,
 						"linkName": link.Name,
@@ -1051,7 +1051,7 @@ func BuildOpenGraph(
 			}
 		}
 
-		logger.Infof("Created %d CyberArkLinkedTo edges from linked account data", linkedEdgeCount)
+		logger.Infof("Created %d CyberArk_LinkedTo edges from linked account data", linkedEdgeCount)
 	}
 
 	// Process PSM Servers (if provided)
@@ -1066,7 +1066,7 @@ func BuildOpenGraph(
 
 			og.MergeNode(&Node{
 				ID:    psmNodeID,
-				Kinds: []string{"CyberArkPSMServer", "CyberArkBase"},
+				Kinds: []string{"CyberArk_PSMServer", "CyberArkBase"},
 				Properties: SanitizeProperties(map[string]interface{}{
 					"id":          psmNodeID,
 					"psmServerId": ps.ID,
@@ -1077,9 +1077,9 @@ func BuildOpenGraph(
 
 			psmServersByID[ps.ID] = psmNodeID
 		}
-		logger.Infof("Created %d CyberArkPSMServer nodes", len(psmServersByID))
+		logger.Infof("Created %d CyberArk_PSMServer nodes", len(psmServersByID))
 
-		// Create CyberArkUsesPSMServer edges (Platform → PSM Server)
+		// Create CyberArk_UsesPSMServer edges (Platform → PSM Server)
 		psmEdgeCount := 0
 		for platID, psmSrvID := range platformPSMServerID {
 			platNodeID, ok := platformsByID[platID]
@@ -1093,13 +1093,13 @@ func BuildOpenGraph(
 				}
 				continue
 			}
-			og.AddEdge("CyberArkUsesPSMServer", platNodeID, psmNodeID,
+			og.AddEdge("CyberArk_UsesPSMServer", platNodeID, psmNodeID,
 				"id", "id", nil, false)
 			psmEdgeCount++
 		}
-		logger.Infof("Created %d CyberArkUsesPSMServer edges", psmEdgeCount)
+		logger.Infof("Created %d CyberArk_UsesPSMServer edges", psmEdgeCount)
 
-		// Create CyberArkManagedByPSM edges (Account → PSM Server)
+		// Create CyberArk_ManagedByPSM edges (Account → PSM Server)
 		accountPSMEdgeCount := 0
 		for accountNodeID, platID := range accountPlatformID {
 			psmSrvID, ok := platformPSMServerID[platID]
@@ -1110,13 +1110,13 @@ func BuildOpenGraph(
 			if !ok {
 				continue
 			}
-			og.AddEdge("CyberArkManagedByPSM", accountNodeID, psmNodeID,
+			og.AddEdge("CyberArk_ManagedByPSM", accountNodeID, psmNodeID,
 				"id", "id", nil, false)
 			accountPSMEdgeCount++
 		}
-		logger.Infof("Created %d CyberArkManagedByPSM edges", accountPSMEdgeCount)
+		logger.Infof("Created %d CyberArk_ManagedByPSM edges", accountPSMEdgeCount)
 
-		// Create CyberArkPSMServerHostedOn external edges (PSM Server → AD Computer)
+		// Create CyberArk_PSMServerHostedOn external edges (PSM Server → AD Computer)
 		psmHostedOnCount := 0
 		for _, ps := range psmServers {
 			addr := strings.TrimSpace(ps.Address)
@@ -1127,11 +1127,11 @@ func BuildOpenGraph(
 			if !ok {
 				continue
 			}
-			og.AddEdge("CyberArkPSMServerHostedOn", psmNodeID, strings.ToUpper(addr),
+			og.AddEdge("CyberArk_PSMServerHostedOn", psmNodeID, strings.ToUpper(addr),
 				"id", "name", nil, true)
 			psmHostedOnCount++
 		}
-		logger.Infof("Created %d CyberArkPSMServerHostedOn edges", psmHostedOnCount)
+		logger.Infof("Created %d CyberArk_PSMServerHostedOn edges", psmHostedOnCount)
 	}
 
 	// Process Connection Components (if provided)
@@ -1148,7 +1148,7 @@ func BuildOpenGraph(
 
 			og.MergeNode(&Node{
 				ID:    connCompNodeID,
-				Kinds: []string{"CyberArkConnectionComponent", "CyberArkBase"},
+				Kinds: []string{"CyberArk_ConnectionComponent", "CyberArkBase"},
 				Properties: SanitizeProperties(map[string]interface{}{
 					"id":          connCompNodeID,
 					"connectorId": cc.ID,
@@ -1159,9 +1159,9 @@ func BuildOpenGraph(
 			connCompsByID[strings.ToLower(cc.ID)] = connCompNodeID
 			connCompNodeCount++
 		}
-		logger.Infof("Created %d CyberArkConnectionComponent nodes", connCompNodeCount)
+		logger.Infof("Created %d CyberArk_ConnectionComponent nodes", connCompNodeCount)
 
-		// Create CyberArkHasConnectionComponent edges (Platform → Connection Component)
+		// Create CyberArk_HasConnectionComponent edges (Platform → Connection Component)
 		if platformConnectors != nil {
 			connCompEdgeCount := 0
 			for platID, connectorIDs := range platformConnectors {
@@ -1183,25 +1183,25 @@ func BuildOpenGraph(
 						}
 						continue
 					}
-					og.AddEdge("CyberArkHasConnectionComponent", platNodeID, connCompNodeID,
+					og.AddEdge("CyberArk_HasConnectionComponent", platNodeID, connCompNodeID,
 						"id", "id", map[string]interface{}{"enabled": true}, false)
 					connCompEdgeCount++
 				}
 			}
-			logger.Infof("Created %d CyberArkHasConnectionComponent edges", connCompEdgeCount)
+			logger.Infof("Created %d CyberArk_HasConnectionComponent edges", connCompEdgeCount)
 		} else {
-			logger.Infof("No platform-to-connector mapping available; skipping CyberArkHasConnectionComponent edges")
+			logger.Infof("No platform-to-connector mapping available; skipping CyberArk_HasConnectionComponent edges")
 		}
 	}
 
-	// Create the CyberArkInstance environment root node and connect it to every
-	// top-level object via CyberArkInstanceContains. Accounts are intentionally
-	// not linked here — they remain nested under their safe via CyberArkContains
+	// Create the CyberArk_Instance environment root node and connect it to every
+	// top-level object via CyberArk_InstanceContains. Accounts are intentionally
+	// not linked here — they remain nested under their safe via CyberArk_Contains
 	// (Instance → Safe → Account), mirroring hierarchical containment.
 	instanceNodeID := strings.ToUpper(fmt.Sprintf("cainstance-%s", pvwaTag))
 	og.MergeNode(&Node{
 		ID:    instanceNodeID,
-		Kinds: []string{"CyberArkInstance", "CyberArkBase"},
+		Kinds: []string{"CyberArk_Instance", "CyberArkBase"},
 		Properties: SanitizeProperties(map[string]interface{}{
 			"id":      instanceNodeID,
 			"name":    pvwaTag,
@@ -1210,12 +1210,12 @@ func BuildOpenGraph(
 	})
 
 	instanceChildKinds := map[string]bool{
-		"CyberArkUser":                true,
-		"CyberArkGroup":               true,
-		"CyberArkSafe":                true,
-		"CyberArkPlatform":            true,
-		"CyberArkPSMServer":           true,
-		"CyberArkConnectionComponent": true,
+		"CyberArk_User":                true,
+		"CyberArk_Group":               true,
+		"CyberArk_Safe":                true,
+		"CyberArk_Platform":            true,
+		"CyberArk_PSMServer":           true,
+		"CyberArk_ConnectionComponent": true,
 	}
 	instanceEdgeCount := 0
 	for nodeID, node := range og.Nodes {
@@ -1224,14 +1224,14 @@ func BuildOpenGraph(
 		}
 		for _, k := range node.Kinds {
 			if instanceChildKinds[k] {
-				og.AddEdge("CyberArkInstanceContains", instanceNodeID, nodeID,
+				og.AddEdge("CyberArk_InstanceContains", instanceNodeID, nodeID,
 					"id", "id", nil, false)
 				instanceEdgeCount++
 				break
 			}
 		}
 	}
-	logger.Infof("Created CyberArkInstance node (%s) and %d CyberArkInstanceContains edges", instanceNodeID, instanceEdgeCount)
+	logger.Infof("Created CyberArk_Instance node (%s) and %d CyberArk_InstanceContains edges", instanceNodeID, instanceEdgeCount)
 
 	if debug {
 		logger.Debugf("Graph build complete: nodes=%d internal_edges=%d external_edges=%d",
