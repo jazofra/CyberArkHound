@@ -1,0 +1,178 @@
+{
+  "schema": {
+    "name": "CyberArkHound",
+    "display_name": "CyberArk Extension (CyberArkHound)",
+    "version": "v1.0.0",
+    "namespace": "CyberArk"
+  },
+  "node_kinds": [
+    {
+      "name": "CyberArkInstance",
+      "display_name": "CyberArk Instance",
+      "description": "A CyberArk PVWA/Vault instance — the top-level container for all CyberArk users, groups, safes, accounts, platforms, and PSM infrastructure collected from a single PVWA. Each instance is namespaced by the 4-character PVWA tag derived from the --pvwa URL.",
+      "is_display_kind": true,
+      "icon": "building-shield",
+      "color": "#4A7A96"
+    },
+    {
+      "name": "CyberArkUser",
+      "display_name": "CyberArk User",
+      "description": "A CyberArk Vault user. May be a local EPV user, a component/service account (CPM, PSM, PVWA), or an LDAP/directory-synced user. Holds safe permissions directly or through group membership.",
+      "is_display_kind": true,
+      "icon": "user",
+      "color": "#BFD6E3"
+    },
+    {
+      "name": "CyberArkGroup",
+      "display_name": "CyberArk Group",
+      "description": "A CyberArk Vault group. Members inherit all safe permissions and vault authorizations granted to the group. May be a local vault group or a directory-synced group.",
+      "is_display_kind": true,
+      "icon": "user-group",
+      "color": "#C8DCC0"
+    },
+    {
+      "name": "CyberArkSafe",
+      "display_name": "CyberArk Safe",
+      "description": "A CyberArk safe — a logical container holding privileged accounts and their credentials. Safe members hold permissions (use, retrieve, manage) that govern credential access and privilege escalation.",
+      "is_display_kind": true,
+      "icon": "vault",
+      "color": "#E8D8B3"
+    },
+    {
+      "name": "CyberArkAccount",
+      "display_name": "CyberArk Account",
+      "description": "A privileged account stored in a CyberArk safe. Represents a managed credential for a target system, domain user, or local machine account. Principals with safe access can retrieve or use this credential.",
+      "is_display_kind": true,
+      "icon": "user-secret",
+      "color": "#E7C8C8"
+    },
+    {
+      "name": "CyberArkPlatform",
+      "display_name": "CyberArk Platform",
+      "description": "A CyberArk platform definition governing password policy, connection settings, dual-control requirements, PSM routing, and Master Policy exception flags. All accounts sharing a platform share the same security policy baseline.",
+      "is_display_kind": true,
+      "icon": "server",
+      "color": "#D4B8D9"
+    },
+    {
+      "name": "CyberArkPSMServer",
+      "display_name": "CyberArk PSM Server",
+      "description": "A Privileged Session Manager server that brokers, isolates, and records privileged sessions. Acts as a proxy between requesting users and target systems, holding the managed credential on the user's behalf.",
+      "is_display_kind": true,
+      "icon": "desktop",
+      "color": "#A8D5BA"
+    },
+    {
+      "name": "CyberArkConnectionComponent",
+      "display_name": "CyberArk Connection Component",
+      "description": "A PSM connection component defining a session protocol (e.g. PSM-RDP, PSM-SSH, PSM-Telnet, PSM-WebApp) available for accounts on a platform. Determines which protocols can be used for PSM-brokered sessions.",
+      "is_display_kind": true,
+      "icon": "plug",
+      "color": "#B8C9E0"
+    }
+  ],
+  "relationship_kinds": [
+    {
+      "name": "CyberArkHasAccessTo",
+      "description": "The source user or group is a member of the safe containing the target account with useAccounts and/or retrieveAccounts permission. Primary credential access edge; properties indicate dual-control approval and session monitoring requirements.",
+      "is_traversable": true
+    },
+    {
+      "name": "CyberArkCanGrantAccessTo",
+      "description": "The source user or group has manageSafe or manageSafeMembers permission on the target safe. Privilege escalation: the principal can add themselves (or a controlled account) with retrieveAccounts to access all accounts in the safe.",
+      "is_traversable": true
+    },
+    {
+      "name": "CyberArkCanApprove",
+      "description": "The source user or group can approve dual-control access requests for accounts in the target safe (requestsAuthorizationLevel1/Level2). Approval authority alone does not grant credential access, so this edge is not traversable.",
+      "is_traversable": false
+    },
+    {
+      "name": "CyberArkMemberOf",
+      "description": "The source CyberArk user or group is a member of the target CyberArk group, inheriting all of the group's safe permissions and vault authorizations cumulatively.",
+      "is_traversable": true
+    },
+    {
+      "name": "CyberArkContains",
+      "description": "The source CyberArk safe contains the target account. Structural containment that, combined with access or management edges to the safe, maps full credential exposure.",
+      "is_traversable": true
+    },
+    {
+      "name": "CyberArkCreated",
+      "description": "The source CyberArk user created the target safe. Informational: the creator may retain implicit access depending on vault configuration but does not necessarily hold active membership.",
+      "is_traversable": false
+    },
+    {
+      "name": "CyberArkManagedBy",
+      "description": "The target safe is managed by the source CPM (Central Password Manager) user. The CPM service account has privileged programmatic access to all accounts in managed safes for rotation, verification, and reconciliation.",
+      "is_traversable": true
+    },
+    {
+      "name": "CyberArkUsesPlatform",
+      "description": "The source account is configured to use the target platform definition. Shared platform configuration means shared policy baseline and attack surface; not a direct access path on its own.",
+      "is_traversable": false
+    },
+    {
+      "name": "CyberArkUsedAccount",
+      "description": "The source CyberArk user has historically accessed the target account, derived from CyberArk audit logs. Forensic/investigative evidence of past use rather than a current access right.",
+      "is_traversable": false
+    },
+    {
+      "name": "CyberArkLinkedTo",
+      "description": "The source account has a credential dependency on the target account (linkType logon, reconcile, or enable). Compromising a logon account grants implicit access to all accounts that depend on it.",
+      "is_traversable": true
+    },
+    {
+      "name": "CyberArkUsesPSMServer",
+      "description": "The source platform routes privileged session connections through the target PSM server. Infrastructure mapping showing which PSM server brokers sessions for accounts on the platform.",
+      "is_traversable": false
+    },
+    {
+      "name": "CyberArkManagedByPSM",
+      "description": "The source account's privileged sessions are managed and recorded by the target PSM server, inferred from the account's platform PSM configuration. Infrastructure mapping rather than a direct access path.",
+      "is_traversable": false
+    },
+    {
+      "name": "CyberArkHasConnectionComponent",
+      "description": "The source platform has the target connection component enabled, defining the session protocols (RDP, SSH, etc.) available for accounts on the platform.",
+      "is_traversable": false
+    },
+    {
+      "name": "CyberArkPSMServerHostedOn",
+      "description": "The source PSM server runs on the target Active Directory computer (matched by the PSM server address). Cross-domain correlation linking PSM infrastructure to its underlying host.",
+      "is_traversable": false
+    },
+    {
+      "name": "SyncsToCyberArkUser",
+      "description": "The source Active Directory user is synchronized to the target CyberArk Vault user via LDAP directory integration. Compromising the AD user grants access to all CyberArk resources of the synced Vault user.",
+      "is_traversable": true
+    },
+    {
+      "name": "SyncsToCyberArkGroup",
+      "description": "The source Active Directory group is synchronized to the target CyberArk Vault group via LDAP directory integration. Adding a member to the AD group propagates the Vault group's safe permissions after the next sync.",
+      "is_traversable": true
+    },
+    {
+      "name": "SyncsToADUser",
+      "description": "The source CyberArk account stores credentials for the target Active Directory user (inferred by username/domain match). Retrieving the credential yields the plaintext password for direct AD authentication and lateral movement.",
+      "is_traversable": true
+    },
+    {
+      "name": "CyberArkCanConnect",
+      "description": "The source CyberArk account stores credentials valid for authenticating to the target Active Directory computer (inferred by address/domain match), often a local administrator credential. Enables direct lateral movement to the host.",
+      "is_traversable": true
+    }
+  ],
+  "environments": [
+    {
+      "environment_kind": "CyberArkInstance",
+      "source_kind": "CyberArkBase",
+      "principal_kinds": [
+        "CyberArkUser",
+        "CyberArkGroup",
+        "CyberArkAccount"
+      ]
+    }
+  ],
+  "relationship_findings": []
+}
