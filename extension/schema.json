@@ -93,6 +93,11 @@
       "is_traversable": true
     },
     {
+      "name": "CyberArkInstanceContains",
+      "description": "The source CyberArk instance (PVWA/Vault) contains the target top-level object (user, group, safe, platform, PSM server, or connection component). Structural environment containment for scoping; not an attack path on its own.",
+      "is_traversable": false
+    },
+    {
       "name": "CyberArkContains",
       "description": "The source CyberArk safe contains the target account. Structural containment that, combined with access or management edges to the safe, maps full credential exposure.",
       "is_traversable": true

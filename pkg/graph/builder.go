@@ -1194,6 +1194,45 @@ func BuildOpenGraph(
 		}
 	}
 
+	// Create the CyberArkInstance environment root node and connect it to every
+	// top-level object via CyberArkInstanceContains. Accounts are intentionally
+	// not linked here — they remain nested under their safe via CyberArkContains
+	// (Instance → Safe → Account), mirroring hierarchical containment.
+	instanceNodeID := strings.ToUpper(fmt.Sprintf("cainstance-%s", pvwaTag))
+	og.MergeNode(&Node{
+		ID:    instanceNodeID,
+		Kinds: []string{"CyberArkInstance", "CyberArkBase"},
+		Properties: SanitizeProperties(map[string]interface{}{
+			"id":      instanceNodeID,
+			"name":    pvwaTag,
+			"pvwaTag": pvwaTag,
+		}),
+	})
+
+	instanceChildKinds := map[string]bool{
+		"CyberArkUser":                true,
+		"CyberArkGroup":               true,
+		"CyberArkSafe":                true,
+		"CyberArkPlatform":            true,
+		"CyberArkPSMServer":           true,
+		"CyberArkConnectionComponent": true,
+	}
+	instanceEdgeCount := 0
+	for nodeID, node := range og.Nodes {
+		if nodeID == instanceNodeID {
+			continue
+		}
+		for _, k := range node.Kinds {
+			if instanceChildKinds[k] {
+				og.AddEdge("CyberArkInstanceContains", instanceNodeID, nodeID,
+					"id", "id", nil, false)
+				instanceEdgeCount++
+				break
+			}
+		}
+	}
+	logger.Infof("Created CyberArkInstance node (%s) and %d CyberArkInstanceContains edges", instanceNodeID, instanceEdgeCount)
+
 	if debug {
 		logger.Debugf("Graph build complete: nodes=%d internal_edges=%d external_edges=%d",
 			len(og.Nodes), len(og.InternalEdges), len(og.ExternalEdges))
