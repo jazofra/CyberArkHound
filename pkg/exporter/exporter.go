@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/siemens-healthineers/cyberarkhound/pkg/graph"
 	"github.com/sirupsen/logrus"
@@ -23,6 +24,51 @@ type bloodhoundGraph struct {
 type bloodhoundOutput struct {
 	Metadata bloodhoundMetadata `json:"metadata"`
 	Graph    bloodhoundGraph    `json:"graph"`
+}
+
+// buildEdgeDict serializes an edge to a BloodHound-compatible map, merging in EdgeInfo documentation
+// (windowsAbuse, linuxAbuse, opsec, references, general) so BloodHound's entity panel can display them.
+func buildEdgeDict(edge *graph.Edge) map[string]interface{} {
+	edgeDict := map[string]interface{}{
+		"kind": edge.Kind,
+		"start": map[string]string{
+			"value":    edge.Start.Value,
+			"match_by": edge.Start.MatchBy,
+		},
+		"end": map[string]string{
+			"value":    edge.End.Value,
+			"match_by": edge.End.MatchBy,
+		},
+	}
+
+	props := make(map[string]interface{})
+	for k, v := range edge.Props {
+		props[k] = v
+	}
+
+	if info, ok := graph.EdgeInfoMap[edge.Kind]; ok {
+		if info.Description != "" {
+			props["general"] = info.Description
+		}
+		if info.WindowsAbuse != "" {
+			props["windowsAbuse"] = info.WindowsAbuse
+		}
+		if info.LinuxAbuse != "" {
+			props["linuxAbuse"] = info.LinuxAbuse
+		}
+		if info.OpsecNotes != "" {
+			props["opsec"] = info.OpsecNotes
+		}
+		if len(info.References) > 0 {
+			props["references"] = strings.Join(info.References, "\n")
+		}
+	}
+
+	if len(props) > 0 {
+		edgeDict["properties"] = props
+	}
+
+	return edgeDict
 }
 
 // ExportToBloodHoundJSON exports the OpenGraph to BloodHound JSON format
@@ -71,24 +117,7 @@ func ExportToBloodHoundJSON(og *graph.OpenGraph, outputFile string, logger *logr
 		if (idx+1)%edgeInterval == 0 || idx+1 == totalInternalEdges {
 			logger.Infof("  Processed %d/%d edges (%.1f%%)", idx+1, totalInternalEdges, float64(idx+1)/float64(totalInternalEdges)*100)
 		}
-
-		edgeDict := map[string]interface{}{
-			"kind": edge.Kind,
-			"start": map[string]string{
-				"value":    edge.Start.Value,
-				"match_by": edge.Start.MatchBy,
-			},
-			"end": map[string]string{
-				"value":    edge.End.Value,
-				"match_by": edge.End.MatchBy,
-			},
-		}
-
-		if edge.Props != nil && len(edge.Props) > 0 {
-			edgeDict["properties"] = edge.Props
-		}
-
-		edgesArray = append(edgesArray, edgeDict)
+		edgesArray = append(edgesArray, buildEdgeDict(edge))
 	}
 
 	// Convert external edges to JSON array
@@ -101,24 +130,7 @@ func ExportToBloodHoundJSON(og *graph.OpenGraph, outputFile string, logger *logr
 			if (idx+1)%edgeInterval == 0 || idx+1 == totalExternalEdges {
 				logger.Infof("  Processed %d/%d external edges (%.1f%%)", idx+1, totalExternalEdges, float64(idx+1)/float64(totalExternalEdges)*100)
 			}
-
-			edgeDict := map[string]interface{}{
-				"kind": edge.Kind,
-				"start": map[string]string{
-					"value":    edge.Start.Value,
-					"match_by": edge.Start.MatchBy,
-				},
-				"end": map[string]string{
-					"value":    edge.End.Value,
-					"match_by": edge.End.MatchBy,
-				},
-			}
-
-			if edge.Props != nil && len(edge.Props) > 0 {
-				edgeDict["properties"] = edge.Props
-			}
-
-			externalEdgesArray = append(externalEdgesArray, edgeDict)
+			externalEdgesArray = append(externalEdgesArray, buildEdgeDict(edge))
 		}
 	}
 
