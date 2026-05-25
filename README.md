@@ -80,7 +80,7 @@ With 'list' and 'View Safe Members' on each safe, the tool can:
 - ✅ List all accounts in safes (no credentials)
 - ✅ List all safes in the vault
 - ✅ List all safe members and their permissions
-  
+
 #### What the Tool can not do:
 - ❌ **Cannot** retrieve or view account passwords
 - ❌ **Cannot** modify any vault objects
@@ -196,8 +196,11 @@ Download pre-compiled binaries from the [Releases](https://github.com/jazofra/Cy
 - `--quiet` Suppress info/debug logs
 - `--debug` Enable debug logging with detailed diagnostics
 - `--log-level` Set logging level: DEBUG, INFO (default), WARNING, ERROR
-- `--safe-page-limit` Safes page size for pagination (default: 1000; lower can help slow PVWA)
+- `--user-extended-details-timeout` Timeout for optional `Users?ExtendedDetails=true` before falling back to the basic user list (default: 60s)
+- `--safe-page-limit` Safes page size for pagination (default: 100; lower can help slow or error-prone PVWA)
 - `--max-reauth-attempts` Max re-authentication attempts on HTTP 401 before giving up (default: 5)
+
+When the bulk `GET /API/Users?ExtendedDetails=true` endpoint times out, CyberArkHound falls back to `GET /API/Users` and enriches each user individually through the user details endpoint. This preserves extended user fields while avoiding a single large PVWA response as a hard dependency. The existing `--workers` value controls this per-user enrichment concurrency.
 
 **Activity Tracking:**
 - `--include-activity` Include account activity data (creates CyberArk_UsedAccount edges)

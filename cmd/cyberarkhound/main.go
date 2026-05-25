@@ -33,7 +33,8 @@ func main() {
 	logLevel := pflag.String("log-level", "INFO", "Set logging level: DEBUG, INFO, WARNING, ERROR")
 	requestTimeout := pflag.Duration("request-timeout", 360*time.Second, "HTTP request timeout (e.g. 10m, 600s)")
 	authTimeout := pflag.Duration("auth-timeout", 360*time.Second, "Authentication timeout (e.g. 2m, 120s)")
-	safePageLimit := pflag.Int("safe-page-limit", client.SafePageLimit, "Safes page size for /API/safes pagination (lower can help slow PVWA)")
+	userExtendedDetailsTimeout := pflag.Duration("user-extended-details-timeout", client.UserExtendedDetailsTimeout, "Timeout for optional Users?ExtendedDetails=true before falling back to basic users")
+	safePageLimit := pflag.Int("safe-page-limit", client.SafePageLimit, "Safes page size for /API/safes pagination (lower can help slow or error-prone PVWA)")
 	maxReauthAttempts := pflag.Int("max-reauth-attempts", 5, "Max re-authentication attempts on HTTP 401 before giving up")
 
 	// Activity tracking flags
@@ -108,6 +109,8 @@ func main() {
 	apiClient := client.NewClient(*pvwaURL, *username, *password, *insecure, *caBundle, logger)
 	apiClient.ReqTimeout = *requestTimeout
 	apiClient.AuthTimeout = *authTimeout
+	apiClient.UserExtendedDetailsTimeout = *userExtendedDetailsTimeout
+	apiClient.UserEnrichmentWorkers = *workers
 	apiClient.SafePageLimit = *safePageLimit
 	apiClient.MaxReauthAttempts = *maxReauthAttempts
 	apiClient.HTTPClient.Timeout = apiClient.ReqTimeout

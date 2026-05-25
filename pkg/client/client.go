@@ -13,6 +13,7 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strings"
 	"sync"
@@ -23,32 +24,48 @@ import (
 )
 
 const (
-	// SafePageLimit is the maximum number of safes to retrieve per page
-	SafePageLimit = 1000
+	// SafePageLimit is the default number of safes to retrieve per page.
+	SafePageLimit = 100
+	// UserExtendedDetailsTimeout is the default timeout for the optional user
+	// enrichment endpoint before falling back to the basic user list.
+	UserExtendedDetailsTimeout = 60 * time.Second
 )
 
 // Client encapsulates CyberArk PVWA REST API interactions
 type Client struct {
-	BaseURL             string
-	Username            string
-	Password            string
-	AuthTimeout         time.Duration
-	ReqTimeout          time.Duration
-	SafePageLimit       int
-	Token               string
-	HTTPClient          *http.Client
-	Logger              *logrus.Logger
-	RetryInitialBackoff time.Duration
-	RetryMaxBackoff     time.Duration
-	RetryMultiplier     float64
-	RetryJitter         float64
-	MaxReauthAttempts   int
+	BaseURL                    string
+	Username                   string
+	Password                   string
+	AuthTimeout                time.Duration
+	ReqTimeout                 time.Duration
+	UserExtendedDetailsTimeout time.Duration
+	UserEnrichmentWorkers      int
+	SafePageLimit              int
+	Token                      string
+	HTTPClient                 *http.Client
+	Logger                     *logrus.Logger
+	RetryInitialBackoff        time.Duration
+	RetryMaxBackoff            time.Duration
+	RetryMultiplier            float64
+	RetryJitter                float64
+	MaxReauthAttempts          int
 
 	// authMu serialises re-authentication so only one goroutine re-auths at a time.
 	authMu sync.Mutex
 	// tokenGen is bumped on every successful Authenticate(); workers compare
 	// their snapshot to decide whether someone else already refreshed the token.
 	tokenGen uint64
+}
+
+type cancelOnCloseReadCloser struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (r *cancelOnCloseReadCloser) Close() error {
+	err := r.ReadCloser.Close()
+	r.cancel()
+	return err
 }
 
 // NewClient creates a new CyberArk API client
@@ -61,6 +78,10 @@ func NewClient(baseURL, username, password string, insecure bool, caBundle strin
 		MaxIdleConnsPerHost: 100,
 		IdleConnTimeout:     90 * time.Second,
 	}
+	jar, err := cookiejar.New(nil)
+	if err != nil && logger != nil {
+		logger.Warnf("Failed to create HTTP cookie jar; PVWA affinity cookies will not be persisted: %v", err)
+	}
 
 	return &Client{
 		BaseURL:  baseURL,
@@ -69,16 +90,19 @@ func NewClient(baseURL, username, password string, insecure bool, caBundle strin
 		HTTPClient: &http.Client{
 			Transport: transport,
 			Timeout:   360 * time.Second,
+			Jar:       jar,
 		},
-		Logger:              logger,
-		AuthTimeout:         360 * time.Second,
-		ReqTimeout:          360 * time.Second,
-		SafePageLimit:       SafePageLimit,
-		RetryInitialBackoff: 1 * time.Second,
-		RetryMaxBackoff:     60 * time.Second,
-		RetryMultiplier:     2.0,
-		RetryJitter:         0.2,
-		MaxReauthAttempts:   5,
+		Logger:                     logger,
+		AuthTimeout:                360 * time.Second,
+		ReqTimeout:                 360 * time.Second,
+		UserExtendedDetailsTimeout: UserExtendedDetailsTimeout,
+		UserEnrichmentWorkers:      20,
+		SafePageLimit:              SafePageLimit,
+		RetryInitialBackoff:        1 * time.Second,
+		RetryMaxBackoff:            60 * time.Second,
+		RetryMultiplier:            2.0,
+		RetryJitter:                0.2,
+		MaxReauthAttempts:          5,
 	}
 }
 
@@ -91,10 +115,13 @@ func (c *Client) throttleVariableDuration(backoff time.Duration) {
 
 // requestWithRetries executes HTTP request with retry logic
 func (c *Client) requestWithRetries(method, urlPath string, body interface{}, timeout time.Duration, maxRetries int) (*http.Response, error) {
+	return c.requestWithRetriesAndReauth(method, urlPath, body, timeout, maxRetries, c.MaxReauthAttempts)
+}
+
+func (c *Client) requestWithRetriesAndReauth(method, urlPath string, body interface{}, timeout time.Duration, maxRetries int, maxReauthAttempts int) (*http.Response, error) {
 	attempt := 0
 	backoff := c.RetryInitialBackoff
 	reauthAttempts := 0
-	maxReauthAttempts := c.MaxReauthAttempts
 
 	// Pre-marshal body once to avoid re-marshaling on each retry
 	var jsonData []byte
@@ -132,10 +159,18 @@ func (c *Client) requestWithRetries(method, urlPath string, body interface{}, ti
 			req.Header.Set("Authorization", c.Token)
 		}
 
-		// Don't set per-request context timeout - use HTTP client's timeout instead
-		// to avoid context cancellation issues
+		var cancel context.CancelFunc
+		if timeout > 0 {
+			ctx, cancelFunc := context.WithTimeout(context.Background(), timeout)
+			cancel = cancelFunc
+			req = req.WithContext(ctx)
+		}
+
 		resp, err := c.HTTPClient.Do(req)
 		if err != nil {
+			if cancel != nil {
+				cancel()
+			}
 			c.Logger.Warnf("Request error attempt %d for %s: %v", attempt, urlPath, err)
 			if maxRetries > 0 && attempt >= maxRetries {
 				return nil, fmt.Errorf("max retries reached: %w", err)
@@ -145,15 +180,26 @@ func (c *Client) requestWithRetries(method, urlPath string, body interface{}, ti
 			c.throttleVariableDuration(backoff)
 			continue
 		}
+		if cancel != nil {
+			resp.Body = &cancelOnCloseReadCloser{ReadCloser: resp.Body, cancel: cancel}
+		}
 
 		// Handle HTTP status codes
 		if resp.StatusCode == 401 {
+			bodyBytes, readErr := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			responseText := strings.TrimSpace(string(bodyBytes))
+			if readErr != nil {
+				responseText = fmt.Sprintf("failed to read 401 response body: %v", readErr)
+			}
+			if responseText == "" {
+				responseText = "empty response body"
+			}
 			reauthAttempts++
 			if reauthAttempts > maxReauthAttempts {
-				return nil, fmt.Errorf("authentication retries exhausted for %s (attempted %d times)", urlPath, reauthAttempts)
+				return nil, fmt.Errorf("authentication retries exhausted for %s (attempted %d times; last 401 response: %s)", urlPath, reauthAttempts, responseText)
 			}
-			c.Logger.Warnf("HTTP 401 received for %s. Re-authenticating (re-auth attempt %d/%d)...", urlPath, reauthAttempts, maxReauthAttempts)
+			c.Logger.Warnf("HTTP 401 received for %s (response: %s). Re-authenticating (re-auth attempt %d/%d)...", urlPath, responseText, reauthAttempts, maxReauthAttempts)
 			if err := c.reauthIfNeeded(preReqGen); err != nil {
 				return nil, fmt.Errorf("re-authentication failed: %w", err)
 			}
@@ -212,6 +258,96 @@ func (c *Client) requestWithRetries(method, urlPath string, body interface{}, ti
 
 		return resp, nil
 	}
+}
+
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, context.DeadlineExceeded) ||
+		strings.Contains(err.Error(), "Client.Timeout exceeded") ||
+		strings.Contains(err.Error(), "context deadline exceeded")
+}
+
+func isPVWASafePageServerError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "HTTP 500") &&
+		(strings.Contains(msg, "CAWS00001E") ||
+			strings.Contains(msg, "Error mapping types") ||
+			strings.Contains(msg, "IReadOnlyCollection`1 -> List`1"))
+}
+
+func lowerSafePageLimit(limit int) int {
+	if limit <= 50 {
+		return limit
+	}
+	newLimit := limit / 2
+	if newLimit < 50 {
+		newLimit = 50
+	}
+	return newLimit
+}
+
+func userIDString(id interface{}) string {
+	switch v := id.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case float64:
+		return fmt.Sprintf("%.0f", v)
+	case int:
+		return fmt.Sprintf("%d", v)
+	case int64:
+		return fmt.Sprintf("%d", v)
+	case json.Number:
+		return v.String()
+	default:
+		return ""
+	}
+}
+
+func mergeUserDetails(base models.User, details models.User) models.User {
+	if details.ID != nil {
+		base.ID = details.ID
+	}
+	if details.Username != "" {
+		base.Username = details.Username
+	}
+	if details.Source != "" {
+		base.Source = details.Source
+	}
+	if details.UserType != "" {
+		base.UserType = details.UserType
+	}
+	if details.Location != "" {
+		base.Location = details.Location
+	}
+	if details.UserDN != "" {
+		base.UserDN = details.UserDN
+	}
+	if len(details.VaultAuthorization) > 0 {
+		base.VaultAuthorization = details.VaultAuthorization
+	}
+	if len(details.AuthorizedInterfaces) > 0 {
+		base.AuthorizedInterfaces = details.AuthorizedInterfaces
+	}
+	if len(details.AllowedAuthenticationMethods) > 0 {
+		base.AllowedAuthenticationMethods = details.AllowedAuthenticationMethods
+	}
+	if len(details.GroupsMembership) > 0 {
+		base.GroupsMembership = details.GroupsMembership
+	}
+	base.ComponentUser = details.ComponentUser
+	base.Enabled = details.Enabled
+	base.Suspended = details.Suspended
+	base.PersonalDetails = details.PersonalDetails
+	return base
+}
+
+func userHasIdentity(user models.User) bool {
+	return user.Username != "" || userIDString(user.ID) != ""
 }
 
 // Authenticate logs into the CyberArk PVWA API
@@ -369,17 +505,15 @@ func (c *Client) ListSafes(limitCount *int, search *string) ([]models.Safe, erro
 			safeURL += "&search=" + url.QueryEscape(*search)
 		}
 
+		c.Logger.Infof("Fetching safes page: offset=%d limit=%d collected=%d", offset, limit, len(safes))
 		resp, err := c.requestWithRetries("GET", safeURL, nil, c.ReqTimeout, 3)
 		if err != nil {
-			// PVWA can be very slow to build large pages of safes; if we timed out,
-			// automatically reduce the page size and retry the same offset.
-			if (errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "Client.Timeout exceeded")) && limit > 50 {
-				newLimit := limit / 2
-				if newLimit < 50 {
-					newLimit = 50
-				}
+			// PVWA can be slow or fail server-side when building large safe pages.
+			// Reduce the page size and retry the same offset for those known cases.
+			if (isTimeoutError(err) || isPVWASafePageServerError(err)) && limit > 50 {
+				newLimit := lowerSafePageLimit(limit)
 				if newLimit != limit {
-					c.Logger.Warnf("ListSafes timed out at offset=%d limit=%d, retrying with limit=%d", offset, limit, newLimit)
+					c.Logger.Warnf("ListSafes failed at offset=%d limit=%d (%v), retrying with limit=%d", offset, limit, err, newLimit)
 					limit = newLimit
 					continue
 				}
@@ -397,6 +531,7 @@ func (c *Client) ListSafes(limitCount *int, search *string) ([]models.Safe, erro
 		resp.Body.Close()
 
 		safes = append(safes, data.Value...)
+		c.Logger.Infof("Fetched safes page: offset=%d limit=%d page_count=%d collected=%d", offset, limit, len(data.Value), len(safes))
 
 		if limitCount != nil && len(safes) >= *limitCount {
 			safes = safes[:*limitCount]
@@ -620,29 +755,39 @@ func (c *Client) ListPlatforms() ([]models.Platform, error) {
 // ListUsers retrieves all users
 func (c *Client) ListUsers(limitCount *int) ([]models.User, error) {
 	usersURL := fmt.Sprintf("%s/PasswordVault/API/Users?ExtendedDetails=true", c.BaseURL)
+	extendedDetailsTimeout := c.UserExtendedDetailsTimeout
+	if extendedDetailsTimeout <= 0 || extendedDetailsTimeout > c.ReqTimeout {
+		extendedDetailsTimeout = c.ReqTimeout
+	}
 
-	resp, err := c.requestWithRetries("GET", usersURL, nil, c.ReqTimeout, 3)
+	resp, err := c.requestWithRetriesAndReauth("GET", usersURL, nil, extendedDetailsTimeout, 1, 1)
 	if err != nil {
-		c.Logger.Warn("ExtendedDetails failed; falling back to basic list")
+		c.Logger.Warnf("ExtendedDetails failed after %s; falling back to basic list plus per-user enrichment: %v", extendedDetailsTimeout, err)
 		usersURL = fmt.Sprintf("%s/PasswordVault/API/Users", c.BaseURL)
-		resp, err = c.requestWithRetries("GET", usersURL, nil, c.ReqTimeout, 3)
+		resp, err = c.requestWithRetriesAndReauth("GET", usersURL, nil, c.ReqTimeout, 3, 1)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list users: %w", err)
 		}
+		defer resp.Body.Close()
+
+		users, err := decodeUsersResponse(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+
+		if limitCount != nil && *limitCount > 0 && len(users) > *limitCount {
+			users = users[:*limitCount]
+		}
+
+		users = c.enrichUsersWithDetails(users, extendedDetailsTimeout)
+		c.Logger.Infof("Collected %d users", len(users))
+		return users, nil
 	}
 	defer resp.Body.Close()
 
-	var data struct {
-		Users []models.User `json:"Users"`
-		Value []models.User `json:"value"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, fmt.Errorf("failed to decode users response: %w", err)
-	}
-
-	users := data.Users
-	if len(users) == 0 {
-		users = data.Value
+	users, err := decodeUsersResponse(resp.Body)
+	if err != nil {
+		return nil, err
 	}
 
 	if limitCount != nil && *limitCount > 0 && len(users) > *limitCount {
@@ -651,6 +796,133 @@ func (c *Client) ListUsers(limitCount *int) ([]models.User, error) {
 
 	c.Logger.Infof("Collected %d users", len(users))
 	return users, nil
+}
+
+func decodeUsersResponse(body io.Reader) ([]models.User, error) {
+	var data struct {
+		Users []models.User `json:"Users"`
+		Value []models.User `json:"value"`
+	}
+	if err := json.NewDecoder(body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("failed to decode users response: %w", err)
+	}
+
+	users := data.Users
+	if len(users) == 0 {
+		users = data.Value
+	}
+	return users, nil
+}
+
+func (c *Client) GetUserDetails(user models.User, timeout time.Duration) (*models.User, error) {
+	identifiers := make([]string, 0, 2)
+	if id := userIDString(user.ID); id != "" {
+		identifiers = append(identifiers, id)
+	}
+	if user.Username != "" && user.Username != userIDString(user.ID) {
+		identifiers = append(identifiers, user.Username)
+	}
+	if len(identifiers) == 0 {
+		return nil, fmt.Errorf("user has no id or username")
+	}
+
+	var lastErr error
+	for _, identifier := range identifiers {
+		userURL := fmt.Sprintf("%s/PasswordVault/API/Users/%s", c.BaseURL, url.PathEscape(identifier))
+		resp, err := c.requestWithRetriesAndReauth("GET", userURL, nil, timeout, 2, 1)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		details, decodeErr := decodeUserDetailResponse(resp.Body)
+		resp.Body.Close()
+		if decodeErr != nil {
+			lastErr = fmt.Errorf("failed to decode user details for %s: %w", identifier, decodeErr)
+			continue
+		}
+		return details, nil
+	}
+
+	return nil, lastErr
+}
+
+func decodeUserDetailResponse(body io.Reader) (*models.User, error) {
+	bodyBytes, err := io.ReadAll(body)
+	if err != nil {
+		return nil, err
+	}
+
+	var user models.User
+	if err := json.Unmarshal(bodyBytes, &user); err == nil && userHasIdentity(user) {
+		return &user, nil
+	}
+
+	var wrapped struct {
+		User  models.User   `json:"User"`
+		Users []models.User `json:"Users"`
+		Value []models.User `json:"value"`
+	}
+	if err := json.Unmarshal(bodyBytes, &wrapped); err != nil {
+		return nil, err
+	}
+	if userHasIdentity(wrapped.User) {
+		return &wrapped.User, nil
+	}
+	if len(wrapped.Users) > 0 {
+		return &wrapped.Users[0], nil
+	}
+	if len(wrapped.Value) > 0 {
+		return &wrapped.Value[0], nil
+	}
+
+	return nil, fmt.Errorf("user detail response did not contain a user object")
+}
+
+func (c *Client) enrichUsersWithDetails(users []models.User, timeout time.Duration) []models.User {
+	if len(users) == 0 {
+		return users
+	}
+
+	concurrency := c.UserEnrichmentWorkers
+	if concurrency <= 0 {
+		concurrency = 20
+	}
+	c.Logger.Infof("Enriching %d users individually in parallel...", len(users))
+
+	enrichedUsers := make([]models.User, len(users))
+	copy(enrichedUsers, users)
+	semaphore := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	failed := 0
+
+	for idx := range enrichedUsers {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			details, err := c.GetUserDetails(enrichedUsers[idx], timeout)
+			if err != nil || details == nil {
+				mu.Lock()
+				failed++
+				mu.Unlock()
+				c.Logger.Debugf("Failed to enrich user %s: %v", enrichedUsers[idx].Username, err)
+				return
+			}
+
+			enrichedUsers[idx] = mergeUserDetails(enrichedUsers[idx], *details)
+		}(idx)
+	}
+
+	wg.Wait()
+	if failed > 0 {
+		c.Logger.Warnf("Failed to enrich %d/%d users individually; keeping basic user data for those users", failed, len(users))
+	}
+
+	return enrichedUsers
 }
 
 // GetGroupDetails retrieves detailed information about a group
