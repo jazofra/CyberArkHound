@@ -171,6 +171,26 @@ var EdgeInfoMap = map[string]EdgeInfo{
 			"https://github.com/SpecterOps/presentations/tree/main/SO-CON%202026",
 		},
 	},
+	"CyberArk_CCPAllowedFrom": {
+		Description: "The target Active Directory computer appears in the source CyberArk Application's Allowed Machines list — it is one of the hosts permitted to present this AppID to the Central Credential Provider (CCP / AIMWebService) endpoint. " +
+			"This is inferred by matching the Allowed Machines value to a computer name; IP-only entries (targetIsIP=true) will not resolve to a Computer node. " +
+			"When machineIsOnlyRestriction=true, the Allowed Machines binding is the AppID's ONLY authentication factor (no OS user / path / hash / certificate), so control of this host is sufficient to wield the AppID and retrieve every credential it can read via CCP. " +
+			"Tradecraft credit: Marat Nigmatullin (@_mnigma_, FalconForce) — \"4 GET requests = 3 Domain admins: CyberArk magic you didn't know about\", SO-CON 2026.",
+		WindowsAbuse: "From the allowed host, request the credential through the CCP endpoint — the request now originates from a permitted machine, satisfying the Allowed Machines restriction:\n\n" +
+			"$ccp = 'https://<CCP_Server>'\n" +
+			"Invoke-RestMethod -Uri \"$ccp/AIMWebService/api/Accounts?AppID=<AppID>&Safe=<safeName>&UserName=<userName>&Address=<address>\"\n\n" +
+			"# Then follow the application's CyberArk_CanRetrieveViaCCP edges to see exactly which accounts become reachable from here.",
+		LinuxAbuse: "From the allowed host, pull the credential via CCP (the response 'Content' field is the plaintext password):\n\n" +
+			"curl -s \"https://<CCP_Server>/AIMWebService/api/Accounts?AppID=<AppID>&Safe=<safeName>&UserName=<userName>&Address=<address>\"\n\n" +
+			"# If a client certificate is also required (machineIsOnlyRestriction=false), supply it with --cert/--key.",
+		OpsecNotes: "Issuing the request from an approved host is exactly the intended use of the AppID, so it blends in with legitimate CCP traffic. " +
+			"Retrievals are still recorded under the application identity and CCP usage can be collected centrally. " +
+			"If machineIsOnlyRestriction is false, the Allowed Machines check is only one of several factors and landing on this host alone will not yield credentials.",
+		References: []string{
+			"https://docs.cyberark.com/credential-providers/latest/en/content/ccp/calling-the-web-service-using-rest.htm",
+			"https://docs.cyberark.com/credential-providers/latest/en/content/cp%20and%20ascp/application-details.htm",
+		},
+	},
 	"CyberArk_MemberOf": {
 		Description: "The source CyberArk user or group is a member of the target CyberArk group. " +
 			"Group membership is cumulative: a user inherits all permissions granted to every group they belong to across all safes. " +

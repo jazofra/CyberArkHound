@@ -6,11 +6,40 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/siemens-healthineers/cyberarkhound/pkg/graph"
 	"github.com/sirupsen/logrus"
 )
+
+// edgeSortKey produces a stable ordering key for an edge so that exports are
+// deterministic across runs (two collections of the same environment diff cleanly).
+func edgeSortKey(e *graph.Edge) string {
+	propsJSON, _ := json.Marshal(e.Props)
+	return strings.Join([]string{e.Kind, e.Start.Value, e.End.Value, string(propsJSON)}, "|")
+}
+
+// sortedNodes returns the graph's nodes ordered by ID for deterministic output.
+func sortedNodes(og *graph.OpenGraph) []*graph.Node {
+	nodes := make([]*graph.Node, 0, len(og.Nodes))
+	for _, n := range og.Nodes {
+		nodes = append(nodes, n)
+	}
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
+	return nodes
+}
+
+// sortEdgesStable sorts an edge slice in place by a precomputed stable key,
+// computing each edge's key exactly once (decorate-sort) so very large graphs
+// are not penalised by repeated JSON marshaling inside the comparison.
+func sortEdgesStable(edges []*graph.Edge) {
+	keys := make(map[*graph.Edge]string, len(edges))
+	for _, e := range edges {
+		keys[e] = edgeSortKey(e)
+	}
+	sort.SliceStable(edges, func(i, j int) bool { return keys[edges[i]] < keys[edges[j]] })
+}
 
 type bloodhoundMetadata struct {
 	SourceKind string `json:"source_kind"`
@@ -88,13 +117,17 @@ func ExportToBloodHoundJSON(og *graph.OpenGraph, outputFile string, logger *logr
 		edgeInterval = 500
 	}
 
-	// Convert nodes to JSON array
+	// Sort edges for deterministic, diff-friendly output.
+	sortEdgesStable(og.InternalEdges)
+	sortEdgesStable(og.ExternalEdges)
+
+	// Convert nodes to JSON array (sorted by ID for deterministic output).
 	nodesArray := make([]map[string]interface{}, 0, len(og.Nodes))
 	totalNodes := len(og.Nodes)
 	logger.Infof("Processing %d nodes...", totalNodes)
 
 	idx := 0
-	for _, node := range og.Nodes {
+	for _, node := range sortedNodes(og) {
 		idx++
 		if idx%nodeInterval == 0 || idx == totalNodes {
 			logger.Infof("  Processed %d/%d nodes (%.1f%%)", idx, totalNodes, float64(idx)/float64(totalNodes)*100)

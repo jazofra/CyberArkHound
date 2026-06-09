@@ -447,27 +447,26 @@ func main() {
 
 	// Build OpenGraph
 	logger.Info("Building OpenGraph...")
-	og, err := graph.BuildOpenGraph(
-		users,
-		groups,
-		safes,
-		safeMembers,
-		accounts,
-		*targetDomains,
-		*parseSAMAccountName,
-		pvwaTag,
-		accountActivities,
-		platforms,
-		platformConnectors,
-		targetPlatforms,
-		linkedAccounts,
-		psmServers,
-		connComponents,
-		applications,
-		logger,
-		*debug,
-		*logLevel,
-	)
+	og, err := graph.BuildOpenGraph(graph.BuildInput{
+		Users:                     users,
+		Groups:                    groups,
+		Safes:                     safes,
+		SafeMembers:               safeMembers,
+		Accounts:                  accounts,
+		TargetDomains:             *targetDomains,
+		ParseSAMAccountNameFromDN: *parseSAMAccountName,
+		PVWATag:                   pvwaTag,
+		AccountActivities:         accountActivities,
+		Platforms:                 platforms,
+		PlatformConnectors:        platformConnectors,
+		TargetPlatforms:           targetPlatforms,
+		LinkedAccounts:            linkedAccounts,
+		PSMServers:                psmServers,
+		ConnectionComponents:      connComponents,
+		Applications:              applications,
+		Debug:                     *debug,
+		LogLevel:                  *logLevel,
+	}, logger)
 	if err != nil {
 		logger.Fatalf("Failed to build OpenGraph: %v", err)
 	}
@@ -517,6 +516,20 @@ func main() {
 		getMemStats().Alloc/1024/1024,
 		getMemStats().Sys/1024/1024,
 		getMemStats().NumGC)
+
+	// Surface computed security findings (highest-value misconfigurations) so
+	// operators see them without writing Cypher. Findings are derived from the
+	// collected data only — no extra API calls.
+	findings := graph.ComputeFindings(og)
+	if len(findings) > 0 {
+		logger.Info("=== Security Findings ===")
+		for _, f := range findings {
+			logger.Warnf("[%s] %s: %d — %s", f.Severity, f.Title, f.Count, f.Detail)
+		}
+		logger.Info("Run with --include-applications and --include-platforms for complete findings coverage.")
+	} else {
+		logger.Info("=== Security Findings === none detected from the collected data")
+	}
 }
 
 func getMemStats() *runtime.MemStats {

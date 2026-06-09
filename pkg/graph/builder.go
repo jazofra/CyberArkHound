@@ -2,34 +2,58 @@ package graph
 
 import (
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
 	"github.com/sirupsen/logrus"
 )
 
-// BuildOpenGraph converts CyberArk API data into BloodHound OpenGraph format
-func BuildOpenGraph(
-	users []models.User,
-	groups []models.Group,
-	safes []models.Safe,
-	safeMembers []models.SafeMember,
-	accounts []models.Account,
-	targetDomains []string,
-	parseSAMAccountNameFromDN bool,
-	pvwaTag string,
-	accountActivities map[string][]models.AccountActivity,
-	platforms []models.Platform,
-	platformConnectors map[string][]string,
-	targetPlatforms []models.TargetPlatform,
-	linkedAccounts map[string][]models.LinkedAccount,
-	psmServers []models.PSMServer,
-	connectionComponents []models.ConnectionComponent,
-	applications []models.Application,
-	logger *logrus.Logger,
-	debug bool,
-	logLevel string,
-) (*OpenGraph, error) {
+// BuildInput bundles all inputs to BuildOpenGraph. Grouping them into a struct
+// keeps call sites self-documenting and lets new data sources be added without
+// breaking every caller's positional argument list.
+type BuildInput struct {
+	Users                     []models.User
+	Groups                    []models.Group
+	Safes                     []models.Safe
+	SafeMembers               []models.SafeMember
+	Accounts                  []models.Account
+	TargetDomains             []string
+	ParseSAMAccountNameFromDN bool
+	PVWATag                   string
+	AccountActivities         map[string][]models.AccountActivity
+	Platforms                 []models.Platform
+	PlatformConnectors        map[string][]string
+	TargetPlatforms           []models.TargetPlatform
+	LinkedAccounts            map[string][]models.LinkedAccount
+	PSMServers                []models.PSMServer
+	ConnectionComponents      []models.ConnectionComponent
+	Applications              []models.Application
+	Debug                     bool
+	LogLevel                  string
+}
+
+// BuildOpenGraph converts CyberArk API data into BloodHound OpenGraph format.
+func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
+	users := in.Users
+	groups := in.Groups
+	safes := in.Safes
+	safeMembers := in.SafeMembers
+	accounts := in.Accounts
+	targetDomains := in.TargetDomains
+	parseSAMAccountNameFromDN := in.ParseSAMAccountNameFromDN
+	pvwaTag := in.PVWATag
+	accountActivities := in.AccountActivities
+	platforms := in.Platforms
+	platformConnectors := in.PlatformConnectors
+	targetPlatforms := in.TargetPlatforms
+	linkedAccounts := in.LinkedAccounts
+	psmServers := in.PSMServers
+	connectionComponents := in.ConnectionComponents
+	applications := in.Applications
+	debug := in.Debug
+	logLevel := in.LogLevel
+
 	og := NewOpenGraph(logger)
 	if pvwaTag == "" {
 		pvwaTag = "PVWA"
@@ -773,6 +797,27 @@ func BuildOpenGraph(
 			appIsUnrestricted[appKey] = isUnrestricted
 			appAllowedMachines[appKey] = allowedMachines
 			appIsDefaultCCP[appKey] = isDefaultCCP
+
+			// CyberArk_CCPAllowedFrom external edges (Application → AD Computer).
+			// The Allowed Machines list is the set of hosts permitted to present
+			// this AppID to the CCP endpoint. When machineIsOnlyRestriction is true,
+			// landing on one of these hosts is sufficient to wield the AppID — there
+			// is no OS user / path / hash / certificate factor to also satisfy.
+			machineIsOnlyRestriction := hasMachine && !hasOSUser && !hasPath && !hasHash && !hasCertificate
+			for _, machine := range allowedMachines {
+				m := strings.TrimSpace(machine)
+				if m == "" {
+					continue
+				}
+				og.AddEdge("CyberArk_CCPAllowedFrom", appNodeID, strings.ToUpper(m),
+					"id", "name", map[string]interface{}{
+						"machine":                  m,
+						"machineIsOnlyRestriction": machineIsOnlyRestriction,
+						"targetIsIP":               looksLikeIP(m),
+						"inferred":                 true,
+						"source":                   "CyberArk",
+					}, true)
+			}
 		}
 		logger.Infof("Created %d CyberArk_Application nodes (%d with no authentication restrictions)", len(applicationsByName), unrestrictedCount)
 	}
@@ -1438,6 +1483,13 @@ func isWildcardAllowedSafes(allowedSafes string) bool {
 		return true
 	}
 	return false
+}
+
+// looksLikeIP reports whether s is an IPv4/IPv6 literal (as opposed to a
+// hostname/FQDN). Allowed Machines may be expressed as either; IP literals will
+// not match a BloodHound Computer node by name, so callers can flag them.
+func looksLikeIP(s string) bool {
+	return net.ParseIP(strings.TrimSpace(s)) != nil
 }
 
 // asBool best-effort coerces a value that CyberArk may return as a bool, a

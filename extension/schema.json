@@ -96,6 +96,11 @@
       "is_traversable": true
     },
     {
+      "name": "CyberArk_CCPAllowedFrom",
+      "description": "The target Active Directory computer is in the source CyberArk Application's Allowed Machines list — a host permitted to present the AppID to the CCP/AIMWebService endpoint. When machineIsOnlyRestriction is true, control of the host is sufficient to wield the AppID. Inferred by name match; IP-only entries do not resolve to a Computer. Tradecraft: Marat Nigmatullin (FalconForce), SO-CON 2026.",
+      "is_traversable": false
+    },
+    {
       "name": "CyberArk_CanApprove",
       "description": "The source user or group can approve dual-control access requests for accounts in the target safe (requestsAuthorizationLevel1/Level2). Approval authority alone does not grant credential access, so this edge is not traversable.",
       "is_traversable": false

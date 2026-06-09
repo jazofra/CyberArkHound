@@ -31,6 +31,28 @@ const (
 	UserExtendedDetailsTimeout = 60 * time.Second
 )
 
+// HTTPError represents a non-2xx HTTP response from the PVWA API. It allows
+// callers to react to specific status codes (e.g. treat 404 as "not found"
+// rather than a hard failure) via errors.As / httpStatus.
+type HTTPError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, e.Body)
+}
+
+// httpStatus returns the HTTP status code carried by an *HTTPError in the error
+// chain, or 0 if the error is not (or does not wrap) an *HTTPError.
+func httpStatus(err error) int {
+	var he *HTTPError
+	if errors.As(err, &he) {
+		return he.StatusCode
+	}
+	return 0
+}
+
 // Client encapsulates CyberArk PVWA REST API interactions
 type Client struct {
 	BaseURL                    string
@@ -229,7 +251,7 @@ func (c *Client) requestWithRetriesAndReauth(method, urlPath string, body interf
 			if readErr != nil {
 				return nil, fmt.Errorf("HTTP %d: failed to read error response: %w", resp.StatusCode, readErr)
 			}
-			return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(bodyBytes))
+			return nil, &HTTPError{StatusCode: resp.StatusCode, Body: string(bodyBytes)}
 		}
 
 		// Guard against PVWA returning HTML (e.g. IIS login/error page) on
@@ -645,17 +667,14 @@ func (c *Client) GetAccountDetails(accountID string) (*models.Account, error) {
 
 	resp, err := c.requestWithRetries("GET", accountURL, nil, c.ReqTimeout, 3)
 	if err != nil {
-		// Check for 404
-		if resp != nil && resp.StatusCode == 404 {
+		// A 404 means the account no longer exists or is not visible — treat as
+		// "not found" rather than a hard failure so it is not counted as an error.
+		if httpStatus(err) == 404 {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get account details: %w", err)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode == 404 {
-		return nil, nil
-	}
 
 	var account models.Account
 	if err := json.NewDecoder(resp.Body).Decode(&account); err != nil {
@@ -672,7 +691,7 @@ func (c *Client) GetAccountActivities(accountID string, limit int, daysBack *int
 	resp, err := c.requestWithRetries("GET", activitiesURL, nil, c.ReqTimeout, 3)
 	if err != nil {
 		// 404 or 403 means no activities available
-		if resp != nil && (resp.StatusCode == 404 || resp.StatusCode == 403) {
+		if status := httpStatus(err); status == 404 || status == 403 {
 			c.Logger.Debugf("No activities available for account %s", accountID)
 			return []models.AccountActivity{}, nil
 		}
@@ -1157,7 +1176,7 @@ func (c *Client) GetApplicationAuthentications(appID string) ([]models.Applicati
 	resp, err := c.requestWithRetries("GET", authURL, nil, c.ReqTimeout, 3)
 	if err != nil {
 		// 404 means the application has no authentication methods defined
-		if resp != nil && resp.StatusCode == 404 {
+		if httpStatus(err) == 404 {
 			return []models.ApplicationAuthentication{}, nil
 		}
 		return nil, fmt.Errorf("failed to get authentications for application %s: %w", appID, err)

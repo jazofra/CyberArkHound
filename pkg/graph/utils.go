@@ -330,7 +330,7 @@ var EscalationPermissions = map[string]bool{
 
 // Dual control permissions that govern approval workflows
 var DualControlPermissions = map[string]bool{
-	"accesswithoutconfirmation":    true, // Can bypass dual control approval
+	"accesswithoutconfirmation":   true, // Can bypass dual control approval
 	"requestsauthorizationlevel1": true, // Can approve L1 access requests
 	"requestsauthorizationlevel2": true, // Can approve L2 access requests
 }

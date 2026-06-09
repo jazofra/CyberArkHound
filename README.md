@@ -53,6 +53,8 @@ The resulting `cyberark_export.json` file can be directly imported into BloodHou
 - **Enriched metadata**: Personal details, vault authorizations, safe permissions, account management status
 - **Safe permission tracking**: Per-user/group safe access with permission details
 - **External edges preserved**: AD sync relationships stored separately for cross-domain analysis
+- **Security findings summary**: End-of-run report of the highest-value misconfigurations (unrestricted CCP AppIDs, default AIMWebService, wildcard `AllowedSafes`, safes without CPM) computed from collected data — no extra API calls
+- **Deterministic output**: Nodes and edges are emitted in a stable, sorted order so exports diff cleanly across runs
 - **Debug logging**: Comprehensive diagnostics for troubleshooting data flow
 
 ### CyberArk User Permissions Required
@@ -273,6 +275,7 @@ RETURN u.name, s.safeName
 |------|-----------|--------|----------------|
 | `CyberArk_HasAccessTo` | User/Group → Account | Safe member `useAccounts`/`retrieveAccounts` | Direct credential access; `requiresApproval` shows if dual control blocks retrieval |
 | `CyberArk_CanRetrieveViaCCP` | Application → Account | Application safe member `useAccounts`/`retrieveAccounts` + `GET /WebServices/PIMServices.svc/Applications` | CCP/AIMWebService credential retrieval via a single GET request; `appIsUnrestricted` and `isDefaultCCPApp` flag the highest-risk AppIDs ([Nigmatullin, SO-CON 2026](#tradecraft-reference)) |
+| `CyberArk_CCPAllowedFrom` | Application → AD Computer | Application `machineAddress` authentications (Allowed Machines) | External edge — which hosts may present the AppID to CCP; `machineIsOnlyRestriction` flags when landing on the host is sufficient to wield the AppID |
 | `CyberArk_CanGrantAccessTo` | User/Group → Safe | Safe member `manageSafe`/`manageSafeMembers` | Privilege escalation — can grant themselves account access |
 | `CyberArk_CanApprove` | User/Group → Safe | Safe member `requestsAuthorizationLevel1`/`Level2` | Can approve dual-controlled access requests (L1/L2) |
 | `CyberArk_UsedAccount` | User → Account | `GET /API/Accounts/{id}/Activities` | Actual usage audit trail — who really accessed what |
@@ -665,6 +668,45 @@ MATCH (app:CyberArk_Application)-[r:CyberArk_CanRetrieveViaCCP {canRetrievePassw
 RETURN app.name, app.isUnrestricted, a.name, a.safeName
 ```
 
+### Security Findings
+
+At the end of each run, CyberArkHound logs a **Security Findings** summary derived entirely from the collected data (no extra API calls), so the highest-value misconfigurations surface without writing any Cypher:
+
+| Finding | Severity | Source |
+|---------|----------|--------|
+| Unrestricted CCP applications (AppIDs) | Critical | `CyberArk_Application.isUnrestricted` |
+| Credentials retrievable by unrestricted AppIDs via CCP | Critical | `CyberArk_CanRetrieveViaCCP` (`appIsUnrestricted` + `canRetrievePassword`) |
+| Default AIMWebService application present | High | `CyberArk_Application.isDefaultCCPApp` |
+| Platforms with wildcard AllowedSafes (`.*`) | High | `CyberArk_Platform.allowedSafesIsWildcard` |
+| Safes without CPM management | Medium | `CyberArk_Safe.managingCPM` empty |
+
+Only findings with a non-zero count are shown. For full coverage, run with `--include-applications` and `--include-platforms` (both default-on). The CCP-related findings map the tradecraft documented by [Marat Nigmatullin (SO-CON 2026)](#tradecraft-reference).
+
+**Equivalent hunting queries (BloodHound):**
+```cypher
+// Unrestricted CCP applications
+MATCH (app:CyberArk_Application {isUnrestricted: true}) RETURN app.name, app.businessOwnerEmail
+
+// Default AIMWebService application
+MATCH (app:CyberArk_Application {isDefaultCCPApp: true}) RETURN app.name
+
+// Platforms with wildcard AllowedSafes
+MATCH (p:CyberArk_Platform {allowedSafesIsWildcard: true}) RETURN p.name, p.allowedSafes
+
+// Safes with no managing CPM (unrotated credentials)
+MATCH (s:CyberArk_Safe) WHERE s.managingCPM IS NULL OR s.managingCPM = "" RETURN s.safeName
+
+// Hosts from which an unrestricted-by-machine AppID can be wielded
+MATCH (app:CyberArk_Application)-[r:CyberArk_CCPAllowedFrom {machineIsOnlyRestriction: true}]->(c:Computer)
+RETURN c.name, app.name
+```
+
+> **Note on `relationship_findings` in `extension/schema.json`:** BloodHound's findings/remediation are an Enterprise-only feature and the exact `relationship_findings` schema shape is not publicly documented, so that array is intentionally left empty rather than populated with an unverified structure that could break ingestion. The findings above are computed and surfaced at collection time instead.
+
+### Deterministic Output
+
+Exports are **deterministic**: nodes are written sorted by `id` and edges by a stable `(kind, start, end, properties)` key. Two collections of the same unchanged environment produce byte-identical node/edge ordering, so exports can be diffed across runs to spot real changes.
+
 ### Node Properties
 
 #### CyberArk_Instance Properties
@@ -800,7 +842,7 @@ Note: CyberArk node `id` values are namespaced with a 4-character PVWA tag deriv
 	}
 }
 ```
-External edges (CyberArk_SyncsToUser / CyberArk_SyncsToGroup / CyberArk_SyncsToADUser / CyberArk_CanConnect / CyberArk_PSMServerHostedOn) are included with `match_by` set to `name` where appropriate.
+External edges (CyberArk_SyncsToUser / CyberArk_SyncsToGroup / CyberArk_SyncsToADUser / CyberArk_CanConnect / CyberArk_PSMServerHostedOn / CyberArk_CCPAllowedFrom) are included with `match_by` set to `name` where appropriate.
 
 ### Data Flow Diagram
 High-level relationship visualization between CyberArk entities and inferred external AD objects:
@@ -820,6 +862,7 @@ flowchart TD
  CyberArk_User == CyberArk_HasAccessTo<br>(useAccounts/retrieveAccounts) ==> CyberArk_Account
  CyberArk_Group == CyberArk_HasAccessTo<br>(useAccounts/retrieveAccounts) ==> CyberArk_Account
  CyberArk_Application["fa:fa-robot CyberArk_Application"] == CyberArk_CanRetrieveViaCCP<br>(CCP/AIMWebService) ==> CyberArk_Account
+ CyberArk_Application -. CyberArk_CCPAllowedFrom<br>(Allowed Machines) .-> Computer
  CyberArk_User == CyberArk_UsedAccount<br>(actual usage) ==> CyberArk_Account
  CyberArk_User -. CyberArk_CanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArk_Safe["fa:fa-vault CyberArk_Safe"]
  CyberArk_Group -. CyberArk_CanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArk_Safe
