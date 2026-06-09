@@ -69,6 +69,14 @@
       "is_display_kind": true,
       "icon": "plug",
       "color": "#B8C9E0"
+    },
+    {
+      "name": "CyberArk_Application",
+      "display_name": "CyberArk Application",
+      "description": "A CyberArk Application (AppID) used with the Central Credential Provider (CCP / AIMWebService) or Credential Provider (CP) to retrieve credentials from the Vault at runtime. An AppID with weak or missing authentication restrictions (no Allowed Machines, no OS user / path / hash / certificate binding) can be abused to pull any credential it is permitted to read via a single GET request. Tradecraft: Marat Nigmatullin (FalconForce), SO-CON 2026.",
+      "is_display_kind": true,
+      "icon": "robot",
+      "color": "#F2C879"
     }
   ],
   "relationship_kinds": [
@@ -83,6 +91,11 @@
       "is_traversable": true
     },
     {
+      "name": "CyberArk_CanRetrieveViaCCP",
+      "description": "The source CyberArk Application (AppID) is a member of the safe containing the target account with useAccounts and/or retrieveAccounts permission, and can retrieve that credential through the Central Credential Provider (CCP / AIMWebService) REST API — typically via a single GET request and without an interactive PVWA login or dual-control approval. Properties flag unrestricted AppIDs and the default AIMWebService application. Tradecraft: Marat Nigmatullin (FalconForce), SO-CON 2026.",
+      "is_traversable": true
+    },
+    {
       "name": "CyberArk_CanApprove",
       "description": "The source user or group can approve dual-control access requests for accounts in the target safe (requestsAuthorizationLevel1/Level2). Approval authority alone does not grant credential access, so this edge is not traversable.",
       "is_traversable": false
@@ -94,7 +107,7 @@
     },
     {
       "name": "CyberArk_InstanceContains",
-      "description": "The source CyberArk instance (PVWA/Vault) contains the target top-level object (user, group, safe, platform, PSM server, or connection component). Structural environment containment for scoping; not an attack path on its own.",
+      "description": "The source CyberArk instance (PVWA/Vault) contains the target top-level object (user, group, safe, platform, PSM server, connection component, or application). Structural environment containment for scoping; not an attack path on its own.",
       "is_traversable": false
     },
     {
@@ -175,7 +188,8 @@
       "principal_kinds": [
         "CyberArk_User",
         "CyberArk_Group",
-        "CyberArk_Account"
+        "CyberArk_Account",
+        "CyberArk_Application"
       ]
     }
   ],

@@ -2,20 +2,20 @@ package models
 
 // User represents a CyberArk user
 type User struct {
-	ID                           interface{}              `json:"id"`
-	Username                     string                   `json:"username"`
-	Source                       string                   `json:"source"`
-	UserType                     string                   `json:"userType"`
-	ComponentUser                bool                     `json:"componentUser"`
-	Enabled                      bool                     `json:"enabled"`
-	Suspended                    bool                     `json:"suspended"`
-	VaultAuthorization           []interface{}            `json:"vaultAuthorization"`
-	AuthorizedInterfaces         []string                 `json:"authorizedInterfaces"`
-	Location                     string                   `json:"location"`
-	UserDN                       string                   `json:"userDN"`
-	AllowedAuthenticationMethods []string                 `json:"allowedAuthenticationMethods"`
-	GroupsMembership             []UserGroupMembership    `json:"groupsMembership"`
-	PersonalDetails              PersonalDetails          `json:"personalDetails"`
+	ID                           interface{}           `json:"id"`
+	Username                     string                `json:"username"`
+	Source                       string                `json:"source"`
+	UserType                     string                `json:"userType"`
+	ComponentUser                bool                  `json:"componentUser"`
+	Enabled                      bool                  `json:"enabled"`
+	Suspended                    bool                  `json:"suspended"`
+	VaultAuthorization           []interface{}         `json:"vaultAuthorization"`
+	AuthorizedInterfaces         []string              `json:"authorizedInterfaces"`
+	Location                     string                `json:"location"`
+	UserDN                       string                `json:"userDN"`
+	AllowedAuthenticationMethods []string              `json:"allowedAuthenticationMethods"`
+	GroupsMembership             []UserGroupMembership `json:"groupsMembership"`
+	PersonalDetails              PersonalDetails       `json:"personalDetails"`
 }
 
 // UserGroupMembership represents a group membership entry for a user
@@ -27,37 +27,37 @@ type UserGroupMembership struct {
 
 // PersonalDetails represents the personal details of a user
 type PersonalDetails struct {
-	FirstName      string `json:"firstName"`
-	LastName       string `json:"lastName"`
-	MiddleName     string `json:"middleName"`
-	Email          string `json:"email"`
-	BusinessEmail  string `json:"businessEmail"`
-	HomeEmail      string `json:"homeEmail"`
-	BusinessPhone  string `json:"businessPhone"`
-	HomePhone      string `json:"homePhone"`
-	MobilePhone    string `json:"mobilePhone"`
-	FaxNumber      string `json:"faxNumber"`
-	Title          string `json:"title"`
-	Organization   string `json:"organization"`
-	Department     string `json:"department"`
-	Profession     string `json:"profession"`
-	Street         string `json:"street"`
-	City           string `json:"city"`
-	State          string `json:"state"`
-	Zip            string `json:"zip"`
-	Country        string `json:"country"`
+	FirstName     string `json:"firstName"`
+	LastName      string `json:"lastName"`
+	MiddleName    string `json:"middleName"`
+	Email         string `json:"email"`
+	BusinessEmail string `json:"businessEmail"`
+	HomeEmail     string `json:"homeEmail"`
+	BusinessPhone string `json:"businessPhone"`
+	HomePhone     string `json:"homePhone"`
+	MobilePhone   string `json:"mobilePhone"`
+	FaxNumber     string `json:"faxNumber"`
+	Title         string `json:"title"`
+	Organization  string `json:"organization"`
+	Department    string `json:"department"`
+	Profession    string `json:"profession"`
+	Street        string `json:"street"`
+	City          string `json:"city"`
+	State         string `json:"state"`
+	Zip           string `json:"zip"`
+	Country       string `json:"country"`
 }
 
 // Group represents a CyberArk user group
 type Group struct {
-	ID            interface{}   `json:"id"`
-	GroupName     string        `json:"groupName"` // Sometimes just "name" in some contexts, but API usually returns groupName or name
-	Description   string        `json:"description"`
-	GroupType     string        `json:"groupType"`
-	Location      string        `json:"location"`
-	Directory     string        `json:"directory"`
-	DN            string        `json:"dn"`
-	Members       []GroupMember `json:"members"`
+	ID          interface{}   `json:"id"`
+	GroupName   string        `json:"groupName"` // Sometimes just "name" in some contexts, but API usually returns groupName or name
+	Description string        `json:"description"`
+	GroupType   string        `json:"groupType"`
+	Location    string        `json:"location"`
+	Directory   string        `json:"directory"`
+	DN          string        `json:"dn"`
+	Members     []GroupMember `json:"members"`
 }
 
 // GroupMember represents a member of a group
@@ -65,7 +65,7 @@ type GroupMember struct {
 	MemberName string `json:"memberName"`
 	MemberType string `json:"memberType"`
 	// Handle variance where sometimes it might be "username"
-	Username   string `json:"username,omitempty"`
+	Username string `json:"username,omitempty"`
 }
 
 // SafeCreator represents the creator of a safe
@@ -84,22 +84,22 @@ type Safe struct {
 	Creator                   SafeCreator `json:"creator"`
 	OlacEnabled               bool        `json:"olacEnabled"`
 	ManagingCPM               string      `json:"managingCPM"`
-	NumberOfVersionsRetention int     `json:"numberOfVersionsRetention"`
-	NumberOfDaysRetention     int     `json:"numberOfDaysRetention"`
-	AutoPurgeEnabled          bool    `json:"autoPurgeEnabled"`
-	CreationTime              float64 `json:"creationTime"`
-	LastModificationTime      float64 `json:"lastModificationTime"`
-	IsExpiredMembershipEnable bool    `json:"isExpiredMembershipEnable"`
+	NumberOfVersionsRetention int         `json:"numberOfVersionsRetention"`
+	NumberOfDaysRetention     int         `json:"numberOfDaysRetention"`
+	AutoPurgeEnabled          bool        `json:"autoPurgeEnabled"`
+	CreationTime              float64     `json:"creationTime"`
+	LastModificationTime      float64     `json:"lastModificationTime"`
+	IsExpiredMembershipEnable bool        `json:"isExpiredMembershipEnable"`
 }
 
 // SafeMember represents a member of a safe with permissions
 type SafeMember struct {
-	MemberName   string                 `json:"memberName"`
-	MemberType   string                 `json:"memberType"`
-	SafeName     string                 `json:"safeName"`
-	SafeUrlId    string                 `json:"safeUrlId"`
-	Permissions  map[string]interface{} `json:"permissions"`
-	MembershipExpirationDate float64    `json:"membershipExpirationDate,omitempty"`
+	MemberName               string                 `json:"memberName"`
+	MemberType               string                 `json:"memberType"`
+	SafeName                 string                 `json:"safeName"`
+	SafeUrlId                string                 `json:"safeUrlId"`
+	Permissions              map[string]interface{} `json:"permissions"`
+	MembershipExpirationDate float64                `json:"membershipExpirationDate,omitempty"`
 }
 
 // Account represents a CyberArk account
@@ -129,14 +129,14 @@ type Account struct {
 
 // AccountActivity represents an activity log for an account
 type AccountActivity struct {
-	ID             string  `json:"id"` // usually numeric string
-	Date           interface{} `json:"Date"` // can be float64 timestamp or other format
-	Action         string  `json:"Action"`
-	User           string  `json:"User"`
-	Activity       string  `json:"Activity"`
-	Reason         string  `json:"Reason"`
-	MoreInfo       string  `json:"MoreInfo"`
-	IPAddress      string  `json:"IPAddress"`
+	ID        string      `json:"id"`   // usually numeric string
+	Date      interface{} `json:"Date"` // can be float64 timestamp or other format
+	Action    string      `json:"Action"`
+	User      string      `json:"User"`
+	Activity  string      `json:"Activity"`
+	Reason    string      `json:"Reason"`
+	MoreInfo  string      `json:"MoreInfo"`
+	IPAddress string      `json:"IPAddress"`
 }
 
 // LinkedAccount represents a linked account (logon, reconcile, or enable account)
@@ -179,15 +179,15 @@ type PlatformLinkedAccountType struct {
 
 // PlatformCredentialsManagement holds credential management settings
 type PlatformCredentialsManagement struct {
-	AllowedSafes                         string `json:"allowedSafes"`
-	AllowManualChange                    bool   `json:"allowManualChange"`
-	PerformPeriodicChange                bool   `json:"performPeriodicChange"`
-	RequirePasswordChangeEveryXDays      int    `json:"requirePasswordChangeEveryXDays"`
-	AllowManualVerification              bool   `json:"allowManualVerification"`
-	PerformPeriodicVerification          bool   `json:"performPeriodicVerification"`
-	RequirePasswordVerificationEveryXDays int   `json:"requirePasswordVerificationEveryXDays"`
-	AllowManualReconciliation            bool   `json:"allowManualReconciliation"`
-	AutomaticReconcileWhenUnsynched      bool   `json:"automaticReconcileWhenUnsynched"`
+	AllowedSafes                          string `json:"allowedSafes"`
+	AllowManualChange                     bool   `json:"allowManualChange"`
+	PerformPeriodicChange                 bool   `json:"performPeriodicChange"`
+	RequirePasswordChangeEveryXDays       int    `json:"requirePasswordChangeEveryXDays"`
+	AllowManualVerification               bool   `json:"allowManualVerification"`
+	PerformPeriodicVerification           bool   `json:"performPeriodicVerification"`
+	RequirePasswordVerificationEveryXDays int    `json:"requirePasswordVerificationEveryXDays"`
+	AllowManualReconciliation             bool   `json:"allowManualReconciliation"`
+	AutomaticReconcileWhenUnsynched       bool   `json:"automaticReconcileWhenUnsynched"`
 }
 
 // PlatformSessionManagement holds session management settings
@@ -206,11 +206,11 @@ type PlatformPrivilegedAccessWorkflows struct {
 
 // Platform represents a CyberArk platform from GET /API/Platforms/
 type Platform struct {
-	General                  PlatformGeneral                   `json:"general"`
-	Properties               PlatformProperties                `json:"properties"`
-	LinkedAccounts           []PlatformLinkedAccountType        `json:"linkedAccounts"`
-	CredentialsManagement    PlatformCredentialsManagement     `json:"credentialsManagement"`
-	SessionManagement        PlatformSessionManagement         `json:"sessionManagement"`
+	General                   PlatformGeneral                   `json:"general"`
+	Properties                PlatformProperties                `json:"properties"`
+	LinkedAccounts            []PlatformLinkedAccountType       `json:"linkedAccounts"`
+	CredentialsManagement     PlatformCredentialsManagement     `json:"credentialsManagement"`
+	SessionManagement         PlatformSessionManagement         `json:"sessionManagement"`
 	PrivilegedAccessWorkflows PlatformPrivilegedAccessWorkflows `json:"privilegedAccessWorkflows"`
 }
 
@@ -241,20 +241,20 @@ type TargetPlatformWorkflows struct {
 
 // TargetCredentialVerification holds verification policy from the Targets endpoint
 type TargetCredentialVerification struct {
-	PerformAutomatic                      bool `json:"PerformAutomatic"`
-	RequirePasswordEveryXDays             int  `json:"RequirePasswordEveryXDays"`
-	AutoOnAdd                             bool `json:"AutoOnAdd"`
+	PerformAutomatic                       bool `json:"PerformAutomatic"`
+	RequirePasswordEveryXDays              int  `json:"RequirePasswordEveryXDays"`
+	AutoOnAdd                              bool `json:"AutoOnAdd"`
 	IsRequirePasswordEveryXDaysAnException bool `json:"IsRequirePasswordEveryXDaysAnException"`
-	AllowManual                           bool `json:"AllowManual"`
+	AllowManual                            bool `json:"AllowManual"`
 }
 
 // TargetCredentialChange holds change policy from the Targets endpoint
 type TargetCredentialChange struct {
-	PerformAutomatic                      bool `json:"PerformAutomatic"`
-	RequirePasswordEveryXDays             int  `json:"RequirePasswordEveryXDays"`
-	AutoOnAdd                             bool `json:"AutoOnAdd"`
+	PerformAutomatic                       bool `json:"PerformAutomatic"`
+	RequirePasswordEveryXDays              int  `json:"RequirePasswordEveryXDays"`
+	AutoOnAdd                              bool `json:"AutoOnAdd"`
 	IsRequirePasswordEveryXDaysAnException bool `json:"IsRequirePasswordEveryXDaysAnException"`
-	AllowManual                           bool `json:"AllowManual"`
+	AllowManual                            bool `json:"AllowManual"`
 }
 
 // TargetCredentialReconcile holds reconcile policy from the Targets endpoint
@@ -270,10 +270,10 @@ type TargetSecretUpdateConfiguration struct {
 
 // TargetCredentialsManagementPolicy holds the full credentials management policy from Targets
 type TargetCredentialsManagementPolicy struct {
-	Verification              TargetCredentialVerification     `json:"Verification"`
-	Change                    TargetCredentialChange           `json:"Change"`
-	Reconcile                 TargetCredentialReconcile        `json:"Reconcile"`
-	SecretUpdateConfiguration TargetSecretUpdateConfiguration  `json:"SecretUpdateConfiguration"`
+	Verification              TargetCredentialVerification    `json:"Verification"`
+	Change                    TargetCredentialChange          `json:"Change"`
+	Reconcile                 TargetCredentialReconcile       `json:"Reconcile"`
+	SecretUpdateConfiguration TargetSecretUpdateConfiguration `json:"SecretUpdateConfiguration"`
 }
 
 // TargetPlatformSessionManagement holds session management from the Targets endpoint
@@ -285,15 +285,60 @@ type TargetPlatformSessionManagement struct {
 
 // TargetPlatform represents a platform from GET /API/Platforms/Targets with exception metadata
 type TargetPlatform struct {
-	ID                           int                                `json:"ID"`
-	PlatformID                   string                             `json:"PlatformID"`
-	Name                         string                             `json:"Name"`
-	Active                       bool                               `json:"Active"`
-	SystemType                   string                             `json:"SystemType"`
-	AllowedSafes                 string                             `json:"AllowedSafes"`
-	PrivilegedAccessWorkflows    TargetPlatformWorkflows            `json:"PrivilegedAccessWorkflows"`
-	CredentialsManagementPolicy  TargetCredentialsManagementPolicy  `json:"CredentialsManagementPolicy"`
-	SessionManagement            TargetPlatformSessionManagement    `json:"PrivilegedSessionManagement"`
+	ID                          int                               `json:"ID"`
+	PlatformID                  string                            `json:"PlatformID"`
+	Name                        string                            `json:"Name"`
+	Active                      bool                              `json:"Active"`
+	SystemType                  string                            `json:"SystemType"`
+	AllowedSafes                string                            `json:"AllowedSafes"`
+	PrivilegedAccessWorkflows   TargetPlatformWorkflows           `json:"PrivilegedAccessWorkflows"`
+	CredentialsManagementPolicy TargetCredentialsManagementPolicy `json:"CredentialsManagementPolicy"`
+	SessionManagement           TargetPlatformSessionManagement   `json:"PrivilegedSessionManagement"`
+}
+
+// Application represents a CyberArk Application (AppID) used with the Central
+// Credential Provider (CCP) / Credential Provider (CP) to retrieve credentials
+// from the Vault at runtime via the AIMWebService REST API.
+//
+// Tradecraft reference: Marat Nigmatullin (@_mnigma_, FalconForce),
+// "4 GET requests = 3 Domain admins: CyberArk magic you didn't know about",
+// SO-CON 2026. An AppID with weak or missing authentication restrictions
+// (no Allowed Machines, no OS user / path / hash / certificate binding) can be
+// abused by anyone able to reach the CCP endpoint to retrieve any credential
+// the application is permitted to read — often via a single GET request.
+type Application struct {
+	AppID               string      `json:"AppID"`
+	Description         string      `json:"Description"`
+	Location            string      `json:"Location"`
+	AccessPermittedFrom interface{} `json:"AccessPermittedFrom"`
+	AccessPermittedTo   interface{} `json:"AccessPermittedTo"`
+	ExpirationDate      interface{} `json:"ExpirationDate"`
+	Disabled            interface{} `json:"Disabled"`
+	BusinessOwnerFName  string      `json:"BusinessOwnerFName"`
+	BusinessOwnerLName  string      `json:"BusinessOwnerLName"`
+	BusinessOwnerEmail  string      `json:"BusinessOwnerEmail"`
+	BusinessOwnerPhone  string      `json:"BusinessOwnerPhone"`
+	// Authentications is populated separately from the Authentications endpoint
+	// and is not part of the Applications list response.
+	Authentications []ApplicationAuthentication `json:"-"`
+}
+
+// ApplicationAuthentication represents a single authentication method / restriction
+// configured on a CyberArk Application, retrieved from
+// GET /WebServices/PIMServices.svc/Applications/{AppID}/Authentications/.
+//
+// AuthType values include: "machineAddress" (Allowed Machines / IP restriction),
+// "osUser" (operating-system user restriction), "path" (executable path),
+// "hash" (binary hash), and "certificateserialnumber" (client certificate).
+// An application with no machineAddress/osUser/path/hash/certificate entries is
+// effectively unauthenticated — the only thing required to retrieve its
+// credentials is knowledge of the AppID.
+type ApplicationAuthentication struct {
+	AuthType             string `json:"AuthType"`
+	AuthValue            string `json:"AuthValue"`
+	IsFolder             bool   `json:"IsFolder"`
+	AllowInternalScripts bool   `json:"AllowInternalScripts"`
+	Comment              string `json:"Comment"`
 }
 
 // PSMServer represents a PSM server from GET /API/PSM/Servers/

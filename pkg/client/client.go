@@ -1112,6 +1112,111 @@ func (c *Client) ListTargetPlatforms() ([]models.TargetPlatform, error) {
 	return data.Platforms, nil
 }
 
+// ListApplications retrieves all CyberArk Applications (AppIDs) used with the
+// Central Credential Provider (CCP) / Credential Provider (CP) via the
+// Application Identity Management API:
+//
+//	GET /PasswordVault/WebServices/PIMServices.svc/Applications/
+//
+// These AppIDs are the identities the CCP (AIMWebService) authenticates before
+// serving credentials from the Vault. Mapping them — together with their safe
+// memberships and authentication restrictions — exposes the "shortest path" to
+// privileged accounts described by Marat Nigmatullin (FalconForce) in his
+// SO-CON 2026 talk "4 GET requests = 3 Domain admins".
+func (c *Client) ListApplications() ([]models.Application, error) {
+	appsURL := fmt.Sprintf("%s/PasswordVault/WebServices/PIMServices.svc/Applications/", c.BaseURL)
+
+	resp, err := c.requestWithRetries("GET", appsURL, nil, c.ReqTimeout, 3)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list applications: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var data struct {
+		Application []models.Application `json:"application"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("failed to decode applications response: %w", err)
+	}
+
+	c.Logger.Infof("Collected %d applications", len(data.Application))
+	return data.Application, nil
+}
+
+// GetApplicationAuthentications retrieves the authentication methods / restrictions
+// configured on a single Application via:
+//
+//	GET /PasswordVault/WebServices/PIMServices.svc/Applications/{AppID}/Authentications/
+//
+// The returned entries determine whether the AppID is restricted (Allowed
+// Machines, OS user, path, hash, certificate) or effectively unauthenticated.
+func (c *Client) GetApplicationAuthentications(appID string) ([]models.ApplicationAuthentication, error) {
+	authURL := fmt.Sprintf("%s/PasswordVault/WebServices/PIMServices.svc/Applications/%s/Authentications/",
+		c.BaseURL, url.PathEscape(appID))
+
+	resp, err := c.requestWithRetries("GET", authURL, nil, c.ReqTimeout, 3)
+	if err != nil {
+		// 404 means the application has no authentication methods defined
+		if resp != nil && resp.StatusCode == 404 {
+			return []models.ApplicationAuthentication{}, nil
+		}
+		return nil, fmt.Errorf("failed to get authentications for application %s: %w", appID, err)
+	}
+	defer resp.Body.Close()
+
+	var data struct {
+		Authentication []models.ApplicationAuthentication `json:"authentication"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("failed to decode authentications response for application %s: %w", appID, err)
+	}
+
+	return data.Authentication, nil
+}
+
+// ListApplicationsWithAuth fetches all applications and concurrently enriches each
+// with its authentication methods / restrictions. Failures to enrich an individual
+// application are logged and that application is kept without authentication data.
+func (c *Client) ListApplicationsWithAuth(concurrency int) ([]models.Application, error) {
+	apps, err := c.ListApplications()
+	if err != nil {
+		return nil, err
+	}
+	if len(apps) == 0 {
+		return apps, nil
+	}
+
+	if concurrency <= 0 {
+		concurrency = 50
+	}
+	c.Logger.Infof("Enriching %d applications with authentication restrictions...", len(apps))
+
+	semaphore := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+
+	for i := range apps {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			if apps[idx].AppID == "" {
+				return
+			}
+			auths, err := c.GetApplicationAuthentications(apps[idx].AppID)
+			if err != nil {
+				c.Logger.Warnf("Failed to fetch authentications for application %s: %v", apps[idx].AppID, err)
+				return
+			}
+			apps[idx].Authentications = auths
+		}(i)
+	}
+
+	wg.Wait()
+	return apps, nil
+}
+
 // ListPSMServers retrieves all PSM servers via GET /API/PSM/Servers/
 func (c *Client) ListPSMServers() ([]models.PSMServer, error) {
 	serversURL := fmt.Sprintf("%s/PasswordVault/API/PSM/Servers/", c.BaseURL)

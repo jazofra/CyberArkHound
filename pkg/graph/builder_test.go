@@ -59,8 +59,9 @@ func buildWithAccounts(accounts []models.Account, targetDomains []string) *OpenG
 		nil,           // linkedAccounts
 		nil,           // psmServers
 		nil,           // connectionComponents
+		nil,           // applications
 		logger,
-		false,  // debug
+		false, // debug
 		"WARNING",
 	)
 	return og
@@ -213,23 +214,24 @@ func buildDualControlGraph(platforms []models.Platform, accounts []models.Accoun
 	safes := []models.Safe{{SafeName: "TestSafe", SafeUrlId: "TestSafe"}}
 
 	og, _ := BuildOpenGraph(
-		nil,           // users
-		nil,           // groups
-		safes,         // safes
-		safeMembers,   // safeMembers
-		accounts,      // accounts
-		nil,           // targetDomains
-		false,         // parseSAMAccountNameFromDN
-		"PVWA",        // pvwaTag
-		nil,           // accountActivities
-		platforms,     // platforms
-		nil,           // platformConnectors
-		nil,           // targetPlatforms
-		nil,           // linkedAccounts
-		nil,           // psmServers
-		nil,           // connectionComponents
+		nil,         // users
+		nil,         // groups
+		safes,       // safes
+		safeMembers, // safeMembers
+		accounts,    // accounts
+		nil,         // targetDomains
+		false,       // parseSAMAccountNameFromDN
+		"PVWA",      // pvwaTag
+		nil,         // accountActivities
+		platforms,   // platforms
+		nil,         // platformConnectors
+		nil,         // targetPlatforms
+		nil,         // linkedAccounts
+		nil,         // psmServers
+		nil,         // connectionComponents
+		nil,         // applications
 		logger,
-		false,   // debug
+		false, // debug
 		"WARNING",
 	)
 	return og
@@ -334,7 +336,7 @@ func TestDualControl_AccessWithoutConfirmation(t *testing.T) {
 	members := []models.SafeMember{
 		{MemberName: "accessor", SafeName: "TestSafe", MemberType: "user",
 			Permissions: map[string]interface{}{
-				"UseAccounts":              true,
+				"UseAccounts":               true,
 				"AccessWithoutConfirmation": true,
 			}},
 		{MemberName: "approver", SafeName: "TestSafe", MemberType: "user",
@@ -640,8 +642,9 @@ func buildFullPlatformGraph(platforms []models.Platform, platformConnectors map[
 		nil,                  // linkedAccounts
 		psmServers,           // psmServers
 		connectionComponents, // connectionComponents
+		nil,                  // applications
 		logger,
-		false,  // debug
+		false, // debug
 		"WARNING",
 	)
 	return og
@@ -949,25 +952,25 @@ func TestPlatformFallbackFromTargets(t *testing.T) {
 	// Simulate /API/Platforms/ failure: no platforms, but target platforms available
 	targetPlatforms := []models.TargetPlatform{
 		{
-			PlatformID: "WinServer",
-			Name:       "WinServer",
-			Active:     true,
-			SystemType: "Windows",
+			PlatformID:   "WinServer",
+			Name:         "WinServer",
+			Active:       true,
+			SystemType:   "Windows",
 			AllowedSafes: ".*",
 			PrivilegedAccessWorkflows: models.TargetPlatformWorkflows{
-				RequireDualControlPasswordAccessApproval:    models.WorkflowRule{IsActive: true, IsAnException: true},
-				RequireUsersToSpecifyReasonForAccess:        models.WorkflowRule{IsActive: true, IsAnException: false},
+				RequireDualControlPasswordAccessApproval: models.WorkflowRule{IsActive: true, IsAnException: true},
+				RequireUsersToSpecifyReasonForAccess:     models.WorkflowRule{IsActive: true, IsAnException: false},
 			},
 			CredentialsManagementPolicy: models.TargetCredentialsManagementPolicy{
 				Verification: models.TargetCredentialVerification{
-					PerformAutomatic:      true,
+					PerformAutomatic:          true,
 					RequirePasswordEveryXDays: 7,
-					AllowManual:           true,
+					AllowManual:               true,
 				},
 				Change: models.TargetCredentialChange{
-					PerformAutomatic:      false,
+					PerformAutomatic:          false,
 					RequirePasswordEveryXDays: 90,
-					AllowManual:           true,
+					AllowManual:               true,
 				},
 				Reconcile: models.TargetCredentialReconcile{
 					AutomaticReconcileWhenUnsynced: true,
@@ -975,7 +978,7 @@ func TestPlatformFallbackFromTargets(t *testing.T) {
 				},
 			},
 			SessionManagement: models.TargetPlatformSessionManagement{
-				PSMServerID:                                    "PSMServer_abc123",
+				PSMServerID: "PSMServer_abc123",
 				RequirePrivilegedSessionMonitoringAndIsolation: models.WorkflowRule{IsActive: true, IsAnException: false},
 				RecordAndSaveSessionActivity:                   models.WorkflowRule{IsActive: false, IsAnException: false},
 			},
@@ -1160,7 +1163,7 @@ func TestCyberArk_Instance_RootNodeAndContainment(t *testing.T) {
 		nil,    // targetDomains
 		false,  // parseSAMAccountNameFromDN
 		"PVWA", // pvwaTag
-		nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil,
 		logger,
 		false,
 		"WARNING",
@@ -1202,5 +1205,170 @@ func TestCyberArk_Instance_RootNodeAndContainment(t *testing.T) {
 	// Accounts must NOT be directly contained — they nest under their safe.
 	if contained["CAACCOUNT-ACC1-PVWA"] {
 		t.Errorf("account should not be directly contained by the instance; it nests under its safe")
+	}
+}
+
+// --- CCP / Application (AppID) tradecraft tests ---
+// Tradecraft reference: Marat Nigmatullin (FalconForce), SO-CON 2026 —
+// "4 GET requests = 3 Domain admins: CyberArk magic you didn't know about".
+
+// buildWithApplications builds a graph from safes, members, accounts, and applications.
+func buildWithApplications(safes []models.Safe, members []models.SafeMember, accounts []models.Account, applications []models.Application) *OpenGraph {
+	logger := logrus.New()
+	logger.SetLevel(logrus.WarnLevel)
+
+	og, _ := BuildOpenGraph(
+		nil,          // users
+		nil,          // groups
+		safes,        // safes
+		members,      // safeMembers
+		accounts,     // accounts
+		nil,          // targetDomains
+		false,        // parseSAMAccountNameFromDN
+		"PVWA",       // pvwaTag
+		nil,          // accountActivities
+		nil,          // platforms
+		nil,          // platformConnectors
+		nil,          // targetPlatforms
+		nil,          // linkedAccounts
+		nil,          // psmServers
+		nil,          // connectionComponents
+		applications, // applications
+		logger,
+		false,
+		"WARNING",
+	)
+	return og
+}
+
+func TestApplication_UnrestrictedFlag(t *testing.T) {
+	apps := []models.Application{
+		{AppID: "OpenApp"}, // no authentications at all -> unrestricted
+		{AppID: "LockedApp", Authentications: []models.ApplicationAuthentication{
+			{AuthType: "machineAddress", AuthValue: "10.0.0.5"},
+		}},
+	}
+	og := buildWithApplications(nil, nil, nil, apps)
+
+	open := og.Nodes["CAAPP-OPENAPP-PVWA"]
+	if open == nil {
+		t.Fatalf("expected application node CAAPP-OPENAPP-PVWA to exist")
+	}
+	if open.Properties["isUnrestricted"] != true {
+		t.Errorf("OpenApp should be unrestricted, got %v", open.Properties["isUnrestricted"])
+	}
+
+	locked := og.Nodes["CAAPP-LOCKEDAPP-PVWA"]
+	if locked == nil {
+		t.Fatalf("expected application node CAAPP-LOCKEDAPP-PVWA to exist")
+	}
+	if locked.Properties["isUnrestricted"] != false {
+		t.Errorf("LockedApp should be restricted, got %v", locked.Properties["isUnrestricted"])
+	}
+	if locked.Properties["hasMachineRestriction"] != true {
+		t.Errorf("LockedApp should have a machine restriction")
+	}
+}
+
+func TestApplication_DefaultAIMWebService(t *testing.T) {
+	apps := []models.Application{{AppID: "AIMWebService"}}
+	og := buildWithApplications(nil, nil, nil, apps)
+	node := og.Nodes["CAAPP-AIMWEBSERVICE-PVWA"]
+	if node == nil {
+		t.Fatalf("expected AIMWebService application node")
+	}
+	if node.Properties["isDefaultCCPApp"] != true {
+		t.Errorf("AIMWebService should be flagged as the default CCP app")
+	}
+}
+
+func TestApplication_CanRetrieveViaCCP_Edge(t *testing.T) {
+	safes := []models.Safe{{SafeName: "Prod", SafeUrlId: "Prod"}}
+	accounts := []models.Account{{ID: "acc1", UserName: "domainadmin", SafeName: "Prod"}}
+	members := []models.SafeMember{{
+		MemberName: "CIApp", MemberType: "Application", SafeName: "Prod",
+		Permissions: map[string]interface{}{"retrieveAccounts": true, "listAccounts": true},
+	}}
+	apps := []models.Application{{AppID: "CIApp"}} // unrestricted
+
+	og := buildWithApplications(safes, members, accounts, apps)
+	edges := edgesByKind(og, "CyberArk_CanRetrieveViaCCP")
+	if len(edges) != 1 {
+		t.Fatalf("expected 1 CyberArk_CanRetrieveViaCCP edge, got %d", len(edges))
+	}
+	e := edges[0]
+	if e.Start.Value != "CAAPP-CIAPP-PVWA" || e.End.Value != "CAACCOUNT-ACC1-PVWA" {
+		t.Errorf("unexpected edge endpoints: %s -> %s", e.Start.Value, e.End.Value)
+	}
+	if e.Props["canRetrievePassword"] != true {
+		t.Errorf("expected canRetrievePassword=true")
+	}
+	if e.Props["appIsUnrestricted"] != true {
+		t.Errorf("expected appIsUnrestricted=true for an AppID with no auth restrictions")
+	}
+}
+
+func TestApplication_NoAccessNoEdge(t *testing.T) {
+	safes := []models.Safe{{SafeName: "Prod", SafeUrlId: "Prod"}}
+	accounts := []models.Account{{ID: "acc1", UserName: "svc", SafeName: "Prod"}}
+	// Application is a member but only has listAccounts (cannot retrieve/use).
+	members := []models.SafeMember{{
+		MemberName: "ReadOnlyApp", MemberType: "Application", SafeName: "Prod",
+		Permissions: map[string]interface{}{"listAccounts": true},
+	}}
+	apps := []models.Application{{AppID: "ReadOnlyApp"}}
+
+	og := buildWithApplications(safes, members, accounts, apps)
+	if edges := edgesByKind(og, "CyberArk_CanRetrieveViaCCP"); len(edges) != 0 {
+		t.Errorf("expected no CCP edges for an application without use/retrieve, got %d", len(edges))
+	}
+}
+
+func TestApplication_MemberTypeFallbackNodeCreated(t *testing.T) {
+	// Application appears as a safe member but was not in the Applications list.
+	safes := []models.Safe{{SafeName: "Prod", SafeUrlId: "Prod"}}
+	accounts := []models.Account{{ID: "acc1", UserName: "svc", SafeName: "Prod"}}
+	members := []models.SafeMember{{
+		MemberName: "GhostApp", MemberType: "Application", SafeName: "Prod",
+		Permissions: map[string]interface{}{"useAccounts": true},
+	}}
+
+	og := buildWithApplications(safes, members, accounts, nil)
+	if og.Nodes["CAAPP-GHOSTAPP-PVWA"] == nil {
+		t.Fatalf("expected a fallback CyberArk_Application node for an application safe member")
+	}
+	if edges := edgesByKind(og, "CyberArk_CanRetrieveViaCCP"); len(edges) != 1 {
+		t.Errorf("expected 1 CCP edge from fallback application node, got %d", len(edges))
+	}
+}
+
+func TestPlatform_AllowedSafesWildcard(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.WarnLevel)
+
+	platforms := []models.Platform{
+		{
+			General:               models.PlatformGeneral{ID: "WildPlat", Name: "WildPlat"},
+			CredentialsManagement: models.PlatformCredentialsManagement{AllowedSafes: ".*"},
+		},
+		{
+			General:               models.PlatformGeneral{ID: "TightPlat", Name: "TightPlat"},
+			CredentialsManagement: models.PlatformCredentialsManagement{AllowedSafes: "^Prod.*$"},
+		},
+	}
+
+	og, _ := BuildOpenGraph(
+		nil, nil, nil, nil, nil, nil, false, "PVWA",
+		nil, platforms, nil, nil, nil, nil, nil, nil,
+		logger, false, "WARNING",
+	)
+
+	wild := og.Nodes["CAPLATFORM-WILDPLAT-PVWA"]
+	if wild == nil || wild.Properties["allowedSafesIsWildcard"] != true {
+		t.Errorf("WildPlat (AllowedSafes=.*) should be flagged allowedSafesIsWildcard=true, got %v", wild.Properties["allowedSafesIsWildcard"])
+	}
+	tight := og.Nodes["CAPLATFORM-TIGHTPLAT-PVWA"]
+	if tight == nil || tight.Properties["allowedSafesIsWildcard"] != false {
+		t.Errorf("TightPlat should not be flagged as wildcard")
 	}
 }

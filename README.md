@@ -46,6 +46,7 @@ The resulting `cyberark_export.json` file can be directly imported into BloodHou
 - **Safe creator and CPM tracking**: CyberArk_Created and CyberArk_ManagedBy edges showing who created and manages each safe
 - **Platform-based grouping**: Optional CyberArk_Platform nodes and CyberArk_UsesPlatform edges for shared attack surface analysis
 - **PSM infrastructure mapping**: Optional CyberArk_PSMServer and CyberArk_ConnectionComponent nodes with edges showing which PSM servers and connection protocols (RDP, SSH, etc.) each platform and account uses; CyberArk_PSMServerHostedOn external edges link PSM servers to their AD Computer objects
+- **CCP / AIMWebService attack-surface mapping**: Optional CyberArk_Application nodes (AppIDs) with CyberArk_CanRetrieveViaCCP edges showing which credentials each Central Credential Provider application can pull via the AIMWebService REST API. Applications are flagged when they have **no authentication restrictions** (`isUnrestricted`) or are the **default AIMWebService AppID** (`isDefaultCCPApp`), surfacing the "shortest path to privileged accounts" tradecraft documented by [Marat Nigmatullin (FalconForce)](#tradecraft-reference) at SO-CON 2026
 - **Dual control awareness**: Per-account `requiresApproval` derived from platform Master Policy settings (with approver-presence fallback); CyberArk_CanApprove edges identify who can authorize dual-controlled access
 - **Master Policy exception detection**: Flags on platform nodes identify deviations from Master Policy defaults for audit and compliance
 - **Resilient platform data**: Automatic fallback to `/API/Platforms/Targets` when `/API/Platforms/` is unavailable, preserving all security-relevant properties
@@ -99,6 +100,8 @@ With 'list' and 'View Safe Members' on each safe, the tool can:
 - `GET /API/Platforms/Targets/{id}/PrivilegedSessionManagement` - Get per-platform PSM connectors (optional, requires `--include-platforms`)
 - `GET /API/PSM/Servers/` - List all PSM servers (optional, requires `--include-psm`)
 - `GET /API/PSM/Connectors/` - List all connection components (optional, requires `--include-psm`)
+- `GET /WebServices/PIMServices.svc/Applications/` - List CCP/AIMWebService applications (AppIDs) (optional, requires `--include-applications`)
+- `GET /WebServices/PIMServices.svc/Applications/{AppID}/Authentications/` - Get per-application authentication restrictions: allowed machines, OS user, path, hash, certificate (optional, requires `--include-applications`)
 - `GET /API/Users` - List all users
 - `GET /API/UserGroups` - List all groups
 - `GET /API/UserGroups/{groupId}` - Get group details with members
@@ -211,6 +214,7 @@ When the bulk `GET /API/Users?ExtendedDetails=true` endpoint times out, CyberArk
 - `--include-linked-accounts` Include linked account data (creates CyberArk_LinkedTo edges for logon/reconcile/enable account chains)
 - `--include-platforms` Include platform data (creates CyberArk_Platform nodes and CyberArk_UsesPlatform edges)
 - `--include-psm` Include PSM server and connection component data (creates CyberArk_PSMServer and CyberArk_ConnectionComponent nodes with linking edges)
+- `--include-applications` Include CCP/AIMWebService application (AppID) data (creates CyberArk_Application nodes and CyberArk_CanRetrieveViaCCP edges). Requires the collector to be able to list Applications (typically the `Manage Users` vault authorization or membership in the relevant application safes)
 
 **Testing/Development:**
 - `--limit-users` Limit number of users to process (0 = no limit)
@@ -268,6 +272,7 @@ RETURN u.name, s.safeName
 | Edge | Direction | Source | Security Value |
 |------|-----------|--------|----------------|
 | `CyberArk_HasAccessTo` | User/Group → Account | Safe member `useAccounts`/`retrieveAccounts` | Direct credential access; `requiresApproval` shows if dual control blocks retrieval |
+| `CyberArk_CanRetrieveViaCCP` | Application → Account | Application safe member `useAccounts`/`retrieveAccounts` + `GET /WebServices/PIMServices.svc/Applications` | CCP/AIMWebService credential retrieval via a single GET request; `appIsUnrestricted` and `isDefaultCCPApp` flag the highest-risk AppIDs ([Nigmatullin, SO-CON 2026](#tradecraft-reference)) |
 | `CyberArk_CanGrantAccessTo` | User/Group → Safe | Safe member `manageSafe`/`manageSafeMembers` | Privilege escalation — can grant themselves account access |
 | `CyberArk_CanApprove` | User/Group → Safe | Safe member `requestsAuthorizationLevel1`/`Level2` | Can approve dual-controlled access requests (L1/L2) |
 | `CyberArk_UsedAccount` | User → Account | `GET /API/Accounts/{id}/Activities` | Actual usage audit trail — who really accessed what |
@@ -572,6 +577,94 @@ MATCH (a:CyberArk_Account)-[:CyberArk_UsesPlatform]->(p:CyberArk_Platform {activ
 RETURN p.name, COUNT(a) as accountsOnInactivePlatform
 ```
 
+#### CyberArk_CanRetrieveViaCCP (Application → Account) - Optional
+**CCP / AIMWebService credential retrieval** - Maps which credentials each CyberArk Application (AppID) can pull through the Central Credential Provider REST API:
+- Created when `--include-applications` flag is used
+- Built from the application's safe membership (`useAccounts`/`retrieveAccounts`) combined with the Applications list from `GET /WebServices/PIMServices.svc/Applications`
+- This is the credential-access path used by automated workflows (CI/CD runners, scripts, services) — and the focus of the tradecraft described in [Marat Nigmatullin's SO-CON 2026 talk](#tradecraft-reference)
+
+**Edge Properties**:
+- `canRetrievePassword`: `true` when the application has `retrieveAccounts` (CCP returns the plaintext password); `false` when only `useAccounts`
+- `appIsUnrestricted`: `true` when the AppID has **no** authentication restriction (no Allowed Machines and no OS user / path / hash / certificate binding) — knowing the AppID alone is enough to retrieve the credential from anywhere that can reach the CCP endpoint
+- `isDefaultCCPApp`: `true` for the out-of-the-box `AIMWebService` AppID, which usually has access to **all** safes
+- `allowedMachines`: list of IPs/hosts permitted to use the AppID (empty when unrestricted)
+- `safeName`, `permissions`: the safe and the granted permission names
+
+### Central Credential Provider (CCP / AIMWebService) Tradecraft
+
+> **Tradecraft credit:** This mapping implements the attack surface presented by **Marat Nigmatullin** (`@_mnigma_`, FalconForce) in **"4 GET requests = 3 Domain admins: CyberArk magic you didn't know about"** at **SO-CON 2026**. See the [Tradecraft Reference](#tradecraft-reference) section for links.
+
+The **Central Credential Provider (CCP)** is an optional CyberArk PAM module that lets applications and services retrieve credentials from the Vault at runtime through a REST API (the **AIMWebService**), instead of hardcoding secrets in config files or scripts. The endpoint is:
+
+```
+https://<CCP_Server>/AIMWebService/api/Accounts?<parameters>
+```
+
+A single request returns **at most one** matching account. Requests are authenticated by an **Application (AppID)** rather than an interactive PVWA user, and — critically — **are not subject to dual-control approval**.
+
+#### Why this matters for attack paths
+- An AppID is just an identity object that is a **member of one or more safes** with `retrieveAccounts`/`useAccounts`. If you can reach the CCP endpoint and present a valid AppID, you can pull every credential that AppID is permitted to read — often in **one GET request**.
+- The application's only protections are **authentication restrictions**: Allowed Machines (IP/host), OS user, executable path, binary hash, or client certificate. **An AppID with none of these is effectively unauthenticated.** CyberArkHound flags these as `isUnrestricted` / `appIsUnrestricted`.
+- The **default `AIMWebService` AppID** that ships with CCP most likely has access to **all safes**. CyberArkHound flags it as `isDefaultCCPApp`.
+- **CI/CD runners** (GitLab, Azure DevOps, Bitbucket) that hold an AppID are a common foothold for reaching the CCP endpoint.
+
+#### The CCP request parameters
+- **AppID** — the application identity making the request.
+- **Query** — a flexible filter combining `Safe`, `Object`, `UserName`, `Address`, `Platform`, etc.
+- **QueryFormat** — `Exact` (default) or `RegExp`. With `RegExp`, the `Query` value is treated as a regular expression, enabling **vault enumeration one match at a time**.
+
+#### Example CCP requests (for authorized testing)
+```bash
+# Exact retrieval of a single known account:
+curl -s "https://<CCP_Server>/AIMWebService/api/Accounts?AppID=<AppID>&Safe=<safe>&UserName=<user>&Address=<host>"
+
+# RegExp filter on username:
+curl -s "https://<CCP_Server>/AIMWebService/api/Accounts?AppID=<AppID>&QueryFormat=regexp&Query=username=adm"
+
+# RegExp filter on username AND address:
+curl -s "https://<CCP_Server>/AIMWebService/api/Accounts?AppID=<AppID>&QueryFormat=regexp&Query=username=adm;address=server2"
+
+# Vault enumeration with character classes:
+curl -s "https://<CCP_Server>/AIMWebService/api/Accounts?AppID=<AppID>&QueryFormat=regexp&Query=username=som[a-z]username[0-9];Address=hostname[a-z].local"
+
+# The DEFAULT AppID usually reads every safe:
+curl -s "https://<CCP_Server>/AIMWebService/api/Accounts?AppID=AIMWebService&QueryFormat=regexp&Query=username=domainadmin;Address=domain1.local"
+```
+The JSON response includes the plaintext password in the `Content` field plus account metadata.
+
+#### Detection (defender's view)
+Per the talk, CCP brute force / over-broad RegExp sweeps are detectable from the **response message content**: replies containing `"Too many password objects"` or `"The Credential Provider has encountered an error"` indicate that a query matched more than one object (RegExp returns at most one match per request) — a strong signal of enumeration. CCP usage can also be collected centrally (`GET /AIMWebService` provider logs and CCP usage reports), and retrievals appear in the Vault audit trail under the application identity.
+
+#### Related platform misconfiguration: `AllowedSafes=.*`
+The same talk highlights platforms whose **`AllowedSafes`** is set to `.*` (match any safe). A platform with a wildcard `AllowedSafes` lets its **reconcile / logon** accounts be attached to unexpected safes, broadening the blast radius of a platform-level compromise. CyberArkHound flags these platforms with `allowedSafesIsWildcard: true` so they can be audited and restricted.
+
+#### BloodHound Query Examples
+```cypher
+// Highest risk: unrestricted AppIDs that can retrieve passwords via CCP
+MATCH (app:CyberArk_Application)-[r:CyberArk_CanRetrieveViaCCP {appIsUnrestricted: true, canRetrievePassword: true}]->(a:CyberArk_Account)
+RETURN app.name, a.name, a.safeName
+
+// The default AIMWebService AppID and everything it can reach
+MATCH (app:CyberArk_Application {isDefaultCCPApp: true})-[:CyberArk_CanRetrieveViaCCP]->(a:CyberArk_Account)
+RETURN app.name, COUNT(a) AS reachableAccounts
+
+// List all unrestricted applications (no Allowed Machines / OS user / path / hash / certificate)
+MATCH (app:CyberArk_Application {isUnrestricted: true})
+RETURN app.name, app.description, app.businessOwnerEmail
+
+// CCP path to AD: an AppID that can pull a credential mapped to a Domain Admin
+MATCH (app:CyberArk_Application)-[:CyberArk_CanRetrieveViaCCP]->(a:CyberArk_Account)-[:CyberArk_SyncsToADUser]->(u:User)
+RETURN app.name, a.name, u.name
+
+// Platforms with a wildcard AllowedSafes (audit / restrict)
+MATCH (p:CyberArk_Platform {allowedSafesIsWildcard: true})
+RETURN p.name, p.systemType, p.allowedSafes
+
+// Applications that can retrieve passwords WITHOUT dual control (CCP bypasses approval)
+MATCH (app:CyberArk_Application)-[r:CyberArk_CanRetrieveViaCCP {canRetrievePassword: true}]->(a:CyberArk_Account)
+RETURN app.name, app.isUnrestricted, a.name, a.safeName
+```
+
 ### Node Properties
 
 #### CyberArk_Instance Properties
@@ -634,6 +727,17 @@ RETURN p.name, COUNT(a) as accountsOnInactivePlatform
 #### CyberArk_ConnectionComponent Properties (requires `--include-psm`)
 - **Identity**: `connectorId` (e.g., `"PSM-RDP"`, `"PSM-SSH"`)
 - **Display**: `displayName` (e.g., `"RDP"`, `"SSH"`)
+
+#### CyberArk_Application Properties (requires `--include-applications`)
+- **Identity**: `appId`, `name` (the AppID), `description`, `location`
+- **Status**: `disabled`
+- **Business Owner**: `businessOwnerName`, `businessOwnerEmail`, `businessOwnerPhone`
+- **Authentication restrictions**: `allowedMachines` (list of permitted IPs/hosts), `authMethods` (distinct AuthType values configured), `hasMachineRestriction`, `hasOSUserRestriction`, `hasPathRestriction`, `hasHashRestriction`, `hasCertificateRestriction`
+- **Risk flags**:
+  - `isUnrestricted` — `true` when the AppID has **no** authentication restriction of any kind; possession of the AppID alone is sufficient to retrieve its credentials via CCP
+  - `isDefaultCCPApp` — `true` for the default `AIMWebService` AppID, which usually has access to all safes
+
+> **Note on Platform risk flag:** `--include-platforms` also adds `allowedSafesIsWildcard` to `CyberArk_Platform` nodes — `true` when the platform's `AllowedSafes` is `.*` (or otherwise matches any safe), the over-permissive setting called out in [Nigmatullin's SO-CON 2026 talk](#tradecraft-reference).
 
 ### Output
 The resulting JSON structure follows BloodHound OpenGraph schema:
@@ -715,6 +819,7 @@ flowchart TD
  CyberArk_Group -- CyberArk_MemberOf --> CyberArk_Group
  CyberArk_User == CyberArk_HasAccessTo<br>(useAccounts/retrieveAccounts) ==> CyberArk_Account
  CyberArk_Group == CyberArk_HasAccessTo<br>(useAccounts/retrieveAccounts) ==> CyberArk_Account
+ CyberArk_Application["fa:fa-robot CyberArk_Application"] == CyberArk_CanRetrieveViaCCP<br>(CCP/AIMWebService) ==> CyberArk_Account
  CyberArk_User == CyberArk_UsedAccount<br>(actual usage) ==> CyberArk_Account
  CyberArk_User -. CyberArk_CanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArk_Safe["fa:fa-vault CyberArk_Safe"]
  CyberArk_Group -. CyberArk_CanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArk_Safe
@@ -739,6 +844,7 @@ flowchart TD
  style CyberArk_Platform fill:#D4B8D9,stroke:#A98CB3,stroke-width:2px
  style CyberArk_PSMServer fill:#A8D5BA,stroke:#7BB898,stroke-width:2px
  style CyberArk_ConnectionComponent fill:#B8C9E0,stroke:#8EA6C4,stroke-width:2px
+ style CyberArk_Application fill:#F2C879,stroke:#C99A3F,stroke-width:2px
 ```
 
 **Legend:**
@@ -758,7 +864,8 @@ The file `cyberark_model.json` defines custom node types (icons & colors) for Bl
 		"CyberArk_User":                {"icon": {"type": "font-awesome", "name": "user",        "color": "#BFD6E3"}},
 		"CyberArk_Platform":            {"icon": {"type": "font-awesome", "name": "server",      "color": "#D4B8D9"}},
 		"CyberArk_PSMServer":           {"icon": {"type": "font-awesome", "name": "desktop",     "color": "#A8D5BA"}},
-		"CyberArk_ConnectionComponent": {"icon": {"type": "font-awesome", "name": "plug",        "color": "#B8C9E0"}}
+		"CyberArk_ConnectionComponent": {"icon": {"type": "font-awesome", "name": "plug",        "color": "#B8C9E0"}},
+		"CyberArk_Application":         {"icon": {"type": "font-awesome", "name": "robot",       "color": "#F2C879"}}
 	}
 }
 ```
@@ -836,6 +943,7 @@ Use `--log-level` to control progress reporting frequency:
 [2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_Safe: 150
 [2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_Account: 3000
 [2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_Platform: 50
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_Application: 40
 [2025-11-24 10:16:45] INFO cyberarkhound: Total Internal Edges: 12350
 [2025-11-24 10:16:45] INFO cyberarkhound: Internal Edges by Type:
 [2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_MemberOf: 620
@@ -848,6 +956,7 @@ Use `--log-level` to control progress reporting frequency:
 [2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_UsedAccount: 785
 [2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_LinkedTo: 2100
 [2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_UsesPlatform: 950
+[2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_CanRetrieveViaCCP: 180
 [2025-11-24 10:16:45] INFO cyberarkhound: Total External Edges: 1680
 [2025-11-24 10:16:45] INFO cyberarkhound: External Edges by Type:
 [2025-11-24 10:16:45] INFO cyberarkhound:   CyberArk_SyncsToUser: 480
@@ -902,10 +1011,28 @@ Add new edge types or property mappings inside `pkg/graph/builder.go`. Keep tran
 
 Open issues for bugs or enhancement requests.
 
+### Tradecraft Reference
+
+The CCP / AIMWebService attack-surface mapping (`CyberArk_Application` nodes, `CyberArk_CanRetrieveViaCCP` edges, the `isUnrestricted` / `isDefaultCCPApp` risk flags, and the platform `allowedSafesIsWildcard` flag) implements the tradecraft presented by:
+
+**Marat Nigmatullin** (`@_mnigma_`, FalconForce) — *"4 GET requests = 3 Domain admins: CyberArk magic you didn't know about"*, **SO-CON 2026**.
+
+- Slides (PDF): [SpecterOps/presentations — SO-CON 2026](https://github.com/SpecterOps/presentations/tree/main/SO-CON%202026)
+- Talk recording: <https://www.youtube.com/watch?v=AsKCTlSA15M>
+- Author: <https://falconforce.nl> · `marat@falconforce.nl` · [@_mnigma_](https://x.com/_mnigma_)
+
+The talk itself credits Lee Chagolla-Christensen (@SpecterOps) and the YouTube channels @NetSec and @cbyrad, and references CyberArkHound as a complementary tool. Full credit for the CCP/AIMWebService and `AllowedSafes=.*` tradecraft mapped here belongs to Marat Nigmatullin.
+
+Relevant CyberArk documentation:
+- [Call the CCP Web Service using REST](https://docs.cyberark.com/credential-providers/latest/en/content/ccp/calling-the-web-service-using-rest.htm)
+- [Central Credential Provider (CCP)](https://docs.cyberark.com/credential-providers/latest/en/content/ccp/the-central%20-credential-provider.htm)
+- [Collect CCP usage](https://docs.cyberark.com/credential-providers/latest/en/content/ccp/api-ccp-usage.htm)
+
 ## Acknowledgments
 Thank you to Siemens Healthineers for supporting this research and to my coworkers who have helped with its development.
 
 - Julian Garcia - for cooperating with this research, and for offering valuable perspective for coding practices.
+- Marat Nigmatullin (FalconForce) - for the CCP / AIMWebService and `AllowedSafes=.*` tradecraft ([SO-CON 2026](#tradecraft-reference)) that this release maps, and for referencing CyberArkHound in his talk.
 
 
 
