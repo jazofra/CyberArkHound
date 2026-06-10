@@ -1190,12 +1190,22 @@ func TestCyberArk_Instance_RootNodeAndContainment(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"CAUSER-ALICE-PVWA",
-		"CAGROUP-ADMINS-PVWA",
 		"CASAFE-TESTSAFE-PVWA",
 	} {
 		if !contained[want] {
 			t.Errorf("expected CyberArk_InstanceContains edge to %s", want)
+		}
+	}
+
+	// Users and Groups must NOT be directly contained. They can number in the
+	// millions in LDAP-synced vaults, so they attach via membership/permission
+	// edges instead of an InstanceContains fan-out.
+	for _, unwanted := range []string{
+		"CAUSER-ALICE-PVWA",
+		"CAGROUP-ADMINS-PVWA",
+	} {
+		if contained[unwanted] {
+			t.Errorf("principal %s should not be directly contained by the instance", unwanted)
 		}
 	}
 
