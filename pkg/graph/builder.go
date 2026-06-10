@@ -1415,10 +1415,20 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		}
 	}
 
-	// Create the CyberArk_Instance environment root node and connect it to every
-	// top-level object via CyberArk_InstanceContains. Accounts are intentionally
-	// not linked here — they remain nested under their safe via CyberArk_Contains
-	// (Instance → Safe → Account), mirroring hierarchical containment.
+	// Create the CyberArk_Instance environment root node and connect it to the
+	// bounded set of top-level configuration objects via CyberArk_InstanceContains.
+	//
+	// Users and Groups are intentionally NOT linked here. In LDAP/AD-integrated
+	// vaults they can number in the millions (every directory-synced principal
+	// becomes a node), so fanning out an InstanceContains edge to each one blows
+	// up the export (observed 3.3M+ edges) without adding navigational value —
+	// users and groups already attach to the graph through their membership and
+	// safe-permission edges (CyberArk_MemberOf, CyberArk_HasAccessTo,
+	// CyberArk_CanGrantAccessTo, CyberArk_CanApprove, CyberArk_Created, etc.).
+	//
+	// Accounts are likewise not linked here — they remain nested under their safe
+	// via CyberArk_Contains (Instance → Safe → Account), mirroring hierarchical
+	// containment.
 	instanceNodeID := strings.ToUpper(fmt.Sprintf("cainstance-%s", pvwaTag))
 	og.MergeNode(&Node{
 		ID:    instanceNodeID,
@@ -1431,8 +1441,6 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 	})
 
 	instanceChildKinds := map[string]bool{
-		"CyberArk_User":                true,
-		"CyberArk_Group":               true,
 		"CyberArk_Safe":                true,
 		"CyberArk_Platform":            true,
 		"CyberArk_PSMServer":           true,

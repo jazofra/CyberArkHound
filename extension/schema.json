@@ -112,7 +112,7 @@
     },
     {
       "name": "CyberArk_InstanceContains",
-      "description": "The source CyberArk instance (PVWA/Vault) contains the target top-level object (user, group, safe, platform, PSM server, connection component, or application). Structural environment containment for scoping; not an attack path on its own.",
+      "description": "The source CyberArk instance (PVWA/Vault) contains the target top-level configuration object (safe, platform, PSM server, or connection component). Users and groups are excluded to avoid a large edge fan-out in LDAP-synced vaults. Structural environment containment for scoping; not an attack path on its own.",
       "is_traversable": false
     },
     {
