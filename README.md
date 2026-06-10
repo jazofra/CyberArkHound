@@ -281,7 +281,7 @@ RETURN u.name, s.safeName
 | `CyberArk_PSMServerHostedOn` | PSM Server → AD Computer | PSM Server `Address` field (uppercased) | External edge — maps PSM server to its AD Computer object |
 | `CyberArk_MemberOf` | User/Group → Group | Group membership data | Group-based permission inheritance |
 | `CyberArk_Contains` | Safe → Account | Account's `safeName` field | Safe-account containment relationship |
-| `CyberArk_InstanceContains` | Instance → User/Group/Safe/Platform/PSM Server/Connection Component | Derived (one root per PVWA tag) | Environment root containment — scopes all objects to their PVWA instance |
+| `CyberArk_InstanceContains` | Instance → Safe/Platform/PSM Server/Connection Component | Derived (one root per PVWA tag) | Environment root containment — scopes bounded configuration objects to their PVWA instance. Users and groups are excluded to avoid a multi-million-edge fan-out in LDAP-synced vaults |
 | `CyberArk_SyncsToUser` | AD User → CyberArk_User | LDAP DN with `DC=` | External edge — AD-to-CyberArk identity mapping |
 | `CyberArk_SyncsToGroup` | AD Group → CyberArk_Group | LDAP DN with `DC=` | External edge — AD-to-CyberArk group mapping |
 | `CyberArk_SyncsToADUser` | CyberArk_Account → AD User | Account address matches target domain | External edge — credential-to-AD-user mapping |
@@ -576,7 +576,7 @@ RETURN p.name, COUNT(a) as accountsOnInactivePlatform
 
 #### CyberArk_Instance Properties
 - **Identity**: `name`, `pvwaTag` (the 4-character PVWA tag derived from `--pvwa`)
-- The environment root node. One `CyberArk_Instance` node is emitted per run and is linked to every top-level object (users, groups, safes, platforms, PSM servers, connection components) via `CyberArk_InstanceContains`. Accounts are reached transitively through their safe (`CyberArk_Instance` → `CyberArk_Safe` → `CyberArk_Contains` → `CyberArk_Account`).
+- The environment root node. One `CyberArk_Instance` node is emitted per run and is linked to the bounded set of top-level configuration objects (safes, platforms, PSM servers, connection components) via `CyberArk_InstanceContains`. Users and groups are deliberately excluded — in LDAP/AD-synced vaults they can number in the millions, and a direct fan-out would balloon the export; they attach to the graph through their membership and safe-permission edges instead. Accounts are reached transitively through their safe (`CyberArk_Instance` → `CyberArk_Safe` → `CyberArk_Contains` → `CyberArk_Account`).
 
 #### CyberArk_User Properties
 - **Identity**: `userId`, `name`, `userType`, `source`, `isLDAPSynced`
