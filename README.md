@@ -703,6 +703,91 @@ RETURN c.name, app.name
 
 > **Note on `relationship_findings` in `extension/schema.json`:** BloodHound's findings/remediation are an Enterprise-only feature and the exact `relationship_findings` schema shape is not publicly documented, so that array is intentionally left empty rather than populated with an unverified structure that could break ingestion. The findings above are computed and surfaced at collection time instead.
 
+### Validating & Exploiting Findings
+
+> ⚠️ **Authorized testing only.** Everything below is for use during a sanctioned penetration test, red-team engagement, or your own lab. Retrieving credentials, resetting passwords, and authenticating with recovered secrets are all logged in the CyberArk Vault audit trail and may trigger alerting. Have written authorization and a scope before you touch production.
+
+For each finding this section answers three questions: **under which circumstances is it actually exploitable**, **why it works**, and **how to test/validate it**. CyberArkHound only tells you a misconfiguration *exists* — these steps confirm whether it is *reachable and abusable from your position*.
+
+#### Preconditions that gate every CCP finding
+
+The three CCP findings (`CCP_UNRESTRICTED_APP`, `CCP_UNRESTRICTED_RETRIEVAL`, `CCP_DEFAULT_AIMWEBSERVICE`) all depend on the same two things:
+
+1. **Network reachability to the CCP web service.** Credentials are served from `https://<CCP_Server>/AIMWebService/api/Accounts`. The CCP/CP component usually runs on a dedicated server (sometimes co-located with PVWA or behind a load balancer). If you cannot reach that host/port, the finding is not exploitable *from where you are*, regardless of how the AppID is configured. Find it from: the URL applications/scripts use to fetch secrets, CI/CD pipeline config, the `AIMWebService` IIS site, or by probing likely hosts for `/AIMWebService/v1.1/aim.asmx` / `/AIMWebService/api/Accounts`.
+2. **The AppID is a safe member with Use/Retrieve on the target safe.** An AppID that authenticates but is a member of nothing returns *"object not found"*, not a password. The `CyberArk_CanRetrieveViaCCP` edges already tell you exactly which safes/accounts each AppID can reach — use them to pick a target.
+
+**The single most useful diagnostic is the CCP error code.** A request that *authenticates* but matches nothing returns something like `APPAP004E Password object matching query ... was not found` — that already proves the AppID is accepted from your position. Authentication/restriction failures look different: `APPAP008E ... is not defined`, `APPAP306E ... not authorized` / address-restriction errors, or `ITATS982E` (machine not allowed). If you get an *authorization/address* error, an unseen restriction (often a network/IP ACL in front of CCP) is blocking you even though the AppID config itself is unrestricted.
+
+#### `CCP_UNRESTRICTED_APP` — Unrestricted CCP applications (Critical)
+
+- **What it is:** an AppID with *no* authentication factor configured — no Allowed Machines, no OS user, no path, no hash, no certificate (`isUnrestricted: true`).
+- **Why it works:** CCP authenticates the *application*, not a person. The configured factors (machine address, OS user, executable path, binary hash, client certificate) are the application's credential. With **zero** factors, the AppID *string itself* is the only secret — and CyberArkHound prints it as `app.name`. CCP retrieval needs no interactive PVWA login and is **not subject to dual-control approval**.
+- **Exploitable when:** you can reach the CCP service (precondition 1) and the AppID can read at least one safe (precondition 2). Note: a network-layer IP allowlist in front of CCP can still gate you even though the *application object* is unrestricted — the `APPAP`/`ITATS` error tells you which.
+- **How to test:**
+  ```bash
+  # 1. Prove the AppID authenticates from your position (expect a password OR "object not found"):
+  curl -sk "https://<CCP_Server>/AIMWebService/api/Accounts?AppID=<AppID>&QueryFormat=exact&Query=Safe=<safe>"
+
+  # 2. Retrieve a specific credential the app can read (pick the target from a CanRetrieveViaCCP edge):
+  curl -sk "https://<CCP_Server>/AIMWebService/api/Accounts?AppID=<AppID>&Safe=<safe>&UserName=<user>&Address=<address>"
+  # -> JSON; the plaintext password is in the "Content" field.
+  ```
+- **Confirm impact:** if the recovered account maps to AD (`CyberArk_SyncsToADUser` / `CyberArk_CanConnect` edges), validate the secret out-of-band (e.g. `kinit`, `evil-winrm`, or an SMB auth) to prove it is live.
+- **Remediation:** add at least one strong factor — Allowed Machines *plus* path/hash or a client certificate. Machine/IP alone is the weakest (spoofable / shared CI hosts).
+
+#### `CCP_UNRESTRICTED_RETRIEVAL` — Credentials retrievable by unrestricted AppIDs (Critical)
+
+- **What it is:** the "so what" of the finding above — the specific **Application → Account** paths where an unrestricted AppID holds `retrieveAccounts` (not merely `useAccounts`), so CCP will hand back the **plaintext password**. Each count is one reachable credential.
+- **Why it's worse than `useAccounts`:** `useAccounts` is intended for PSM-brokered connections; `retrieveAccounts` returns the secret in the `Content` field. The talk's whole point is that this turns "4 GET requests" into domain admin — these edges are exactly those GETs.
+- **Exploitable when:** same preconditions, and the edge property `canRetrievePassword: true`.
+- **How to test:** for each edge, build an **Exact** query from the account's safe/username/address and confirm the password returns:
+  ```bash
+  curl -sk "https://<CCP_Server>/AIMWebService/api/Accounts?AppID=<AppID>&QueryFormat=exact&Query=Safe=<safe>;UserName=<user>;Address=<address>"
+  ```
+  Prefer **Exact** over **RegExp** — RegExp sweeps return one match per request and generate the `"Too many password objects"` / `"The Credential Provider has encountered an error"` responses that defenders alert on (see [Tradecraft Reference](#tradecraft-reference)).
+- **Prioritize:** sort these by what the account *is* — accounts with a `CyberArk_SyncsToADUser` edge to a Domain Admin, or `CyberArk_CanConnect` to a Tier-0 host, are the crown jewels.
+
+#### `CCP_DEFAULT_AIMWEBSERVICE` — Default AIMWebService application present (High)
+
+- **What it is:** the out-of-the-box `AIMWebService` AppID exists. It is created with the CCP web service and, in many deployments, ends up a member of a broad set of safes.
+- **Why it matters:** the AppID name is **publicly known** — an attacker doesn't have to discover it. If it is also unrestricted (check `isUnrestricted` / the `appIsUnrestricted` edge property) it is the fastest path to "read everything."
+- **Exploitable when:** it is a member of target safes *and* not locked down. In a **hardened** install, AIMWebService is restricted to the provider hosts themselves (Allowed Machines = the CP/CCP servers); then it is only usable *from those hosts* — which is exactly what the `CyberArk_CCPAllowedFrom` edges and `machineIsOnlyRestriction` flag tell you. If that flag is true, compromising one of those provider hosts is the route in.
+- **How to test:**
+  ```bash
+  curl -sk "https://<CCP_Server>/AIMWebService/api/Accounts?AppID=AIMWebService&QueryFormat=exact&Query=Safe=<safe>;UserName=<user>"
+  ```
+  An `APPAP`/`ITATS` address error means it is machine-restricted — pivot to a host listed by `CyberArk_CCPAllowedFrom` and retry from there.
+- **Remediation:** scope its safe membership to the minimum, bind it to the provider hosts with strong factors, or remove it if GUI-based application provisioning isn't used.
+
+#### `PLATFORM_WILDCARD_ALLOWEDSAFES` — Platforms with wildcard AllowedSafes (`.*`) (High)
+
+- **What it is:** a platform whose `AllowedSafes` regular expression matches **any** safe (`allowedSafesIsWildcard: true`). This is an *enabling* misconfiguration, not a one-GET exploit — it removes the guardrail that ties a platform (and its automation accounts/policies) to specific safes.
+- **Why it matters:** `AllowedSafes` is what stops a powerful platform — especially one with a **reconcile** or **logon** account (often a domain admin) — from being associated with accounts in safes it was never meant to touch. With `.*`, that privileged reconcile credential can be brought to bear far more widely, and you can stage accounts onto the platform from any safe you can write to.
+- **Exploitable when (any of):**
+  - You hold **Add Accounts** on some safe and can create an account that *uses this platform*, then drive its credential-management automation (e.g. trigger a **reconcile**) so the platform's privileged reconcile account acts on your behalf. Inspect the platform's `linkedAccountTypes` and follow `CyberArk_LinkedTo {linkType:"reconcile"}` / `{linkType:"logon"}` edges to find that account and the safe it lives in.
+  - You can retrieve/use the platform's reconcile or logon account directly (then it's a normal credential-access path, but the wildcard means it can be wielded against accounts in unexpected safes).
+- **Why it's "High" not "Critical":** it requires a second permission (account creation or access to the linked account) to weaponize — it widens blast radius rather than handing over a password by itself.
+- **How to test (intrusive — lab / change-controlled only):**
+  1. From the graph, identify the platform's reconcile/logon account and its safe.
+  2. In a safe where you have **Add Accounts**, create a throwaway account that uses the wildcard platform and is configured to reconcile.
+  3. Trigger reconciliation (`POST /API/Accounts/{id}/Reconcile`) and observe — in the account activity — that the platform's privileged reconcile account performed the action. That confirms the privileged account can be reached via this platform from a safe you control.
+- **Remediation:** set `AllowedSafes` to an explicit list/regex scoped to the safes the platform is meant to manage.
+
+#### `SAFE_NO_CPM` — Safes without CPM management (Medium)
+
+- **What it is:** a safe with no managing CPM (`managingCPM` empty), so its credentials have **no automatic rotation**.
+- **Why it matters:** it is a **force-multiplier**, not a standalone exploit. Credentials in these safes are likely static and long-lived, which means: (a) anything you recover now will *keep working*; (b) a secret captured from an old export, backup, ticket, or wiki is probably still valid; (c) for Windows accounts, a captured NTLM hash stays usable for pass-the-hash because the password never changes.
+- **Exploitable when:** you already have (or later get) *any* exposure of an account in one of these safes — via a CCP finding above, a `CyberArk_HasAccessTo` path, or an out-of-band leak. The lack of CPM is what makes that exposure durable.
+- **How to assess:**
+  - Cross-reference which accounts in these safes are reachable: do they have `CyberArk_HasAccessTo` or `CyberArk_CanRetrieveViaCCP` edges? Those are the credentials whose value won't rotate out from under you.
+  - Check the account's `lastModifiedTime` / `lastReconciledTime` to confirm staleness (a years-old timestamp is a strong signal).
+  ```cypher
+  MATCH (s:CyberArk_Safe)-[:CyberArk_Contains]->(a:CyberArk_Account)
+  WHERE (s.managingCPM IS NULL OR s.managingCPM = "")
+  RETURN s.safeName, a.name, a.lastModifiedTime ORDER BY a.lastModifiedTime
+  ```
+- **Remediation:** assign a CPM to the safe and enable periodic change/verification on the accounts.
+
 ### Deterministic Output
 
 Exports are **deterministic**: nodes are written sorted by `id` and edges by a stable `(kind, start, end, properties)` key. Two collections of the same unchanged environment produce byte-identical node/edge ordering, so exports can be diffed across runs to spot real changes.
