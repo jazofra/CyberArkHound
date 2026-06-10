@@ -2,33 +2,58 @@ package graph
 
 import (
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
 	"github.com/sirupsen/logrus"
 )
 
-// BuildOpenGraph converts CyberArk API data into BloodHound OpenGraph format
-func BuildOpenGraph(
-	users []models.User,
-	groups []models.Group,
-	safes []models.Safe,
-	safeMembers []models.SafeMember,
-	accounts []models.Account,
-	targetDomains []string,
-	parseSAMAccountNameFromDN bool,
-	pvwaTag string,
-	accountActivities map[string][]models.AccountActivity,
-	platforms []models.Platform,
-	platformConnectors map[string][]string,
-	targetPlatforms []models.TargetPlatform,
-	linkedAccounts map[string][]models.LinkedAccount,
-	psmServers []models.PSMServer,
-	connectionComponents []models.ConnectionComponent,
-	logger *logrus.Logger,
-	debug bool,
-	logLevel string,
-) (*OpenGraph, error) {
+// BuildInput bundles all inputs to BuildOpenGraph. Grouping them into a struct
+// keeps call sites self-documenting and lets new data sources be added without
+// breaking every caller's positional argument list.
+type BuildInput struct {
+	Users                     []models.User
+	Groups                    []models.Group
+	Safes                     []models.Safe
+	SafeMembers               []models.SafeMember
+	Accounts                  []models.Account
+	TargetDomains             []string
+	ParseSAMAccountNameFromDN bool
+	PVWATag                   string
+	AccountActivities         map[string][]models.AccountActivity
+	Platforms                 []models.Platform
+	PlatformConnectors        map[string][]string
+	TargetPlatforms           []models.TargetPlatform
+	LinkedAccounts            map[string][]models.LinkedAccount
+	PSMServers                []models.PSMServer
+	ConnectionComponents      []models.ConnectionComponent
+	Applications              []models.Application
+	Debug                     bool
+	LogLevel                  string
+}
+
+// BuildOpenGraph converts CyberArk API data into BloodHound OpenGraph format.
+func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
+	users := in.Users
+	groups := in.Groups
+	safes := in.Safes
+	safeMembers := in.SafeMembers
+	accounts := in.Accounts
+	targetDomains := in.TargetDomains
+	parseSAMAccountNameFromDN := in.ParseSAMAccountNameFromDN
+	pvwaTag := in.PVWATag
+	accountActivities := in.AccountActivities
+	platforms := in.Platforms
+	platformConnectors := in.PlatformConnectors
+	targetPlatforms := in.TargetPlatforms
+	linkedAccounts := in.LinkedAccounts
+	psmServers := in.PSMServers
+	connectionComponents := in.ConnectionComponents
+	applications := in.Applications
+	debug := in.Debug
+	logLevel := in.LogLevel
+
 	og := NewOpenGraph(logger)
 	if pvwaTag == "" {
 		pvwaTag = "PVWA"
@@ -323,11 +348,11 @@ func BuildOpenGraph(
 	}
 
 	// Process Platforms (if provided)
-	platformsByID := make(map[string]string)              // platformID (string) -> platformNodeID
-	platformDualControl := make(map[string]bool)          // platformID (lowercase) -> requireDualControlPasswordAccessApproval
-	platformSessionMonitoring := make(map[string]bool)   // platformID (lowercase) -> requirePrivilegedSessionMonitoringAndIsolation
-	platformSessionRecording := make(map[string]bool)    // platformID (lowercase) -> recordAndSaveSessionActivity
-	platformPSMServerID := make(map[string]string)       // platformID (lowercase) -> PSMServerID
+	platformsByID := make(map[string]string)           // platformID (string) -> platformNodeID
+	platformDualControl := make(map[string]bool)       // platformID (lowercase) -> requireDualControlPasswordAccessApproval
+	platformSessionMonitoring := make(map[string]bool) // platformID (lowercase) -> requirePrivilegedSessionMonitoringAndIsolation
+	platformSessionRecording := make(map[string]bool)  // platformID (lowercase) -> recordAndSaveSessionActivity
+	platformPSMServerID := make(map[string]string)     // platformID (lowercase) -> PSMServerID
 	if len(platforms) > 0 {
 		logger.Infof("Processing %d platforms...", len(platforms))
 		for _, p := range platforms {
@@ -375,6 +400,7 @@ func BuildOpenGraph(
 
 				// Credentials management
 				"allowedSafes":                          p.CredentialsManagement.AllowedSafes,
+				"allowedSafesIsWildcard":                isWildcardAllowedSafes(p.CredentialsManagement.AllowedSafes),
 				"allowManualChange":                     p.CredentialsManagement.AllowManualChange,
 				"performPeriodicChange":                 p.CredentialsManagement.PerformPeriodicChange,
 				"requirePasswordChangeEveryXDays":       p.CredentialsManagement.RequirePasswordChangeEveryXDays,
@@ -444,11 +470,11 @@ func BuildOpenGraph(
 				// the full /API/Platforms/ endpoint was unavailable.
 				platformNodeID = strings.ToUpper(fmt.Sprintf("caplatform-%s-%s", tpID, pvwaTag))
 				props := map[string]interface{}{
-					"id":         platformNodeID,
-					"name":       tp.Name,
-					"platformId": tpID,
-					"active":     tp.Active,
-					"systemType": tp.SystemType,
+					"id":          platformNodeID,
+					"name":        tp.Name,
+					"platformId":  tpID,
+					"active":      tp.Active,
+					"systemType":  tp.SystemType,
 					"psmServerID": tp.SessionManagement.PSMServerID,
 
 					// Session management (from IsActive flags)
@@ -463,6 +489,7 @@ func BuildOpenGraph(
 
 					// Credentials management
 					"allowedSafes":                          tp.AllowedSafes,
+					"allowedSafesIsWildcard":                isWildcardAllowedSafes(tp.AllowedSafes),
 					"performPeriodicVerification":           tp.CredentialsManagementPolicy.Verification.PerformAutomatic,
 					"requirePasswordVerificationEveryXDays": tp.CredentialsManagementPolicy.Verification.RequirePasswordEveryXDays,
 					"allowManualVerification":               tp.CredentialsManagementPolicy.Verification.AllowManual,
@@ -512,9 +539,9 @@ func BuildOpenGraph(
 	}
 
 	// Process Accounts
-	accountsBySafe := make(map[string][]string)       // safeName -> []accountNodeIDs
-	accountsByID := make(map[string]string)            // accountID -> accountNodeID
-	accountPlatformID := make(map[string]string)       // accountNodeID -> platformID (lowercase)
+	accountsBySafe := make(map[string][]string)  // safeName -> []accountNodeIDs
+	accountsByID := make(map[string]string)      // accountID -> accountNodeID
+	accountPlatformID := make(map[string]string) // accountNodeID -> platformID (lowercase)
 
 	logger.Infof("Processing %d accounts...", len(accounts))
 	for idx, a := range accounts {
@@ -668,6 +695,133 @@ func BuildOpenGraph(
 		}
 	}
 
+	// Process Applications (CCP / AIMWebService AppIDs), if provided.
+	//
+	// Tradecraft reference: Marat Nigmatullin (@_mnigma_, FalconForce),
+	// "4 GET requests = 3 Domain admins: CyberArk magic you didn't know about"
+	// (SO-CON 2026). CyberArk Applications are the identities the Central
+	// Credential Provider (CCP/AIMWebService) authenticates before serving
+	// credentials. An AppID whose authentication is weak or absent (no Allowed
+	// Machines and no OS user / path / hash / certificate binding) can be abused
+	// from anywhere that can reach the CCP endpoint to retrieve every credential
+	// the application is permitted to read — frequently in a single GET request.
+	applicationsByName := make(map[string]string)   // lowercase AppID -> appNodeID
+	appIsUnrestricted := make(map[string]bool)      // lowercase AppID -> no auth restrictions at all
+	appAllowedMachines := make(map[string][]string) // lowercase AppID -> allowed machines/IPs
+	appIsDefaultCCP := make(map[string]bool)        // lowercase AppID -> is the default AIMWebService app
+	if len(applications) > 0 {
+		logger.Infof("Processing %d applications (CCP/AIMWebService AppIDs)...", len(applications))
+		unrestrictedCount := 0
+		for _, app := range applications {
+			if app.AppID == "" {
+				continue
+			}
+			appNodeID := strings.ToUpper(fmt.Sprintf("caapp-%s-%s", app.AppID, pvwaTag))
+			appKey := strings.ToLower(app.AppID)
+
+			// Summarise the authentication restrictions configured on the AppID.
+			allowedMachines := make([]string, 0)
+			authMethods := make([]string, 0)
+			seenAuthType := make(map[string]bool)
+			hasMachine := false
+			hasOSUser := false
+			hasPath := false
+			hasHash := false
+			hasCertificate := false
+			for _, a := range app.Authentications {
+				at := strings.ToLower(strings.TrimSpace(a.AuthType))
+				if at == "" {
+					continue
+				}
+				if !seenAuthType[at] {
+					seenAuthType[at] = true
+					authMethods = append(authMethods, a.AuthType)
+				}
+				switch at {
+				case "machineaddress":
+					hasMachine = true
+					if a.AuthValue != "" {
+						allowedMachines = append(allowedMachines, a.AuthValue)
+					}
+				case "osuser":
+					hasOSUser = true
+				case "path":
+					hasPath = true
+				case "hash":
+					hasHash = true
+				case "certificateserialnumber", "certificateattributes", "certificate":
+					hasCertificate = true
+				}
+			}
+
+			// "Unrestricted" = nothing binds the AppID to a caller. Knowing the
+			// AppID is sufficient to retrieve credentials via the CCP endpoint.
+			isUnrestricted := !hasMachine && !hasOSUser && !hasPath && !hasHash && !hasCertificate
+			if isUnrestricted {
+				unrestrictedCount++
+			}
+			// The out-of-the-box CCP application ("AIMWebService") most likely has
+			// access to all safes and is a prime target (Nigmatullin, SO-CON 2026).
+			isDefaultCCP := appKey == "aimwebservice"
+
+			businessOwnerName := strings.TrimSpace(fmt.Sprintf("%s %s", app.BusinessOwnerFName, app.BusinessOwnerLName))
+
+			props := map[string]interface{}{
+				"id":                        appNodeID,
+				"name":                      app.AppID,
+				"appId":                     app.AppID,
+				"description":               app.Description,
+				"location":                  app.Location,
+				"disabled":                  asBool(app.Disabled),
+				"businessOwnerName":         businessOwnerName,
+				"businessOwnerEmail":        app.BusinessOwnerEmail,
+				"businessOwnerPhone":        app.BusinessOwnerPhone,
+				"allowedMachines":           allowedMachines,
+				"authMethods":               authMethods,
+				"hasMachineRestriction":     hasMachine,
+				"hasOSUserRestriction":      hasOSUser,
+				"hasPathRestriction":        hasPath,
+				"hasHashRestriction":        hasHash,
+				"hasCertificateRestriction": hasCertificate,
+				"isUnrestricted":            isUnrestricted,
+				"isDefaultCCPApp":           isDefaultCCP,
+			}
+
+			og.MergeNode(&Node{
+				ID:         appNodeID,
+				Kinds:      []string{"CyberArk_Application", "CyberArkBase"},
+				Properties: SanitizeProperties(props),
+			})
+
+			applicationsByName[appKey] = appNodeID
+			appIsUnrestricted[appKey] = isUnrestricted
+			appAllowedMachines[appKey] = allowedMachines
+			appIsDefaultCCP[appKey] = isDefaultCCP
+
+			// CyberArk_CCPAllowedFrom external edges (Application → AD Computer).
+			// The Allowed Machines list is the set of hosts permitted to present
+			// this AppID to the CCP endpoint. When machineIsOnlyRestriction is true,
+			// landing on one of these hosts is sufficient to wield the AppID — there
+			// is no OS user / path / hash / certificate factor to also satisfy.
+			machineIsOnlyRestriction := hasMachine && !hasOSUser && !hasPath && !hasHash && !hasCertificate
+			for _, machine := range allowedMachines {
+				m := strings.TrimSpace(machine)
+				if m == "" {
+					continue
+				}
+				og.AddEdge("CyberArk_CCPAllowedFrom", appNodeID, strings.ToUpper(m),
+					"id", "name", map[string]interface{}{
+						"machine":                  m,
+						"machineIsOnlyRestriction": machineIsOnlyRestriction,
+						"targetIsIP":               looksLikeIP(m),
+						"inferred":                 true,
+						"source":                   "CyberArk",
+					}, true)
+			}
+		}
+		logger.Infof("Created %d CyberArk_Application nodes (%d with no authentication restrictions)", len(applicationsByName), unrestrictedCount)
+	}
+
 	// Process Safe Members and create permission edges
 	logger.Infof("Processing %d safe members...", len(safeMembers))
 
@@ -702,6 +856,73 @@ func BuildOpenGraph(
 		}
 
 		if sm.MemberName == "" || sm.SafeName == "" {
+			continue
+		}
+
+		// Application (CCP/AIMWebService AppID) safe members are routed to
+		// CyberArk_CanRetrieveViaCCP edges instead of user/group access edges.
+		// An application is recognised either by its CyberArk member type or by
+		// matching the name of an AppID we collected from the Applications API.
+		appKey := strings.ToLower(sm.MemberName)
+		appNodeID, isApplication := applicationsByName[appKey]
+		if !isApplication && strings.ToLower(sm.MemberType) == "application" {
+			// Member is an application but was not in (or we did not collect) the
+			// Applications list — create a minimal node so the edge has an anchor.
+			appNodeID = strings.ToUpper(fmt.Sprintf("caapp-%s-%s", sm.MemberName, pvwaTag))
+			og.MergeNode(&Node{
+				ID:    appNodeID,
+				Kinds: []string{"CyberArk_Application", "CyberArkBase"},
+				Properties: SanitizeProperties(map[string]interface{}{
+					"id":              appNodeID,
+					"name":            sm.MemberName,
+					"appId":           sm.MemberName,
+					"isDefaultCCPApp": appKey == "aimwebservice",
+				}),
+			})
+			applicationsByName[appKey] = appNodeID
+			isApplication = true
+		}
+
+		if isApplication {
+			// Determine whether the application can retrieve/use credentials in this safe.
+			canRetrieve := false
+			canUse := false
+			grantedPerms := make([]string, 0)
+			for permKey, permVal := range sm.Permissions {
+				normKey := NormPermName(permKey)
+				granted := false
+				switch v := permVal.(type) {
+				case bool:
+					granted = v
+				case string:
+					granted = strings.ToLower(v) == "true"
+				}
+				if !granted {
+					continue
+				}
+				grantedPerms = append(grantedPerms, permKey)
+				switch normKey {
+				case "retrieveaccounts":
+					canRetrieve = true
+				case "useaccounts":
+					canUse = true
+				}
+			}
+
+			if canRetrieve || canUse {
+				for _, accountNodeID := range accountsBySafe[sm.SafeName] {
+					og.AddEdge("CyberArk_CanRetrieveViaCCP", appNodeID, accountNodeID,
+						"id", "id", map[string]interface{}{
+							"safeName":            sm.SafeName,
+							"permissions":         grantedPerms,
+							"canRetrievePassword": canRetrieve,
+							"appIsUnrestricted":   appIsUnrestricted[appKey],
+							"allowedMachines":     appAllowedMachines[appKey],
+							"isDefaultCCPApp":     appIsDefaultCCP[appKey],
+							"inferred":            false,
+						}, false)
+				}
+			}
 			continue
 		}
 
@@ -1224,6 +1445,7 @@ func BuildOpenGraph(
 		"CyberArk_Platform":            true,
 		"CyberArk_PSMServer":           true,
 		"CyberArk_ConnectionComponent": true,
+		"CyberArk_Application":         true,
 	}
 	instanceEdgeCount := 0
 	for nodeID, node := range og.Nodes {
@@ -1254,4 +1476,47 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// isWildcardAllowedSafes reports whether a platform's AllowedSafes restriction is
+// effectively unrestricted (matches any safe). The talk by Marat Nigmatullin
+// (SO-CON 2026) highlights AllowedSafes=.* as an over-permissive setting that
+// lets a platform's reconcile/logon accounts be attached to unexpected safes.
+// An empty value or one of the common "match everything" regular expressions is
+// treated as a wildcard.
+func isWildcardAllowedSafes(allowedSafes string) bool {
+	s := strings.TrimSpace(allowedSafes)
+	switch s {
+	case "", ".*", ".*.", "^.*$", "(.*)", ".+":
+		return true
+	}
+	return false
+}
+
+// looksLikeIP reports whether s is an IPv4/IPv6 literal (as opposed to a
+// hostname/FQDN). Allowed Machines may be expressed as either; IP literals will
+// not match a BloodHound Computer node by name, so callers can flag them.
+func looksLikeIP(s string) bool {
+	return net.ParseIP(strings.TrimSpace(s)) != nil
+}
+
+// asBool best-effort coerces a value that CyberArk may return as a bool, a
+// string ("true"/"false", "yes"/"no", "1"/"0"), or a number into a boolean.
+func asBool(v interface{}) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "true", "yes", "1":
+			return true
+		}
+		return false
+	case float64:
+		return t != 0
+	case int:
+		return t != 0
+	default:
+		return false
+	}
 }

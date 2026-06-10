@@ -46,6 +46,7 @@ func main() {
 	includeLinkedAccounts := pflag.Bool("include-linked-accounts", true, "Include linked account data (creates CyberArk_LinkedTo edges for logon/reconcile/enable chains)")
 	includePlatforms := pflag.Bool("include-platforms", true, "Include platform data (creates CyberArk_Platform nodes and CyberArk_UsesPlatform edges)")
 	includePSM := pflag.Bool("include-psm", true, "Include PSM server and connection component data (creates CyberArk_PSMServer and CyberArk_ConnectionComponent nodes)")
+	includeApplications := pflag.Bool("include-applications", true, "Include CCP/AIMWebService Application (AppID) data (creates CyberArk_Application nodes and CyberArk_CanRetrieveViaCCP edges)")
 
 	// Testing limits
 	limitUsers := pflag.Int("limit-users", 0, "Limit number of users (0 = no limit)")
@@ -226,6 +227,19 @@ func main() {
 		if err != nil {
 			logger.Warnf("Failed to fetch connection components: %v", err)
 			connComponents = nil
+		}
+	}
+
+	// Fetch CCP/AIMWebService applications if requested.
+	// Tradecraft reference: Marat Nigmatullin (FalconForce), SO-CON 2026 —
+	// "4 GET requests = 3 Domain admins: CyberArk magic you didn't know about".
+	var applications []models.Application
+	if *includeApplications {
+		logger.Info("Fetching applications (CCP/AIMWebService AppIDs)...")
+		applications, err = apiClient.ListApplicationsWithAuth(*workers)
+		if err != nil {
+			logger.Warnf("Failed to fetch applications: %v (CCP mapping will be omitted — the collector user may lack 'Manage Users' authorization)", err)
+			applications = nil
 		}
 	}
 
@@ -433,26 +447,26 @@ func main() {
 
 	// Build OpenGraph
 	logger.Info("Building OpenGraph...")
-	og, err := graph.BuildOpenGraph(
-		users,
-		groups,
-		safes,
-		safeMembers,
-		accounts,
-		*targetDomains,
-		*parseSAMAccountName,
-		pvwaTag,
-		accountActivities,
-		platforms,
-		platformConnectors,
-		targetPlatforms,
-		linkedAccounts,
-		psmServers,
-		connComponents,
-		logger,
-		*debug,
-		*logLevel,
-	)
+	og, err := graph.BuildOpenGraph(graph.BuildInput{
+		Users:                     users,
+		Groups:                    groups,
+		Safes:                     safes,
+		SafeMembers:               safeMembers,
+		Accounts:                  accounts,
+		TargetDomains:             *targetDomains,
+		ParseSAMAccountNameFromDN: *parseSAMAccountName,
+		PVWATag:                   pvwaTag,
+		AccountActivities:         accountActivities,
+		Platforms:                 platforms,
+		PlatformConnectors:        platformConnectors,
+		TargetPlatforms:           targetPlatforms,
+		LinkedAccounts:            linkedAccounts,
+		PSMServers:                psmServers,
+		ConnectionComponents:      connComponents,
+		Applications:              applications,
+		Debug:                     *debug,
+		LogLevel:                  *logLevel,
+	}, logger)
 	if err != nil {
 		logger.Fatalf("Failed to build OpenGraph: %v", err)
 	}
@@ -502,6 +516,20 @@ func main() {
 		getMemStats().Alloc/1024/1024,
 		getMemStats().Sys/1024/1024,
 		getMemStats().NumGC)
+
+	// Surface computed security findings (highest-value misconfigurations) so
+	// operators see them without writing Cypher. Findings are derived from the
+	// collected data only — no extra API calls.
+	findings := graph.ComputeFindings(og)
+	if len(findings) > 0 {
+		logger.Info("=== Security Findings ===")
+		for _, f := range findings {
+			logger.Warnf("[%s] %s: %d — %s", f.Severity, f.Title, f.Count, f.Detail)
+		}
+		logger.Info("Run with --include-applications and --include-platforms for complete findings coverage.")
+	} else {
+		logger.Info("=== Security Findings === none detected from the collected data")
+	}
 }
 
 func getMemStats() *runtime.MemStats {

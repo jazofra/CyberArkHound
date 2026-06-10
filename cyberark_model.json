@@ -48,6 +48,13 @@
         "name": "plug",
         "color": "#B8C9E0"
       }
+    },
+    "CyberArk_Application": {
+      "icon": {
+        "type": "font-awesome",
+        "name": "robot",
+        "color": "#F2C879"
+      }
     }
   }
 }

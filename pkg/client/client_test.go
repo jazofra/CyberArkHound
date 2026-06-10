@@ -251,3 +251,56 @@ func TestAuthenticatePersistsCookiesForAPIRequests(t *testing.T) {
 		t.Fatalf("unexpected users: %+v", users)
 	}
 }
+
+func TestListApplicationsWithAuthEnrichesAuthentications(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/PasswordVault/WebServices/PIMServices.svc/Applications/":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"application": []map[string]interface{}{
+					{"AppID": "OpenApp", "Disabled": "No"},
+					{"AppID": "LockedApp", "Disabled": "No"},
+				},
+			})
+		case strings.Contains(r.URL.Path, "/Applications/OpenApp/Authentications"):
+			// No restrictions configured.
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"authentication": []map[string]interface{}{},
+			})
+		case strings.Contains(r.URL.Path, "/Applications/LockedApp/Authentications"):
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"authentication": []map[string]interface{}{
+					{"AuthType": "machineAddress", "AuthValue": "10.0.0.5"},
+				},
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := testClient(server.URL)
+	apps, err := client.ListApplicationsWithAuth(4)
+	if err != nil {
+		t.Fatalf("ListApplicationsWithAuth returned error: %v", err)
+	}
+	if len(apps) != 2 {
+		t.Fatalf("expected 2 applications, got %d", len(apps))
+	}
+
+	byID := map[string][]string{}
+	for _, a := range apps {
+		var types []string
+		for _, auth := range a.Authentications {
+			types = append(types, auth.AuthType)
+		}
+		byID[a.AppID] = types
+	}
+	if len(byID["OpenApp"]) != 0 {
+		t.Errorf("OpenApp should have no authentications, got %v", byID["OpenApp"])
+	}
+	if len(byID["LockedApp"]) != 1 || byID["LockedApp"][0] != "machineAddress" {
+		t.Errorf("LockedApp should have a machineAddress authentication, got %v", byID["LockedApp"])
+	}
+}

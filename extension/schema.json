@@ -69,6 +69,14 @@
       "is_display_kind": true,
       "icon": "plug",
       "color": "#B8C9E0"
+    },
+    {
+      "name": "CyberArk_Application",
+      "display_name": "CyberArk Application",
+      "description": "A CyberArk Application (AppID) used with the Central Credential Provider (CCP / AIMWebService) or Credential Provider (CP) to retrieve credentials from the Vault at runtime. An AppID with weak or missing authentication restrictions (no Allowed Machines, no OS user / path / hash / certificate binding) can be abused to pull any credential it is permitted to read via a single GET request. Tradecraft: Marat Nigmatullin (FalconForce), SO-CON 2026.",
+      "is_display_kind": true,
+      "icon": "robot",
+      "color": "#F2C879"
     }
   ],
   "relationship_kinds": [
@@ -81,6 +89,16 @@
       "name": "CyberArk_CanGrantAccessTo",
       "description": "The source user or group has manageSafe or manageSafeMembers permission on the target safe. Privilege escalation: the principal can add themselves (or a controlled account) with retrieveAccounts to access all accounts in the safe.",
       "is_traversable": true
+    },
+    {
+      "name": "CyberArk_CanRetrieveViaCCP",
+      "description": "The source CyberArk Application (AppID) is a member of the safe containing the target account with useAccounts and/or retrieveAccounts permission, and can retrieve that credential through the Central Credential Provider (CCP / AIMWebService) REST API — typically via a single GET request and without an interactive PVWA login or dual-control approval. Properties flag unrestricted AppIDs and the default AIMWebService application. Tradecraft: Marat Nigmatullin (FalconForce), SO-CON 2026.",
+      "is_traversable": true
+    },
+    {
+      "name": "CyberArk_CCPAllowedFrom",
+      "description": "The target Active Directory computer is in the source CyberArk Application's Allowed Machines list — a host permitted to present the AppID to the CCP/AIMWebService endpoint. When machineIsOnlyRestriction is true, control of the host is sufficient to wield the AppID. Inferred by name match; IP-only entries do not resolve to a Computer. Tradecraft: Marat Nigmatullin (FalconForce), SO-CON 2026.",
+      "is_traversable": false
     },
     {
       "name": "CyberArk_CanApprove",
@@ -175,7 +193,8 @@
       "principal_kinds": [
         "CyberArk_User",
         "CyberArk_Group",
-        "CyberArk_Account"
+        "CyberArk_Account",
+        "CyberArk_Application"
       ]
     }
   ],
