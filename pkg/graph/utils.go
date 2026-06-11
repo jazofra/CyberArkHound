@@ -334,3 +334,23 @@ var DualControlPermissions = map[string]bool{
 	"requestsauthorizationlevel1": true, // Can approve L1 access requests
 	"requestsauthorizationlevel2": true, // Can approve L2 access requests
 }
+
+// ReconcileHijackPermissions are the safe permissions that let a principal
+// introduce or take control of an account on a platform. Combined with a
+// platform that defines a privileged reconcile account, these enable the
+// reconcile-account hijack (Nigmatullin, SO-CON 2026): create/redirect an
+// account so the CPM resets a chosen target using the reconcile credential.
+var ReconcileHijackPermissions = map[string]bool{
+	"addaccounts": true, // Create a new (malicious) account on the platform
+	"managesafe":  true, // Broad safe control, superset of account management
+}
+
+// AccountManagementPermissions is the broader set of account-management
+// permissions recorded for context on reconcile-hijack edges.
+var AccountManagementPermissions = map[string]bool{
+	"addaccounts":                            true,
+	"updateaccountcontent":                   true,
+	"updateaccountproperties":                true,
+	"initiatecpmaccountmanagementoperations": true,
+	"managesafe":                             true,
+}

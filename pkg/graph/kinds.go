@@ -26,6 +26,7 @@ var EdgeKinds = []string{
 	"CyberArk_HasAccessTo",
 	"CyberArk_CanRetrieveViaCCP",
 	"CyberArk_CCPAllowedFrom",
+	"CyberArk_CanHijackViaReconcile",
 	"CyberArk_CanGrantAccessTo",
 	"CyberArk_CanApprove",
 	"CyberArk_MemberOf",

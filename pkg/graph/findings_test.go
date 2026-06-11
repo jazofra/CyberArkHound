@@ -60,3 +60,51 @@ func TestComputeFindings_CleanEnvironment(t *testing.T) {
 		t.Errorf("expected no findings for a clean environment, got %+v", fs)
 	}
 }
+
+func TestComputeFindings_ReconcileHijackAndPSMBreakout(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.WarnLevel)
+
+	platforms := []models.Platform{{
+		General: models.PlatformGeneral{ID: "WinDomain", Name: "WinDomain"},
+		SessionManagement: models.PlatformSessionManagement{
+			PSMServerID: "PSM1",
+			RequirePrivilegedSessionMonitoringAndIsolation: false,
+			RecordAndSaveSessionActivity:                   false,
+		},
+	}}
+	safes := []models.Safe{
+		{SafeName: "Prod", SafeUrlId: "Prod", ManagingCPM: "PasswordManager"},
+		{SafeName: "Admin", SafeUrlId: "Admin", ManagingCPM: "PasswordManager"},
+	}
+	accounts := []models.Account{
+		{ID: "acc1", UserName: "svc", SafeName: "Prod", PlatformID: "WinDomain"},
+		{ID: "recon1", UserName: "da-reconcile", SafeName: "Admin", PlatformID: "WinDomain"},
+	}
+	members := []models.SafeMember{{
+		MemberName: "attacker", MemberType: "user", SafeName: "Prod",
+		Permissions: map[string]interface{}{"addAccounts": true},
+	}}
+	linked := map[string][]models.LinkedAccount{
+		"acc1": {{Name: "reconcile", AccountID: "recon1", SafeName: "Admin", ExtraPassID: 3}},
+	}
+
+	og, _ := BuildOpenGraph(BuildInput{
+		Safes:          safes,
+		SafeMembers:    members,
+		Accounts:       accounts,
+		PVWATag:        "PVWA",
+		Platforms:      platforms,
+		LinkedAccounts: linked,
+		LogLevel:       "WARNING",
+	}, logger)
+
+	fs := ComputeFindings(og)
+	if f := findingByID(fs, "RECONCILE_HIJACK_EXPOSURE"); f == nil || f.Count != 1 {
+		t.Errorf("expected RECONCILE_HIJACK_EXPOSURE count=1, got %v", f)
+	}
+	// acc1 and recon1 both use the PSM-routed, unmonitored platform.
+	if f := findingByID(fs, "PSM_BREAKOUT_EXPOSURE"); f == nil || f.Count != 2 {
+		t.Errorf("expected PSM_BREAKOUT_EXPOSURE count=2, got %v", f)
+	}
+}

@@ -69,6 +69,7 @@ func ComputeFindings(og *OpenGraph) []Finding {
 		defaultCCPApps    int
 		wildcardPlatforms int
 		safesNoCPM        int
+		psmBreakout       int
 	)
 
 	for _, n := range og.Nodes {
@@ -88,16 +89,32 @@ func ComputeFindings(og *OpenGraph) []Finding {
 			if stringProp(n.Properties, "managingCPM") == "" {
 				safesNoCPM++
 			}
+		case nodeHasKind(n, "CyberArk_Account"):
+			// PSM-breakout exposure: an account routed through a PSM server whose
+			// platform has session isolation OR recording disabled — a quieter /
+			// easier target for escaping the brokered session. Only count when the
+			// platform data was present (the bool property exists and is false).
+			if boolProp(n.Properties, "managedByPSM") {
+				mon, monOK := n.Properties["sessionMonitoringEnabled"].(bool)
+				rec, recOK := n.Properties["sessionRecordingEnabled"].(bool)
+				if (monOK && !mon) || (recOK && !rec) {
+					psmBreakout++
+				}
+			}
 		}
 	}
 
 	// Edge-derived findings.
 	ccpUnrestrictedRetrieval := 0
+	reconcileHijack := 0
 	for _, e := range og.InternalEdges {
-		if e.Kind == "CyberArk_CanRetrieveViaCCP" &&
-			boolProp(e.Props, "canRetrievePassword") &&
-			boolProp(e.Props, "appIsUnrestricted") {
-			ccpUnrestrictedRetrieval++
+		switch e.Kind {
+		case "CyberArk_CanRetrieveViaCCP":
+			if boolProp(e.Props, "canRetrievePassword") && boolProp(e.Props, "appIsUnrestricted") {
+				ccpUnrestrictedRetrieval++
+			}
+		case "CyberArk_CanHijackViaReconcile":
+			reconcileHijack++
 		}
 	}
 
@@ -129,6 +146,20 @@ func ComputeFindings(og *OpenGraph) []Finding {
 			Severity: "High",
 			Count:    wildcardPlatforms,
 			Detail:   "Platforms whose AllowedSafes matches any safe can have their reconcile/logon accounts attached to unexpected safes, broadening the blast radius of a platform compromise.",
+		},
+		{
+			ID:       "RECONCILE_HIJACK_EXPOSURE",
+			Title:    "Reconcile-account hijack paths",
+			Severity: "High",
+			Count:    reconcileHijack,
+			Detail:   "Principal->reconcile-account paths where a principal with addAccounts/manageSafe can coerce the CPM into using a privileged reconcile account to reset a chosen target's password (CyberArk_CanHijackViaReconcile).",
+		},
+		{
+			ID:       "PSM_BREAKOUT_EXPOSURE",
+			Title:    "PSM-routed accounts without session isolation/recording",
+			Severity: "Medium",
+			Count:    psmBreakout,
+			Detail:   "Accounts brokered by a PSM server whose platform has session isolation or recording disabled — a quieter and easier target for breaking out of the published session to reach the PSM host and the credentials it brokers.",
 		},
 		{
 			ID:       "SAFE_NO_CPM",

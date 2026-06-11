@@ -542,6 +542,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 	accountsBySafe := make(map[string][]string)  // safeName -> []accountNodeIDs
 	accountsByID := make(map[string]string)      // accountID -> accountNodeID
 	accountPlatformID := make(map[string]string) // accountNodeID -> platformID (lowercase)
+	accountIDToSafe := make(map[string]string)   // accountID -> safeName (for reconcile-hijack mapping)
 
 	logger.Infof("Processing %d accounts...", len(accounts))
 	for idx, a := range accounts {
@@ -586,6 +587,22 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			"lastModifiedBy":             a.LastModifiedBy,
 		}
 
+		// Annotate the account with the PSM session-monitoring posture inherited
+		// from its platform (used by the PSM-breakout-exposure finding). Only set
+		// when platform data was available so absence is distinguishable from "off".
+		if a.PlatformID != "" {
+			platID := strings.ToLower(a.PlatformID)
+			if mon, ok := platformSessionMonitoring[platID]; ok {
+				props["sessionMonitoringEnabled"] = mon
+			}
+			if rec, ok := platformSessionRecording[platID]; ok {
+				props["sessionRecordingEnabled"] = rec
+			}
+			if _, ok := platformPSMServerID[platID]; ok {
+				props["managedByPSM"] = true
+			}
+		}
+
 		// Add platform account properties if present
 		if len(a.PlatformAccountProperties) > 0 {
 			props["platformAccountProperties"] = SanitizeProperties(map[string]interface{}{"props": a.PlatformAccountProperties})["props"]
@@ -603,6 +620,9 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		})
 
 		accountsByID[a.ID] = accountNodeID
+		if a.SafeName != "" {
+			accountIDToSafe[a.ID] = a.SafeName
+		}
 
 		// Track account's platform for dual control determination
 		if a.PlatformID != "" {
@@ -850,6 +870,17 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 	userSafePerms := make(map[string][]map[string]interface{})
 	groupSafePerms := make(map[string][]map[string]interface{})
 
+	// Track principals who can introduce or control accounts in each safe. These
+	// are the candidates for reconcile-account hijack: with addAccounts/manageSafe
+	// on a safe whose platform has a reconcile account, a principal can create or
+	// redirect an account so the CPM uses the (privileged) reconcile account
+	// against a target of their choosing (Nigmatullin, SO-CON 2026).
+	type reconcileManager struct {
+		nodeID string
+		perms  []string
+	}
+	safeManagers := make(map[string][]reconcileManager) // safeName -> principals with account-management rights
+
 	for idx, sm := range safeMembers {
 		if (idx+1)%memberInterval == 0 || idx+1 == len(safeMembers) {
 			logger.Infof("  Processed %d/%d safe members (%.1f%%)", idx+1, len(safeMembers), float64(idx+1)/float64(len(safeMembers))*100)
@@ -987,6 +1018,8 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		accessWithoutConfirmation := false
 		canApproveL1 := false
 		canApproveL2 := false
+		canManageAccounts := false
+		mgmtPermNames := make([]string, 0)
 
 		for normPerm := range normalizedPerms {
 			if AccountAccessPermissions[normPerm] {
@@ -994,6 +1027,12 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			}
 			if EscalationPermissions[normPerm] {
 				canGrantAccess = true
+			}
+			if ReconcileHijackPermissions[normPerm] {
+				canManageAccounts = true
+			}
+			if AccountManagementPermissions[normPerm] {
+				mgmtPermNames = append(mgmtPermNames, normPerm)
 			}
 			switch normPerm {
 			case "accesswithoutconfirmation":
@@ -1003,6 +1042,15 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			case "requestsauthorizationlevel2":
 				canApproveL2 = true
 			}
+		}
+
+		// Record principals able to introduce/control accounts in this safe so
+		// reconcile-hijack edges can be built once linked-account data is processed.
+		if canManageAccounts {
+			safeManagers[sm.SafeName] = append(safeManagers[sm.SafeName], reconcileManager{
+				nodeID: memberNodeID,
+				perms:  mgmtPermNames,
+			})
 		}
 
 		// Store safe permission details for node properties
@@ -1273,6 +1321,55 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		}
 
 		logger.Infof("Created %d CyberArk_LinkedTo edges from linked account data", linkedEdgeCount)
+
+		// Build CyberArk_CanHijackViaReconcile edges (Principal → reconcile account).
+		//
+		// Tradecraft reference: Marat Nigmatullin (FalconForce), SO-CON 2026 —
+		// "Hijacking accounts under a platform with a Reconcile Account". When a
+		// principal can introduce or control accounts in a safe (addAccounts /
+		// manageSafe), and that safe holds accounts whose platform defines a
+		// privileged reconcile account, the principal can create or redirect an
+		// account so the CPM uses that reconcile account to reset a target of
+		// their choosing. The reconcile account is the privileged credential being
+		// wielded, so the edge points to it; its own downstream edges
+		// (CyberArk_SyncsToADUser, etc.) bound the blast radius.
+		reconcileHijackEdges := 0
+		for accountID, links := range linkedAccounts {
+			sourceSafe := accountIDToSafe[accountID]
+			if sourceSafe == "" {
+				continue
+			}
+			managers := safeManagers[sourceSafe]
+			if len(managers) == 0 {
+				continue
+			}
+			for _, link := range links {
+				if link.ExtraPassID != 3 { // only reconcile accounts
+					continue
+				}
+				reconcileNodeID := accountsByID[link.AccountID]
+				if reconcileNodeID == "" && link.AccountID != "" {
+					reconcileNodeID = strings.ToUpper(fmt.Sprintf("caaccount-%s-%s", link.AccountID, pvwaTag))
+				}
+				if reconcileNodeID == "" {
+					continue
+				}
+				for _, mgr := range managers {
+					og.AddEdge("CyberArk_CanHijackViaReconcile", mgr.nodeID, reconcileNodeID,
+						"id", "id", map[string]interface{}{
+							"viaSafe":     sourceSafe,
+							"permissions": mgr.perms,
+							"linkType":    "reconcile",
+							"linkName":    link.Name,
+							"inferred":    true,
+						}, false)
+					reconcileHijackEdges++
+				}
+			}
+		}
+		if reconcileHijackEdges > 0 {
+			logger.Infof("Created %d CyberArk_CanHijackViaReconcile edges", reconcileHijackEdges)
+		}
 	}
 
 	// Process PSM Servers (if provided)
