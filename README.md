@@ -47,6 +47,7 @@ The resulting `cyberark_export.json` file can be directly imported into BloodHou
 - **Platform-based grouping**: Optional CyberArk_Platform nodes and CyberArk_UsesPlatform edges for shared attack surface analysis
 - **PSM infrastructure mapping**: Optional CyberArk_PSMServer and CyberArk_ConnectionComponent nodes with edges showing which PSM servers and connection protocols (RDP, SSH, etc.) each platform and account uses; CyberArk_PSMServerHostedOn external edges link PSM servers to their AD Computer objects
 - **CCP / AIMWebService attack-surface mapping**: Optional CyberArk_Application nodes (AppIDs) with CyberArk_CanRetrieveViaCCP edges showing which credentials each Central Credential Provider application can pull via the AIMWebService REST API. Applications are flagged when they have **no authentication restrictions** (`isUnrestricted`) or are the **default AIMWebService AppID** (`isDefaultCCPApp`), surfacing the "shortest path to privileged accounts" tradecraft documented by [Marat Nigmatullin (FalconForce)](#tradecraft-reference) at SO-CON 2026
+- **Reconcile-account hijack mapping**: CyberArk_CanHijackViaReconcile edges (principal → privileged reconcile account) show who can coerce the CPM into resetting a target's password via a platform's reconcile account — the second attack vector from [Nigmatullin's SO-CON 2026 talk](#tradecraft-reference)
 - **Dual control awareness**: Per-account `requiresApproval` derived from platform Master Policy settings (with approver-presence fallback); CyberArk_CanApprove edges identify who can authorize dual-controlled access
 - **Master Policy exception detection**: Flags on platform nodes identify deviations from Master Policy defaults for audit and compliance
 - **Resilient platform data**: Automatic fallback to `/API/Platforms/Targets` when `/API/Platforms/` is unavailable, preserving all security-relevant properties
@@ -277,6 +278,7 @@ RETURN u.name, s.safeName
 | `CyberArk_CanRetrieveViaCCP` | Application → Account | Application safe member `useAccounts`/`retrieveAccounts` + `GET /WebServices/PIMServices.svc/Applications` | CCP/AIMWebService credential retrieval via a single GET request; `appIsUnrestricted` and `isDefaultCCPApp` flag the highest-risk AppIDs ([Nigmatullin, SO-CON 2026](#tradecraft-reference)) |
 | `CyberArk_CCPAllowedFrom` | Application → AD Computer | Application `machineAddress` authentications (Allowed Machines) | External edge — which hosts may present the AppID to CCP; `machineIsOnlyRestriction` flags when landing on the host is sufficient to wield the AppID |
 | `CyberArk_CanGrantAccessTo` | User/Group → Safe | Safe member `manageSafe`/`manageSafeMembers` | Privilege escalation — can grant themselves account access |
+| `CyberArk_CanHijackViaReconcile` | User/Group → Account | Safe member `addAccounts`/`manageSafe` + reconcile linked account (`GET /API/Accounts/{id}/LinkedAccounts`) | Privilege escalation — can coerce the CPM to reset a target's password using a privileged reconcile account ([Nigmatullin, SO-CON 2026](#tradecraft-reference)) |
 | `CyberArk_CanApprove` | User/Group → Safe | Safe member `requestsAuthorizationLevel1`/`Level2` | Can approve dual-controlled access requests (L1/L2) |
 | `CyberArk_UsedAccount` | User → Account | `GET /API/Accounts/{id}/Activities` | Actual usage audit trail — who really accessed what |
 | `CyberArk_LinkedTo` | Account → Account | `GET /API/Accounts/{id}/LinkedAccounts` | Logon/reconcile/enable credential chains — compromising one propagates to all dependents |
@@ -678,6 +680,8 @@ At the end of each run, CyberArkHound logs a **Security Findings** summary deriv
 | Credentials retrievable by unrestricted AppIDs via CCP | Critical | `CyberArk_CanRetrieveViaCCP` (`appIsUnrestricted` + `canRetrievePassword`) |
 | Default AIMWebService application present | High | `CyberArk_Application.isDefaultCCPApp` |
 | Platforms with wildcard AllowedSafes (`.*`) | High | `CyberArk_Platform.allowedSafesIsWildcard` |
+| Reconcile-account hijack paths | High | `CyberArk_CanHijackViaReconcile` edges |
+| PSM-routed accounts without session isolation/recording | Medium | `CyberArk_Account.managedByPSM` + `sessionMonitoringEnabled`/`sessionRecordingEnabled` |
 | Safes without CPM management | Medium | `CyberArk_Safe.managingCPM` empty |
 
 Only findings with a non-zero count are shown. For full coverage, run with `--include-applications` and `--include-platforms` (both default-on). The CCP-related findings map the tradecraft documented by [Marat Nigmatullin (SO-CON 2026)](#tradecraft-reference).
@@ -699,6 +703,15 @@ MATCH (s:CyberArk_Safe) WHERE s.managingCPM IS NULL OR s.managingCPM = "" RETURN
 // Hosts from which an unrestricted-by-machine AppID can be wielded
 MATCH (app:CyberArk_Application)-[r:CyberArk_CCPAllowedFrom {machineIsOnlyRestriction: true}]->(c:Computer)
 RETURN c.name, app.name
+
+// Reconcile-account hijack paths (principal -> privileged reconcile account)
+MATCH (p)-[r:CyberArk_CanHijackViaReconcile]->(a:CyberArk_Account)
+RETURN p.name, r.viaSafe, a.name
+
+// PSM-routed accounts where session isolation/recording is off (breakout exposure)
+MATCH (a:CyberArk_Account {managedByPSM: true})
+WHERE a.sessionMonitoringEnabled = false OR a.sessionRecordingEnabled = false
+RETURN a.name, a.safeName, a.sessionMonitoringEnabled, a.sessionRecordingEnabled
 ```
 
 > **Note on `relationship_findings` in `extension/schema.json`:** BloodHound's findings/remediation are an Enterprise-only feature and the exact `relationship_findings` schema shape is not publicly documented, so that array is intentionally left empty rather than populated with an unverified structure that could break ingestion. The findings above are computed and surfaced at collection time instead.
@@ -773,6 +786,40 @@ The three CCP findings (`CCP_UNRESTRICTED_APP`, `CCP_UNRESTRICTED_RETRIEVAL`, `C
   3. Trigger reconciliation (`POST /API/Accounts/{id}/Reconcile`) and observe — in the account activity — that the platform's privileged reconcile account performed the action. That confirms the privileged account can be reached via this platform from a safe you control.
 - **Remediation:** set `AllowedSafes` to an explicit list/regex scoped to the safes the platform is meant to manage.
 
+#### `RECONCILE_HIJACK_EXPOSURE` — Reconcile-account hijack paths (High)
+
+- **What it is:** `CyberArk_CanHijackViaReconcile` edges — a principal who holds `addAccounts` or `manageSafe` on a safe (`viaSafe`) whose platform defines a privileged **reconcile** account (the target of the edge). This maps the talk's *"Hijacking accounts under a platform with a Reconcile Account"* technique.
+- **Why it works:** the reconcile account is the credential the CPM uses to **reset** an account's password when it falls out of sync — it is typically highly privileged (often a domain admin). If you can create or redirect an account on that platform and point it at a victim, the CPM will use the reconcile account to set the **victim's** password to a value stored in the Vault, which you then retrieve. You never need the reconcile account's own password; you borrow its privileges.
+- **Exploitable when:** you can add or modify an account on the reconcile-enabled platform (the `permissions` edge property shows which rights you hold), the platform auto-manages or you can trigger reconciliation (`initiateCPMAccountManagementOperations`), and the reconcile account actually has rights over the victim (follow the reconcile account's `CyberArk_SyncsToADUser` / `CyberArk_CanConnect` edges to gauge reach).
+- **How to test (intrusive — lab / change-controlled only):**
+  ```bash
+  # 1. Create an account on the reconcile-enabled platform, addressed at the victim:
+  curl -s -X POST "https://<pvwa>/PasswordVault/API/Accounts" -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d '{"safeName":"<viaSafe>","platformId":"<reconcilePlatform>","userName":"<victim>","address":"<victim-host>","secretType":"password"}'
+
+  # 2. Trigger reconciliation (CPM uses the privileged reconcile account):
+  curl -s -X POST "https://<pvwa>/PasswordVault/API/Accounts/<accountId>/Reconcile" -H "Authorization: Bearer $TOKEN"
+
+  # 3. Retrieve the victim's now-reset password:
+  curl -s -X POST "https://<pvwa>/PasswordVault/API/Accounts/<accountId>/Password/Retrieve" \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}'
+  ```
+- **Destructive — heed this:** step 2 **resets the victim's password**, which breaks legitimate use of that account and is highly visible (Windows 4724/4738 reset events; CyberArk audit). Only run against a throwaway victim in a lab or under explicit change control.
+- **Remediation:** scope `AllowedSafes` on reconcile-enabled platforms, restrict `addAccounts`/`manageSafe` on safes those platforms manage, and require dual control on reconcile operations.
+
+#### `PSM_BREAKOUT_EXPOSURE` — PSM-routed accounts without session isolation/recording (Medium)
+
+- **What it is:** accounts brokered by a PSM server (`managedByPSM: true`) whose platform has **session isolation disabled** (`sessionMonitoringEnabled: false`) and/or **recording disabled** (`sessionRecordingEnabled: false`). This is the exposure surface for the talk's *"Platform breakouts to PSM servers"* (HTML5 gateway) vector.
+- **Why it matters:** PSM is meant to isolate the user from the target and the credential, and to record the session. When isolation is off, the connection may be a *raw* RDP/SSH (the credential is more exposed and the session is easier to break out of to reach the PSM host); when recording is off, a breakout attempt is far quieter. Compromising the PSM host yields access to **every** credential it brokers.
+- **Important scope note:** the breakout itself is a **host-level** technique — escaping the published RDP/HTML5 application to get code execution on the PSM server. CyberArkHound maps **where the exposure is** (which accounts route through PSM, via which server, with what monitoring), not the breakout exploit. Use the [PSM infrastructure edges](#edge-types-summary) (`CyberArk_ManagedByPSM`, `CyberArk_UsesPSMServer`, `CyberArk_PSMServerHostedOn`) to identify the target PSM host and its underlying AD computer.
+- **Exploitable when:** you have `useAccounts` (PSM-connect) on one of these accounts, the connection component is interactive (RDP/SSH/HTML5 — see `CyberArk_HasConnectionComponent`), and the PSM host is reachable/escapable. Prioritize accounts whose PSM host (`CyberArk_PSMServerHostedOn` → Computer) is itself a high-value or weakly-hardened box.
+- **How to test:**
+  1. From the graph, pick a `managedByPSM` account with monitoring/recording off that you can `useAccounts` on, and note its PSM server (`CyberArk_ManagedByPSM`) and host (`CyberArk_PSMServerHostedOn`).
+  2. Initiate the PSM session (`POST /API/Accounts/{id}/PSMConnect`) and attempt standard published-app escape techniques **within engagement scope** to land on the PSM host.
+  3. Success = code execution on the PSM server, from which brokered credentials/recordings are reachable.
+- **Remediation:** enable *Require privileged session monitoring and isolation* and *Record and save session activity* on the platform (Master Policy), and harden the PSM hosts against published-app breakout.
+
 #### `SAFE_NO_CPM` — Safes without CPM management (Medium)
 
 - **What it is:** a safe with no managing CPM (`managingCPM` empty), so its credentials have **no automatic rotation**.
@@ -830,6 +877,7 @@ Exports are **deterministic**: nodes are written sorted by `id` and edges by a s
 - **Management**: `automaticManagementEnabled`, `manualManagementReason`
 - **Timestamps**: `createdTime`, `lastModifiedTime`, `lastVerifiedTime`, `lastReconciledTime`, `categoryModificationTime`
 - **CPM**: `lastModifiedBy`
+- **PSM posture** (set when platform data is available): `managedByPSM` (account is brokered by a PSM server), `sessionMonitoringEnabled`, `sessionRecordingEnabled` — used by the `PSM_BREAKOUT_EXPOSURE` finding
 - **Extended**: `platformAccountProperties` (JSON), `secretManagement` (JSON)
 
 #### CyberArk_Platform Properties (requires `--include-platforms`)
@@ -951,6 +999,8 @@ flowchart TD
  CyberArk_User == CyberArk_UsedAccount<br>(actual usage) ==> CyberArk_Account
  CyberArk_User -. CyberArk_CanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArk_Safe["fa:fa-vault CyberArk_Safe"]
  CyberArk_Group -. CyberArk_CanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArk_Safe
+ CyberArk_User -. CyberArk_CanHijackViaReconcile<br>(addAccounts/manageSafe) .-> CyberArk_Account
+ CyberArk_Group -. CyberArk_CanHijackViaReconcile<br>(addAccounts/manageSafe) .-> CyberArk_Account
  CyberArk_User -. CyberArk_CanApprove<br>(dual control) .-> CyberArk_Safe
  CyberArk_Group -. CyberArk_CanApprove<br>(dual control) .-> CyberArk_Safe
  CyberArk_Safe -- CyberArk_Contains --> CyberArk_Account
@@ -1149,7 +1199,15 @@ The CCP / AIMWebService attack-surface mapping (`CyberArk_Application` nodes, `C
 - Talk recording: <https://www.youtube.com/watch?v=AsKCTlSA15M>
 - Author: <https://falconforce.nl> · `marat@falconforce.nl` · [@_mnigma_](https://x.com/_mnigma_)
 
-The talk itself credits Lee Chagolla-Christensen (@SpecterOps) and the YouTube channels @NetSec and @cbyrad, and references CyberArkHound as a complementary tool. Full credit for the CCP/AIMWebService and `AllowedSafes=.*` tradecraft mapped here belongs to Marat Nigmatullin.
+**Coverage of the talk's three attack vectors:**
+
+| Talk vector | How CyberArkHound maps it |
+|-------------|---------------------------|
+| **CCP / AIMWebService API abuse** | `CyberArk_Application` nodes + `CyberArk_CanRetrieveViaCCP` / `CyberArk_CCPAllowedFrom` edges; `isUnrestricted` / `isDefaultCCPApp` flags; `CCP_UNRESTRICTED_APP`, `CCP_UNRESTRICTED_RETRIEVAL`, `CCP_DEFAULT_AIMWEBSERVICE` findings |
+| **Reconcile-account hijack (CPM)** | `CyberArk_CanHijackViaReconcile` edges (principal → privileged reconcile account); `CyberArk_LinkedTo {linkType:"reconcile"}`; platform `allowedSafesIsWildcard` flag; `RECONCILE_HIJACK_EXPOSURE`, `PLATFORM_WILDCARD_ALLOWEDSAFES` findings |
+| **PSM platform breakout (HTML5 gateway)** | PSM infrastructure edges (`CyberArk_ManagedByPSM`, `CyberArk_UsesPSMServer`, `CyberArk_HasConnectionComponent`, `CyberArk_PSMServerHostedOn`); account `managedByPSM` / `sessionMonitoringEnabled` / `sessionRecordingEnabled` posture; `PSM_BREAKOUT_EXPOSURE` finding. *Exposure mapping only — the host-level breakout exploit is out of scope for a graph collector.* |
+
+The talk itself credits Lee Chagolla-Christensen (@SpecterOps) and the YouTube channels @NetSec and @cbyrad, and references CyberArkHound as a complementary tool. Full credit for the CCP/AIMWebService, reconcile-account hijack, PSM-breakout, and `AllowedSafes=.*` tradecraft mapped here belongs to Marat Nigmatullin.
 
 Relevant CyberArk documentation:
 - [Call the CCP Web Service using REST](https://docs.cyberark.com/credential-providers/latest/en/content/ccp/calling-the-web-service-using-rest.htm)

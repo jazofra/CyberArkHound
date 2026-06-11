@@ -1364,3 +1364,121 @@ func TestApplication_CCPAllowedFrom_IPDetection(t *testing.T) {
 		t.Errorf("IP literal should set targetIsIP=true, got %v", edges[0].Props["targetIsIP"])
 	}
 }
+
+// --- Reconcile-account hijack tests (Nigmatullin, SO-CON 2026) ---
+
+func buildReconcileGraph(safes []models.Safe, members []models.SafeMember, accounts []models.Account, linked map[string][]models.LinkedAccount) *OpenGraph {
+	logger := logrus.New()
+	logger.SetLevel(logrus.WarnLevel)
+	og, _ := BuildOpenGraph(BuildInput{
+		Safes:          safes,
+		SafeMembers:    members,
+		Accounts:       accounts,
+		PVWATag:        "PVWA",
+		LinkedAccounts: linked,
+		LogLevel:       "WARNING",
+	}, logger)
+	return og
+}
+
+func TestReconcileHijack_Edge(t *testing.T) {
+	safes := []models.Safe{{SafeName: "Prod", SafeUrlId: "Prod"}, {SafeName: "Admin", SafeUrlId: "Admin"}}
+	accounts := []models.Account{
+		{ID: "acc1", UserName: "svc", SafeName: "Prod", PlatformID: "WinDomain"},
+		{ID: "recon1", UserName: "da-reconcile", SafeName: "Admin", PlatformID: "WinDomain"},
+	}
+	members := []models.SafeMember{{
+		MemberName: "attacker", MemberType: "user", SafeName: "Prod",
+		Permissions: map[string]interface{}{"addAccounts": true, "listAccounts": true},
+	}}
+	linked := map[string][]models.LinkedAccount{
+		"acc1": {{Name: "reconcile", AccountID: "recon1", SafeName: "Admin", ExtraPassID: 3}},
+	}
+
+	og := buildReconcileGraph(safes, members, accounts, linked)
+	edges := edgesByKind(og, "CyberArk_CanHijackViaReconcile")
+	if len(edges) != 1 {
+		t.Fatalf("expected 1 CyberArk_CanHijackViaReconcile edge, got %d", len(edges))
+	}
+	e := edges[0]
+	if e.Start.Value != "CAUSER-ATTACKER-PVWA" || e.End.Value != "CAACCOUNT-RECON1-PVWA" {
+		t.Errorf("unexpected endpoints: %s -> %s", e.Start.Value, e.End.Value)
+	}
+	if e.Props["viaSafe"] != "Prod" || e.Props["linkType"] != "reconcile" {
+		t.Errorf("unexpected props: %+v", e.Props)
+	}
+}
+
+func TestReconcileHijack_NoManagePermission(t *testing.T) {
+	safes := []models.Safe{{SafeName: "Prod", SafeUrlId: "Prod"}}
+	accounts := []models.Account{
+		{ID: "acc1", UserName: "svc", SafeName: "Prod", PlatformID: "WinDomain"},
+		{ID: "recon1", UserName: "da-reconcile", SafeName: "Admin", PlatformID: "WinDomain"},
+	}
+	// Only retrieve/list — cannot introduce or control accounts.
+	members := []models.SafeMember{{
+		MemberName: "reader", MemberType: "user", SafeName: "Prod",
+		Permissions: map[string]interface{}{"retrieveAccounts": true, "listAccounts": true},
+	}}
+	linked := map[string][]models.LinkedAccount{
+		"acc1": {{Name: "reconcile", AccountID: "recon1", SafeName: "Admin", ExtraPassID: 3}},
+	}
+
+	og := buildReconcileGraph(safes, members, accounts, linked)
+	if edges := edgesByKind(og, "CyberArk_CanHijackViaReconcile"); len(edges) != 0 {
+		t.Errorf("expected no reconcile-hijack edges without addAccounts/manageSafe, got %d", len(edges))
+	}
+}
+
+func TestReconcileHijack_OnlyReconcileLinkType(t *testing.T) {
+	// A logon link (ExtraPassID=1) must NOT produce a hijack edge.
+	safes := []models.Safe{{SafeName: "Prod", SafeUrlId: "Prod"}}
+	accounts := []models.Account{
+		{ID: "acc1", UserName: "svc", SafeName: "Prod", PlatformID: "WinDomain"},
+		{ID: "logon1", UserName: "logon", SafeName: "Admin", PlatformID: "WinDomain"},
+	}
+	members := []models.SafeMember{{
+		MemberName: "attacker", MemberType: "user", SafeName: "Prod",
+		Permissions: map[string]interface{}{"manageSafe": true},
+	}}
+	linked := map[string][]models.LinkedAccount{
+		"acc1": {{Name: "logon", AccountID: "logon1", SafeName: "Admin", ExtraPassID: 1}},
+	}
+
+	og := buildReconcileGraph(safes, members, accounts, linked)
+	if edges := edgesByKind(og, "CyberArk_CanHijackViaReconcile"); len(edges) != 0 {
+		t.Errorf("expected no hijack edge for a logon link, got %d", len(edges))
+	}
+}
+
+func TestPSMBreakout_AccountProperties(t *testing.T) {
+	platforms := []models.Platform{{
+		General: models.PlatformGeneral{ID: "WinDomain", Name: "WinDomain"},
+		SessionManagement: models.PlatformSessionManagement{
+			PSMServerID: "PSM1",
+			RequirePrivilegedSessionMonitoringAndIsolation: false,
+			RecordAndSaveSessionActivity:                   false,
+		},
+	}}
+	accounts := []models.Account{{ID: "acc1", UserName: "svc", SafeName: "Prod", PlatformID: "WinDomain"}}
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.WarnLevel)
+	og, _ := BuildOpenGraph(BuildInput{
+		Accounts:  accounts,
+		PVWATag:   "PVWA",
+		Platforms: platforms,
+		LogLevel:  "WARNING",
+	}, logger)
+
+	acc := og.Nodes["CAACCOUNT-ACC1-PVWA"]
+	if acc == nil {
+		t.Fatalf("expected account node")
+	}
+	if acc.Properties["managedByPSM"] != true {
+		t.Errorf("expected managedByPSM=true, got %v", acc.Properties["managedByPSM"])
+	}
+	if acc.Properties["sessionMonitoringEnabled"] != false {
+		t.Errorf("expected sessionMonitoringEnabled=false, got %v", acc.Properties["sessionMonitoringEnabled"])
+	}
+}

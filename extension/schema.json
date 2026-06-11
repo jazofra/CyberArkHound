@@ -101,6 +101,11 @@
       "is_traversable": false
     },
     {
+      "name": "CyberArk_CanHijackViaReconcile",
+      "description": "The source principal can introduce or control accounts in a safe (addAccounts/manageSafe) whose platform defines the target privileged reconcile account, and can therefore coerce the CPM into using that reconcile account to reset an account of the attacker's choosing. Privilege escalation; the reconcile account's own edges bound the blast radius. Tradecraft: Marat Nigmatullin (FalconForce), SO-CON 2026.",
+      "is_traversable": true
+    },
+    {
       "name": "CyberArk_CanApprove",
       "description": "The source user or group can approve dual-control access requests for accounts in the target safe (requestsAuthorizationLevel1/Level2). Approval authority alone does not grant credential access, so this edge is not traversable.",
       "is_traversable": false
