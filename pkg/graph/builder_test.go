@@ -1147,13 +1147,25 @@ func TestCyberArk_Instance_RootNodeAndContainment(t *testing.T) {
 		contained[e.End.Value] = true
 	}
 
+	// Only the bounded set of top-level configuration objects (safes, platforms,
+	// PSM servers, connection components, applications) is directly contained.
 	for _, want := range []string{
-		"CAUSER-ALICE-PVWA",
-		"CAGROUP-ADMINS-PVWA",
 		"CASAFE-TESTSAFE-PVWA",
 	} {
 		if !contained[want] {
 			t.Errorf("expected CyberArk_InstanceContains edge to %s", want)
+		}
+	}
+
+	// Users and Groups must NOT be directly contained. In LDAP/AD-integrated
+	// vaults they can number in the millions, so they attach to the graph
+	// through membership and safe-permission edges instead.
+	for _, notWant := range []string{
+		"CAUSER-ALICE-PVWA",
+		"CAGROUP-ADMINS-PVWA",
+	} {
+		if contained[notWant] {
+			t.Errorf("%s should not be directly contained by the instance", notWant)
 		}
 	}
 
