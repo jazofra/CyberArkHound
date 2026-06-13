@@ -279,6 +279,59 @@ func SanitizeProperties(props map[string]interface{}) map[string]interface{} {
 	return sanitized
 }
 
+// mapBool extracts a boolean from a CyberArk sub-object (such as an account's
+// secretManagement map), tolerating the string/number encodings CyberArk
+// sometimes uses. The second return reports whether the key was present.
+func mapBool(m map[string]interface{}, key string) (bool, bool) {
+	if m == nil {
+		return false, false
+	}
+	v, ok := m[key]
+	if !ok {
+		return false, false
+	}
+	return asBool(v), true
+}
+
+// mapString extracts a string from a CyberArk sub-object. The second return
+// reports whether the key was present.
+func mapString(m map[string]interface{}, key string) (string, bool) {
+	if m == nil {
+		return "", false
+	}
+	v, ok := m[key]
+	if !ok {
+		return "", false
+	}
+	if s, ok := v.(string); ok {
+		return s, true
+	}
+	return fmt.Sprintf("%v", v), true
+}
+
+// mapFloat extracts a numeric value from a CyberArk sub-object. JSON numbers
+// decode to float64 in a map[string]interface{}, but other numeric encodings
+// are handled too. The second return reports whether the key was present and
+// numeric.
+func mapFloat(m map[string]interface{}, key string) (float64, bool) {
+	if m == nil {
+		return 0, false
+	}
+	switch v := m[key].(type) {
+	case float64:
+		return v, true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case json.Number:
+		f, err := v.Float64()
+		return f, err == nil
+	default:
+		return 0, false
+	}
+}
+
 // UnixToISO8601 converts Unix timestamp to ISO 8601 string
 func UnixToISO8601(timestamp float64) string {
 	t := time.Unix(int64(timestamp), 0)
