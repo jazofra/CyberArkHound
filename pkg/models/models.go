@@ -113,6 +113,13 @@ type Account struct {
 	SafeUrlId                  string                 `json:"safeUrlId"`
 	SecretType                 string                 `json:"secretType"`
 	PlatformAccountProperties  map[string]interface{} `json:"platformAccountProperties"`
+	// SecretManagement is the raw "secretManagement" object from the Gen2
+	// Accounts API. Its nested fields (automaticManagementEnabled,
+	// manualManagementReason, lastModifiedTime, lastVerifiedTime,
+	// lastReconciledTime, status) are the authoritative source — the API does
+	// NOT return them at the account top level. The graph builder derives the
+	// flat fields below from this object (the top-level tags only act as a
+	// fallback for API variants that flatten the structure).
 	SecretManagement           map[string]interface{} `json:"secretManagement"`
 	CreatedTime                float64                `json:"createdTime"`
 	LastModifiedTime           float64                `json:"lastModifiedTime"`

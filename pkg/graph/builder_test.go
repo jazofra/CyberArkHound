@@ -1482,3 +1482,97 @@ func TestPSMBreakout_AccountProperties(t *testing.T) {
 		t.Errorf("expected sessionMonitoringEnabled=false, got %v", acc.Properties["sessionMonitoringEnabled"])
 	}
 }
+
+// TestAccountSecretManagementNesting verifies that secret-management fields are
+// read from the nested "secretManagement" object returned by the Gen2 Accounts
+// API rather than from non-existent top-level fields. Regression test for the
+// case where the secretManagement extended property showed
+// automaticManagementEnabled=true while the flat attribute was false.
+func TestAccountSecretManagementNesting(t *testing.T) {
+	og := buildWithAccounts(
+		[]models.Account{{
+			ID:       "acc1",
+			UserName: "svc-admin",
+			SafeName: "TestSafe",
+			SecretManagement: map[string]interface{}{
+				"automaticManagementEnabled": true,
+				"lastModifiedTime":           float64(1700000000),
+				"lastVerifiedTime":           float64(1700000100),
+				"lastReconciledTime":         float64(1700000200),
+			},
+		}},
+		nil,
+	)
+
+	acc := og.Nodes["CAACCOUNT-ACC1-PVWA"]
+	if acc == nil {
+		t.Fatalf("expected account node")
+	}
+	if acc.Properties["automaticManagementEnabled"] != true {
+		t.Errorf("expected automaticManagementEnabled=true (from secretManagement), got %v", acc.Properties["automaticManagementEnabled"])
+	}
+	if acc.Properties["lastModifiedTime"] != float64(1700000000) {
+		t.Errorf("expected lastModifiedTime=1700000000 (from secretManagement), got %v", acc.Properties["lastModifiedTime"])
+	}
+	if acc.Properties["lastVerifiedTime"] != float64(1700000100) {
+		t.Errorf("expected lastVerifiedTime=1700000100 (from secretManagement), got %v", acc.Properties["lastVerifiedTime"])
+	}
+	if acc.Properties["lastReconciledTime"] != float64(1700000200) {
+		t.Errorf("expected lastReconciledTime=1700000200 (from secretManagement), got %v", acc.Properties["lastReconciledTime"])
+	}
+}
+
+// TestAccountSecretManagementManualReason verifies the manualManagementReason
+// string is also pulled from the nested secretManagement object.
+func TestAccountSecretManagementManualReason(t *testing.T) {
+	og := buildWithAccounts(
+		[]models.Account{{
+			ID:       "acc1",
+			UserName: "svc-admin",
+			SafeName: "TestSafe",
+			SecretManagement: map[string]interface{}{
+				"automaticManagementEnabled": false,
+				"manualManagementReason":     "[disabled by policy]",
+			},
+		}},
+		nil,
+	)
+
+	acc := og.Nodes["CAACCOUNT-ACC1-PVWA"]
+	if acc == nil {
+		t.Fatalf("expected account node")
+	}
+	if acc.Properties["automaticManagementEnabled"] != false {
+		t.Errorf("expected automaticManagementEnabled=false, got %v", acc.Properties["automaticManagementEnabled"])
+	}
+	if acc.Properties["manualManagementReason"] != "[disabled by policy]" {
+		t.Errorf("expected manualManagementReason from secretManagement, got %v", acc.Properties["manualManagementReason"])
+	}
+}
+
+// TestAccountSecretManagementTopLevelFallback verifies that when the API
+// flattens the fields (no secretManagement object), the top-level values are
+// still used.
+func TestAccountSecretManagementTopLevelFallback(t *testing.T) {
+	og := buildWithAccounts(
+		[]models.Account{{
+			ID:                         "acc1",
+			UserName:                   "svc-admin",
+			SafeName:                   "TestSafe",
+			AutomaticManagementEnabled: true,
+			LastModifiedTime:           float64(1700000000),
+		}},
+		nil,
+	)
+
+	acc := og.Nodes["CAACCOUNT-ACC1-PVWA"]
+	if acc == nil {
+		t.Fatalf("expected account node")
+	}
+	if acc.Properties["automaticManagementEnabled"] != true {
+		t.Errorf("expected automaticManagementEnabled=true (top-level fallback), got %v", acc.Properties["automaticManagementEnabled"])
+	}
+	if acc.Properties["lastModifiedTime"] != float64(1700000000) {
+		t.Errorf("expected lastModifiedTime=1700000000 (top-level fallback), got %v", acc.Properties["lastModifiedTime"])
+	}
+}

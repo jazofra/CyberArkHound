@@ -565,6 +565,33 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		}
 		accountName = StripAfterAt(accountName)
 
+		// CyberArk's Gen2 Accounts API nests the secret-management state inside the
+		// "secretManagement" object rather than at the account top level. Derive the
+		// effective values from that object, falling back to any top-level field for
+		// API variants that flatten it. Without this, booleans like
+		// automaticManagementEnabled always decode to the Go zero value (false) even
+		// when the secretManagement extended property clearly shows them as true.
+		automaticManagementEnabled := a.AutomaticManagementEnabled
+		if v, ok := mapBool(a.SecretManagement, "automaticManagementEnabled"); ok {
+			automaticManagementEnabled = v
+		}
+		manualManagementReason := a.ManualManagementReason
+		if v, ok := mapString(a.SecretManagement, "manualManagementReason"); ok {
+			manualManagementReason = v
+		}
+		lastModifiedTime := a.LastModifiedTime
+		if v, ok := mapFloat(a.SecretManagement, "lastModifiedTime"); ok {
+			lastModifiedTime = v
+		}
+		lastVerifiedTime := a.LastVerifiedTime
+		if v, ok := mapFloat(a.SecretManagement, "lastVerifiedTime"); ok {
+			lastVerifiedTime = v
+		}
+		lastReconciledTime := a.LastReconciledTime
+		if v, ok := mapFloat(a.SecretManagement, "lastReconciledTime"); ok {
+			lastReconciledTime = v
+		}
+
 		props := map[string]interface{}{
 			"id":                         accountNodeID,
 			"name":                       accountName,
@@ -578,12 +605,12 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			"status":                     a.Status,
 			"enabled":                    !a.Disabled,
 			"createdTime":                a.CreatedTime,
-			"lastModifiedTime":           a.LastModifiedTime,
-			"lastVerifiedTime":           a.LastVerifiedTime,
-			"lastReconciledTime":         a.LastReconciledTime,
+			"lastModifiedTime":           lastModifiedTime,
+			"lastVerifiedTime":           lastVerifiedTime,
+			"lastReconciledTime":         lastReconciledTime,
 			"categoryModificationTime":   a.CategoryModificationTime,
-			"automaticManagementEnabled": a.AutomaticManagementEnabled,
-			"manualManagementReason":     a.ManualManagementReason,
+			"automaticManagementEnabled": automaticManagementEnabled,
+			"manualManagementReason":     manualManagementReason,
 			"lastModifiedBy":             a.LastModifiedBy,
 		}
 
