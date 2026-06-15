@@ -3,8 +3,10 @@
 package exporter
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -39,20 +41,6 @@ func sortEdgesStable(edges []*graph.Edge) {
 		keys[e] = edgeSortKey(e)
 	}
 	sort.SliceStable(edges, func(i, j int) bool { return keys[edges[i]] < keys[edges[j]] })
-}
-
-type bloodhoundMetadata struct {
-	SourceKind string `json:"source_kind"`
-}
-
-type bloodhoundGraph struct {
-	Edges []map[string]interface{} `json:"edges"`
-	Nodes []map[string]interface{} `json:"nodes"`
-}
-
-type bloodhoundOutput struct {
-	Metadata bloodhoundMetadata `json:"metadata"`
-	Graph    bloodhoundGraph    `json:"graph"`
 }
 
 // buildEdgeDict serializes an edge to a BloodHound-compatible map, merging in EdgeInfo documentation
@@ -121,11 +109,89 @@ func ExportToBloodHoundJSON(og *graph.OpenGraph, outputFile string, logger *logr
 	sortEdgesStable(og.InternalEdges)
 	sortEdgesStable(og.ExternalEdges)
 
-	// Convert nodes to JSON array (sorted by ID for deterministic output).
-	nodesArray := make([]map[string]interface{}, 0, len(og.Nodes))
 	totalNodes := len(og.Nodes)
-	logger.Infof("Processing %d nodes...", totalNodes)
+	totalInternalEdges := len(og.InternalEdges)
+	totalExternalEdges := len(og.ExternalEdges)
 
+	// Write to file.
+	//
+	// The graph can contain millions of nodes and edges. Materializing every
+	// element as a map[string]interface{}, concatenating them into one slice
+	// and handing the whole structure to json.Encoder.Encode forces the entire
+	// serialized document (plus intermediate marshaling buffers) to live in
+	// memory at once, which exhausts RAM on large environments. Instead we
+	// stream the JSON element by element: each node/edge is marshaled,
+	// written and then discarded, so peak memory stays flat regardless of
+	// graph size.
+	logger.Infof("Writing to file: %s", outputFile)
+	file, err := os.Create(outputFile)
+	if err != nil {
+		return fmt.Errorf("failed to create output file: %w", err)
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			logger.Warnf("Failed to close output file: %v", closeErr)
+		}
+	}()
+
+	// Buffer writes so each small Marshal result doesn't translate into a
+	// syscall; 1 MiB keeps throughput high without notable memory cost.
+	w := bufio.NewWriterSize(file, 1<<20)
+
+	if _, err := io.WriteString(w, `{"metadata":{"source_kind":"CyberArkBase"},"graph":{"edges":[`); err != nil {
+		return fmt.Errorf("failed to write JSON: %w", err)
+	}
+
+	// writeElement marshals a single value and appends it to the current JSON
+	// array, inserting a separating comma before every element after the first.
+	edgeWritten := false
+	writeEdge := func(edge *graph.Edge) error {
+		b, err := json.Marshal(buildEdgeDict(edge))
+		if err != nil {
+			return err
+		}
+		if edgeWritten {
+			if err := w.WriteByte(','); err != nil {
+				return err
+			}
+		}
+		edgeWritten = true
+		_, err = w.Write(b)
+		return err
+	}
+
+	// Stream internal edges.
+	logger.Infof("Processing %d internal edges...", totalInternalEdges)
+	for idx, edge := range og.InternalEdges {
+		if (idx+1)%edgeInterval == 0 || idx+1 == totalInternalEdges {
+			logger.Infof("  Processed %d/%d edges (%.1f%%)", idx+1, totalInternalEdges, float64(idx+1)/float64(totalInternalEdges)*100)
+		}
+		if err := writeEdge(edge); err != nil {
+			return fmt.Errorf("failed to write JSON: %w", err)
+		}
+	}
+
+	// Stream external edges into the same array.
+	if totalExternalEdges > 0 {
+		logger.Infof("Processing %d external edges...", totalExternalEdges)
+		for idx, edge := range og.ExternalEdges {
+			if (idx+1)%edgeInterval == 0 || idx+1 == totalExternalEdges {
+				logger.Infof("  Processed %d/%d external edges (%.1f%%)", idx+1, totalExternalEdges, float64(idx+1)/float64(totalExternalEdges)*100)
+			}
+			if err := writeEdge(edge); err != nil {
+				return fmt.Errorf("failed to write JSON: %w", err)
+			}
+		}
+	}
+
+	// Close the edges array and open the nodes array.
+	if _, err := io.WriteString(w, `],"nodes":[`); err != nil {
+		return fmt.Errorf("failed to write JSON: %w", err)
+	}
+
+	// Stream nodes (sorted by ID for deterministic output).
+	logger.Infof("Processing %d nodes...", totalNodes)
+	nodeWritten := false
 	idx := 0
 	for _, node := range sortedNodes(og) {
 		idx++
@@ -138,70 +204,31 @@ func ExportToBloodHoundJSON(og *graph.OpenGraph, outputFile string, logger *logr
 			"kinds":      node.Kinds,
 			"properties": node.Properties,
 		}
-		nodesArray = append(nodesArray, nodeDict)
-	}
-
-	// Convert internal edges to JSON array
-	edgesArray := make([]map[string]interface{}, 0, len(og.InternalEdges))
-	totalInternalEdges := len(og.InternalEdges)
-	logger.Infof("Processing %d internal edges...", totalInternalEdges)
-
-	for idx, edge := range og.InternalEdges {
-		if (idx+1)%edgeInterval == 0 || idx+1 == totalInternalEdges {
-			logger.Infof("  Processed %d/%d edges (%.1f%%)", idx+1, totalInternalEdges, float64(idx+1)/float64(totalInternalEdges)*100)
+		b, err := json.Marshal(nodeDict)
+		if err != nil {
+			return fmt.Errorf("failed to write JSON: %w", err)
 		}
-		edgesArray = append(edgesArray, buildEdgeDict(edge))
-	}
-
-	// Convert external edges to JSON array
-	externalEdgesArray := make([]map[string]interface{}, 0, len(og.ExternalEdges))
-	totalExternalEdges := len(og.ExternalEdges)
-	if totalExternalEdges > 0 {
-		logger.Infof("Processing %d external edges...", totalExternalEdges)
-
-		for idx, edge := range og.ExternalEdges {
-			if (idx+1)%edgeInterval == 0 || idx+1 == totalExternalEdges {
-				logger.Infof("  Processed %d/%d external edges (%.1f%%)", idx+1, totalExternalEdges, float64(idx+1)/float64(totalExternalEdges)*100)
+		if nodeWritten {
+			if err := w.WriteByte(','); err != nil {
+				return fmt.Errorf("failed to write JSON: %w", err)
 			}
-			externalEdgesArray = append(externalEdgesArray, buildEdgeDict(edge))
+		}
+		nodeWritten = true
+		if _, err := w.Write(b); err != nil {
+			return fmt.Errorf("failed to write JSON: %w", err)
 		}
 	}
 
-	// Merge internal and external edges
-	allEdges := append(edgesArray, externalEdgesArray...)
-
-	// Create the final structure
-	output := bloodhoundOutput{
-		Metadata: bloodhoundMetadata{
-			SourceKind: "CyberArkBase",
-		},
-		Graph: bloodhoundGraph{
-			Edges: allEdges,
-			Nodes: nodesArray,
-		},
-	}
-
-	// Write to file
-	logger.Infof("Writing to file: %s", outputFile)
-	file, err := os.Create(outputFile)
-	if err != nil {
-		return fmt.Errorf("failed to create output file: %w", err)
-	}
-	defer func() {
-		if closeErr := file.Close(); closeErr != nil {
-			logger.Warnf("Failed to close output file: %v", closeErr)
-		}
-	}()
-
-	// Use buffered writer for better performance
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "") // Compact JSON for performance
-
-	if err := encoder.Encode(output); err != nil {
+	// Close the nodes array, graph object and root object.
+	if _, err := io.WriteString(w, "]}}\n"); err != nil {
 		return fmt.Errorf("failed to write JSON: %w", err)
 	}
 
-	totalEdges := len(allEdges)
+	if err := w.Flush(); err != nil {
+		return fmt.Errorf("failed to flush JSON: %w", err)
+	}
+
+	totalEdges := totalInternalEdges + totalExternalEdges
 	logger.Infof("Export complete: nodes=%d internal_edges=%d external_edges=%d total=%d",
 		totalNodes, totalInternalEdges, totalExternalEdges, totalEdges)
 
