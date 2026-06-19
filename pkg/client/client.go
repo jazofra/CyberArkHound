@@ -29,7 +29,47 @@ const (
 	// UserExtendedDetailsTimeout is the default timeout for the optional user
 	// enrichment endpoint before falling back to the basic user list.
 	UserExtendedDetailsTimeout = 60 * time.Second
+
+	// AuthMethodCyberArk is the default self-hosted PVWA CyberArk authentication.
+	AuthMethodCyberArk = "cyberark"
+	// AuthMethodLDAP is self-hosted PVWA LDAP/Directory authentication.
+	AuthMethodLDAP = "ldap"
+	// AuthMethodRADIUS is self-hosted PVWA RADIUS authentication.
+	AuthMethodRADIUS = "radius"
+	// AuthMethodWindows is self-hosted PVWA integrated Windows authentication.
+	AuthMethodWindows = "windows"
+	// AuthMethodIdentity is CyberArk Identity Security Platform Shared Services
+	// (ISPSS) OAuth2 authentication, used by Privilege Cloud (SaaS).
+	AuthMethodIdentity = "identity"
 )
+
+// selfHostedLogonPathSegment maps a normalised auth method to the path segment
+// used in the self-hosted PVWA logon endpoint /API/Auth/{segment}/Logon.
+var selfHostedLogonPathSegment = map[string]string{
+	AuthMethodCyberArk: "CyberArk",
+	AuthMethodLDAP:     "LDAP",
+	AuthMethodRADIUS:   "radius",
+	AuthMethodWindows:  "Windows",
+}
+
+// NormalizeAuthMethod lower-cases and validates an auth method string, returning
+// the canonical value (defaulting to CyberArk when empty) and whether it is
+// recognised.
+func NormalizeAuthMethod(method string) (string, bool) {
+	m := strings.ToLower(strings.TrimSpace(method))
+	if m == "" {
+		return AuthMethodCyberArk, true
+	}
+	switch m {
+	case AuthMethodCyberArk, AuthMethodLDAP, AuthMethodRADIUS, AuthMethodWindows, AuthMethodIdentity:
+		return m, true
+	// Friendly aliases.
+	case "ispss", "privilegecloud", "privilege-cloud", "oauth2", "oauth":
+		return AuthMethodIdentity, true
+	default:
+		return m, false
+	}
+}
 
 // HTTPError represents a non-2xx HTTP response from the PVWA API. It allows
 // callers to react to specific status codes (e.g. treat 404 as "not found"
@@ -55,9 +95,16 @@ func httpStatus(err error) int {
 
 // Client encapsulates CyberArk PVWA REST API interactions
 type Client struct {
-	BaseURL                    string
-	Username                   string
-	Password                   string
+	BaseURL  string
+	Username string
+	Password string
+	// AuthMethod selects how Authenticate() obtains a session token. Use the
+	// AuthMethod* constants. Defaults to AuthMethodCyberArk (self-hosted PVWA).
+	AuthMethod string
+	// IdentityTenantURL is the CyberArk Identity (ISPSS) tenant base URL used to
+	// obtain an OAuth2 platform token, e.g. https://abc1234.id.cyberark.cloud.
+	// Required when AuthMethod is AuthMethodIdentity (Privilege Cloud / SaaS).
+	IdentityTenantURL          string
 	AuthTimeout                time.Duration
 	ReqTimeout                 time.Duration
 	UserExtendedDetailsTimeout time.Duration
@@ -106,9 +153,10 @@ func NewClient(baseURL, username, password string, insecure bool, caBundle strin
 	}
 
 	return &Client{
-		BaseURL:  baseURL,
-		Username: username,
-		Password: password,
+		BaseURL:    baseURL,
+		Username:   username,
+		Password:   password,
+		AuthMethod: AuthMethodCyberArk,
 		HTTPClient: &http.Client{
 			Transport: transport,
 			Timeout:   360 * time.Second,
@@ -177,8 +225,8 @@ func (c *Client) requestWithRetriesAndReauth(method, urlPath string, body interf
 		if jsonData != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
-		if c.Token != "" {
-			req.Header.Set("Authorization", c.Token)
+		if header := c.authorizationHeaderValue(); header != "" {
+			req.Header.Set("Authorization", header)
 		}
 
 		var cancel context.CancelFunc
@@ -372,15 +420,117 @@ func userHasIdentity(user models.User) bool {
 	return user.Username != "" || userIDString(user.ID) != ""
 }
 
-// Authenticate logs into the CyberArk PVWA API
+// isIdentityAuth reports whether the client uses CyberArk Identity (ISPSS)
+// OAuth2 authentication (Privilege Cloud / SaaS).
+func (c *Client) isIdentityAuth() bool {
+	method, _ := NormalizeAuthMethod(c.AuthMethod)
+	return method == AuthMethodIdentity
+}
+
+// authorizationHeaderValue returns the value to set on the Authorization header.
+// Identity (OAuth2) tokens are bearer tokens and must be prefixed with "Bearer ";
+// self-hosted PVWA session tokens are sent verbatim.
+func (c *Client) authorizationHeaderValue() string {
+	if c.Token == "" {
+		return ""
+	}
+	if c.isIdentityAuth() {
+		return "Bearer " + c.Token
+	}
+	return c.Token
+}
+
+// Authenticate obtains a session token from CyberArk. For self-hosted PVWA it
+// uses the /API/Auth/{method}/Logon endpoint; for Privilege Cloud (SaaS) it uses
+// the CyberArk Identity (ISPSS) OAuth2 client-credentials flow.
 func (c *Client) Authenticate() error {
-	authURL := fmt.Sprintf("%s/PasswordVault/API/Auth/CyberArk/Logon", c.BaseURL)
+	if c.isIdentityAuth() {
+		return c.authenticateIdentity()
+	}
+	return c.authenticateSelfHosted()
+}
+
+// authenticateIdentity performs the CyberArk Identity Security Platform Shared
+// Services (ISPSS) OAuth2 client-credentials flow used by Privilege Cloud (SaaS).
+// The service user's username is the OAuth client_id and the password is the
+// client_secret. The resulting access_token is a bearer token used against the
+// Privilege Cloud PasswordVault REST API.
+func (c *Client) authenticateIdentity() error {
+	if strings.TrimSpace(c.IdentityTenantURL) == "" {
+		return fmt.Errorf("identity authentication requires the CyberArk Identity tenant URL (e.g. https://<tenant>.id.cyberark.cloud)")
+	}
+
+	tokenURL := strings.TrimRight(c.IdentityTenantURL, "/") + "/oauth2/platformtoken"
+	form := url.Values{}
+	form.Set("grant_type", "client_credentials")
+	form.Set("client_id", c.Username)
+	form.Set("client_secret", c.Password)
+
+	c.Logger.Debugf("Authenticating to CyberArk Identity %s as service user %s (OAuth2 client_credentials)", tokenURL, c.Username)
+
+	req, err := http.NewRequest("POST", tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("failed to create identity auth request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	ctx, cancel := context.WithTimeout(context.Background(), c.AuthTimeout)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("identity authentication request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read identity auth response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("identity authentication failed with HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+	}
+
+	var tokenResp struct {
+		AccessToken string `json:"access_token"`
+		TokenType   string `json:"token_type"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+	if err := json.Unmarshal(bodyBytes, &tokenResp); err != nil {
+		return fmt.Errorf("failed to parse identity auth response: %w", err)
+	}
+
+	c.Token = strings.TrimSpace(tokenResp.AccessToken)
+	if c.Token == "" {
+		return fmt.Errorf("identity authentication succeeded but access_token is empty")
+	}
+
+	if tokenResp.ExpiresIn > 0 {
+		c.Logger.Infof("Authenticated to CyberArk Identity successfully (token length: %d chars, expires in %ds)", len(c.Token), tokenResp.ExpiresIn)
+	} else {
+		c.Logger.Infof("Authenticated to CyberArk Identity successfully (token length: %d chars)", len(c.Token))
+	}
+	return nil
+}
+
+// authenticateSelfHosted logs into a self-hosted CyberArk PVWA API using the
+// configured authentication method (CyberArk, LDAP, RADIUS, or Windows).
+func (c *Client) authenticateSelfHosted() error {
+	method, ok := NormalizeAuthMethod(c.AuthMethod)
+	if !ok {
+		return fmt.Errorf("unsupported auth method %q", c.AuthMethod)
+	}
+	segment := selfHostedLogonPathSegment[method]
+	authURL := fmt.Sprintf("%s/PasswordVault/API/Auth/%s/Logon", c.BaseURL, segment)
 	payload := map[string]string{
 		"username": c.Username,
 		"password": c.Password,
 	}
 
-	c.Logger.Debugf("Authenticating to %s as user %s", c.BaseURL, c.Username)
+	c.Logger.Debugf("Authenticating to %s as user %s (method %s)", c.BaseURL, c.Username, segment)
 
 	// Don't use retry logic for initial auth request to avoid infinite recursion
 	jsonData, err := json.Marshal(payload)
@@ -496,6 +646,14 @@ func truncateString(s string, maxLen int) string {
 // Logoff terminates the session with PVWA
 func (c *Client) Logoff() error {
 	if c.Token == "" {
+		return nil
+	}
+
+	// Privilege Cloud (Identity / ISPSS) uses short-lived OAuth2 bearer tokens
+	// that expire on their own; there is no PVWA session to terminate.
+	if c.isIdentityAuth() {
+		c.Token = ""
+		c.Logger.Debug("Identity (OAuth2) token discarded; no PVWA logoff required")
 		return nil
 	}
 

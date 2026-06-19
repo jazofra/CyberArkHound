@@ -252,6 +252,127 @@ func TestAuthenticatePersistsCookiesForAPIRequests(t *testing.T) {
 	}
 }
 
+func TestNormalizeAuthMethod(t *testing.T) {
+	cases := map[string]struct {
+		want string
+		ok   bool
+	}{
+		"":               {AuthMethodCyberArk, true},
+		"CyberArk":       {AuthMethodCyberArk, true},
+		"ldap":           {AuthMethodLDAP, true},
+		"RADIUS":         {AuthMethodRADIUS, true},
+		"Windows":        {AuthMethodWindows, true},
+		"identity":       {AuthMethodIdentity, true},
+		"ISPSS":          {AuthMethodIdentity, true},
+		"privilegecloud": {AuthMethodIdentity, true},
+		"bogus":          {"bogus", false},
+	}
+	for in, want := range cases {
+		got, ok := NormalizeAuthMethod(in)
+		if got != want.want || ok != want.ok {
+			t.Errorf("NormalizeAuthMethod(%q) = (%q, %v), want (%q, %v)", in, got, ok, want.want, want.ok)
+		}
+	}
+}
+
+func TestAuthenticateUsesConfiguredSelfHostedMethod(t *testing.T) {
+	var logonPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		logonPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`"ldap-token"`))
+	}))
+	defer server.Close()
+
+	client := testClient(server.URL)
+	client.AuthMethod = AuthMethodLDAP
+	if err := client.Authenticate(); err != nil {
+		t.Fatalf("Authenticate returned error: %v", err)
+	}
+	if logonPath != "/PasswordVault/API/Auth/LDAP/Logon" {
+		t.Fatalf("logon path = %q, want /PasswordVault/API/Auth/LDAP/Logon", logonPath)
+	}
+	if client.authorizationHeaderValue() != "ldap-token" {
+		t.Fatalf("self-hosted auth header = %q, want raw token", client.authorizationHeaderValue())
+	}
+}
+
+func TestAuthenticateIdentityOAuthFlow(t *testing.T) {
+	var gotGrant, gotID, gotSecret string
+	authReqs := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/platformtoken":
+			authReqs++
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("ParseForm: %v", err)
+			}
+			gotGrant = r.PostForm.Get("grant_type")
+			gotID = r.PostForm.Get("client_id")
+			gotSecret = r.PostForm.Get("client_secret")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"access_token": "abc.def.ghi",
+				"token_type":   "Bearer",
+				"expires_in":   900,
+			})
+		case "/PasswordVault/API/Users":
+			if r.Header.Get("Authorization") != "Bearer abc.def.ghi" {
+				t.Fatalf("Authorization = %q, want Bearer abc.def.ghi", r.Header.Get("Authorization"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"Users": []map[string]string{{"username": "cloud-user"}},
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := testClient(server.URL)
+	client.AuthMethod = AuthMethodIdentity
+	client.IdentityTenantURL = server.URL
+	client.UserExtendedDetailsTimeout = 10 * time.Millisecond
+
+	if err := client.Authenticate(); err != nil {
+		t.Fatalf("Authenticate returned error: %v", err)
+	}
+	if authReqs != 1 {
+		t.Fatalf("token requests = %d, want 1", authReqs)
+	}
+	if gotGrant != "client_credentials" || gotID != "user" || gotSecret != "pass" {
+		t.Fatalf("token form = (grant=%q, id=%q, secret=%q)", gotGrant, gotID, gotSecret)
+	}
+	if client.Token != "abc.def.ghi" {
+		t.Fatalf("token = %q, want abc.def.ghi", client.Token)
+	}
+
+	users, err := client.ListUsers(nil)
+	if err != nil {
+		t.Fatalf("ListUsers returned error: %v", err)
+	}
+	if len(users) != 1 || users[0].Username != "cloud-user" {
+		t.Fatalf("unexpected users: %+v", users)
+	}
+
+	// Logoff for identity must not call the PVWA Logoff endpoint.
+	if err := client.Logoff(); err != nil {
+		t.Fatalf("Logoff returned error: %v", err)
+	}
+	if client.Token != "" {
+		t.Fatalf("token should be cleared after Logoff, got %q", client.Token)
+	}
+}
+
+func TestAuthenticateIdentityRequiresTenantURL(t *testing.T) {
+	client := testClient("https://example.invalid")
+	client.AuthMethod = AuthMethodIdentity
+	if err := client.Authenticate(); err == nil {
+		t.Fatal("expected error when IdentityTenantURL is empty")
+	}
+}
+
 func TestListApplicationsWithAuthEnrichesAuthentications(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
