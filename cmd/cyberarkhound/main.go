@@ -17,9 +17,11 @@ import (
 
 func main() {
 	// Define command-line flags
-	pvwaURL := pflag.String("pvwa", "", "PVWA base URL (required)")
-	username := pflag.String("username", "", "API username (required)")
-	password := pflag.String("password", "", "API password (required)")
+	pvwaURL := pflag.String("pvwa", "", "PVWA / Privilege Cloud base URL (required)")
+	username := pflag.String("username", "", "API username (or OAuth client_id for --auth-method identity) (required)")
+	password := pflag.String("password", "", "API password (or OAuth client_secret for --auth-method identity) (required)")
+	authMethod := pflag.String("auth-method", "cyberark", "Authentication method: cyberark, ldap, radius, windows (self-hosted PVWA), or identity (Privilege Cloud / ISPSS SaaS)")
+	identityURL := pflag.String("identity-url", "", "CyberArk Identity tenant URL for --auth-method identity (e.g. https://<tenant>.id.cyberark.cloud)")
 	outputFile := pflag.String("output", "", "Output JSON file (required)")
 	targetDomains := pflag.StringSlice("target-domains", []string{}, "Target AD domain(s) for CyberArk_SyncsToADUser edges (required)")
 	parseSAMAccountName := pflag.Bool("parse-samaccountname", false, "Parse sAMAccountName/GID from LDAP distinguishedName CN for CyberArk_SyncsToUser edges (optional)")
@@ -75,6 +77,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Validate and normalise the authentication method.
+	normalizedAuthMethod, ok := client.NormalizeAuthMethod(*authMethod)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "Error: unsupported --auth-method %q (valid: cyberark, ldap, radius, windows, identity)\n", *authMethod)
+		os.Exit(1)
+	}
+	if normalizedAuthMethod == client.AuthMethodIdentity && *identityURL == "" {
+		fmt.Fprintf(os.Stderr, "Error: --identity-url is required when --auth-method is identity (e.g. https://<tenant>.id.cyberark.cloud)\n")
+		os.Exit(1)
+	}
+
 	// Setup logger
 	logger := logrus.New()
 	logger.SetFormatter(&logrus.TextFormatter{
@@ -108,6 +121,8 @@ func main() {
 
 	// Create CyberArk client
 	apiClient := client.NewClient(*pvwaURL, *username, *password, *insecure, *caBundle, logger)
+	apiClient.AuthMethod = normalizedAuthMethod
+	apiClient.IdentityTenantURL = *identityURL
 	apiClient.ReqTimeout = *requestTimeout
 	apiClient.AuthTimeout = *authTimeout
 	apiClient.UserExtendedDetailsTimeout = *userExtendedDetailsTimeout
@@ -117,7 +132,11 @@ func main() {
 	apiClient.HTTPClient.Timeout = apiClient.ReqTimeout
 
 	// Authenticate
-	logger.Info("Authenticating to CyberArk PVWA...")
+	if normalizedAuthMethod == client.AuthMethodIdentity {
+		logger.Infof("Authenticating to CyberArk Identity (Privilege Cloud) at %s...", *identityURL)
+	} else {
+		logger.Infof("Authenticating to CyberArk PVWA (method: %s)...", normalizedAuthMethod)
+	}
 	if err := apiClient.Authenticate(); err != nil {
 		logger.Fatalf("Authentication failed: %v", err)
 	}

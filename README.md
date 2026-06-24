@@ -34,6 +34,35 @@ go build -o cyberarkhound ./cmd/cyberarkhound
 
 The resulting `cyberark_export.json` file can be directly imported into BloodHound.
 
+#### Privilege Cloud (SaaS / ISPSS)
+
+CyberArkHound also supports **CyberArk Privilege Cloud**, the SaaS-based offering on the Identity Security Platform Shared Services (ISPSS). The data model and the PasswordVault REST API are the same as self-hosted PVWA — only **authentication** differs: Privilege Cloud authenticates through **CyberArk Identity**.
+
+With `--auth-method identity`, CyberArkHound authenticates in two stages:
+1. **OAuth2 `client_credentials`** — tried first, for [OAuth confidential client service users](#service-user-setup-for-privilege-cloud) (recommended). `--username`/`--password` are the `client_id`/`client_secret`.
+2. **Username/password fallback** — if the `client_credentials` grant is rejected, CyberArkHound falls back to the interactive CyberArk Identity flow (`StartAuthentication` → `AdvanceAuthentication`) and stores the returned platform bearer token. `--username`/`--password` are the regular Identity username and password.
+
+If the account requires **multi-factor authentication (MFA)** or uses **federated / SAML sign-in**, the username/password fallback cannot complete non-interactively and CyberArkHound returns a clear error — use an OAuth confidential client service user (excluded from MFA) instead.
+
+```bash
+./cyberarkhound \
+    --auth-method identity \
+    --pvwa https://<subdomain>.privilegecloud.cyberark.cloud \
+    --identity-url https://<tenant>.id.cyberark.cloud \
+    --username <oauth-service-user> \
+    --password "$CYBERARK_CLIENT_SECRET" \
+    --output cyberark_export.json \
+    --target-domains corp.example.com
+```
+
+Notes:
+- `--pvwa` is the **Privilege Cloud** URL (`https://<subdomain>.privilegecloud.cyberark.cloud`). CyberArkHound appends the same `/PasswordVault/API/...` paths used for self-hosted.
+- `--identity-url` is the **CyberArk Identity tenant** URL used to obtain the OAuth2 token (`https://<tenant>.id.cyberark.cloud`). The Identity tenant ID is usually **not** the same as the portal subdomain — find it under Identity Administration or in the `oauth2/platformtoken` endpoint your tenant uses.
+- `--username` / `--password` are the **OAuth `client_id` / `client_secret`** of a dedicated [OAuth confidential client service user](#service-user-setup-for-privilege-cloud) created in CyberArk Identity (not an interactive portal user).
+- The obtained `access_token` is a short-lived bearer token; CyberArkHound automatically re-authenticates when it expires (HTTP 401), reusing the same single-flight refresh logic as self-hosted.
+
+The required vault authorizations (`Audit Users` plus `List`/`View Safe Members` on the safes) are identical to self-hosted — assign them to the service user in Privilege Cloud.
+
 ### Features
 - **High Performance**: Go implementation with concurrent processing and efficient memory usage
 - **Robust API client** with exponential backoff retry logic and optional SSL customization
@@ -75,6 +104,17 @@ Create a dedicated service account for BloodHound data collection:
 6. **Store this account within CyberArk**: to ensure it is rotated as per CyberArk policies
 7. **Retrieve the credential using CCP/CP**: if CCP/CP is used within the environment, use this to retreive the credetial as and when required
 
+#### Service User Setup for Privilege Cloud
+For **Privilege Cloud (SaaS / ISPSS)**, the collector authenticates through CyberArk Identity with OAuth2 instead of a PVWA password logon. Create a dedicated OAuth service user:
+
+1. **Create an OAuth service user** in **Identity Administration** (a dedicated, non-interactive user for API/automation).
+2. **Enable "Is OAuth confidential client"** in the user's Status checklist — this turns the username/password into an OAuth `client_id` / `client_secret`.
+3. **Exclude it from MFA policies** (service users cannot satisfy interactive MFA) and from the User Portal.
+4. **Grant the same vault access** as self-hosted: `Audit Users` plus `List` / `View Safe Members` on all safes (directly or via a group).
+5. **Run CyberArkHound with `--auth-method identity`**, passing the `client_id` as `--username`, the `client_secret` as `--password`, and the Identity tenant URL as `--identity-url`.
+
+> A regular (non-OAuth) CyberArk Identity user also works: CyberArkHound automatically falls back to the username/password `StartAuthentication` → `AdvanceAuthentication` flow when the `client_credentials` grant is rejected. That user must **not** be subject to MFA or federated/SAML sign-in, since those require interactive completion. The OAuth confidential client approach is still recommended because it is purpose-built for non-interactive automation.
+
 #### What the Tool Can view
 With `Audit Users` authorization, the tool can:
 - ✅ List all vault users and groups
@@ -91,7 +131,9 @@ With 'list' and 'View Safe Members' on each safe, the tool can:
 - ❌ **Cannot** modify platform application settings
 
 #### API Endpoints Used
-- `POST /API/Auth/CyberArk/Logon` - Authentication
+- `POST /API/Auth/{CyberArk,LDAP,radius,Windows}/Logon` - Authentication (self-hosted PVWA; method selected by `--auth-method`)
+- `POST /oauth2/platformtoken` on the CyberArk Identity tenant - Authentication (Privilege Cloud / ISPSS, `--auth-method identity`; OAuth2 `client_credentials`, tried first)
+- `POST /Security/StartAuthentication` + `POST /Security/AdvanceAuthentication` on the CyberArk Identity tenant - Username/password fallback when `client_credentials` is rejected (`--auth-method identity`; not usable with MFA/SAML accounts)
 - `GET /API/safes` - List all safes
 - `GET /API/Safes/{safeUrlId}/Members` - List safe members and permissions
 - `GET /API/Accounts` - List accounts (filtered by safe)
@@ -187,11 +229,15 @@ Download pre-compiled binaries from the [Releases](https://github.com/jazofra/Cy
 ### Command-Line Arguments
 
 **Required:**
-- `--pvwa` Base PVWA URL (e.g., https://pvwa.example.com)
-- `--username` API username
-- `--password` API password (consider using environment variable)
+- `--pvwa` Base PVWA URL (self-hosted, e.g. https://pvwa.example.com) or Privilege Cloud URL (e.g. https://<subdomain>.privilegecloud.cyberark.cloud)
+- `--username` API username (or OAuth `client_id` when `--auth-method identity`)
+- `--password` API password (or OAuth `client_secret` when `--auth-method identity`; consider using environment variable)
 - `--output` Destination JSON file for BloodHound import
 - `--target-domains` One or more AD domain names (comma-separated) used to link accounts to AD users
+
+**Authentication:**
+- `--auth-method` Authentication method: `cyberark` (default), `ldap`, `radius`, `windows` for self-hosted PVWA, or `identity` for Privilege Cloud / ISPSS (SaaS) OAuth2
+- `--identity-url` CyberArk Identity tenant URL for `--auth-method identity` (e.g. https://<tenant>.id.cyberark.cloud) — **required** for Privilege Cloud
 
 **Optional:**
 - `--workers` Concurrency for parallel operations (default: 50, recommended: 100-200 for large environments)

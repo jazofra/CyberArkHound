@@ -29,7 +29,47 @@ const (
 	// UserExtendedDetailsTimeout is the default timeout for the optional user
 	// enrichment endpoint before falling back to the basic user list.
 	UserExtendedDetailsTimeout = 60 * time.Second
+
+	// AuthMethodCyberArk is the default self-hosted PVWA CyberArk authentication.
+	AuthMethodCyberArk = "cyberark"
+	// AuthMethodLDAP is self-hosted PVWA LDAP/Directory authentication.
+	AuthMethodLDAP = "ldap"
+	// AuthMethodRADIUS is self-hosted PVWA RADIUS authentication.
+	AuthMethodRADIUS = "radius"
+	// AuthMethodWindows is self-hosted PVWA integrated Windows authentication.
+	AuthMethodWindows = "windows"
+	// AuthMethodIdentity is CyberArk Identity Security Platform Shared Services
+	// (ISPSS) OAuth2 authentication, used by Privilege Cloud (SaaS).
+	AuthMethodIdentity = "identity"
 )
+
+// selfHostedLogonPathSegment maps a normalised auth method to the path segment
+// used in the self-hosted PVWA logon endpoint /API/Auth/{segment}/Logon.
+var selfHostedLogonPathSegment = map[string]string{
+	AuthMethodCyberArk: "CyberArk",
+	AuthMethodLDAP:     "LDAP",
+	AuthMethodRADIUS:   "radius",
+	AuthMethodWindows:  "Windows",
+}
+
+// NormalizeAuthMethod lower-cases and validates an auth method string, returning
+// the canonical value (defaulting to CyberArk when empty) and whether it is
+// recognised.
+func NormalizeAuthMethod(method string) (string, bool) {
+	m := strings.ToLower(strings.TrimSpace(method))
+	if m == "" {
+		return AuthMethodCyberArk, true
+	}
+	switch m {
+	case AuthMethodCyberArk, AuthMethodLDAP, AuthMethodRADIUS, AuthMethodWindows, AuthMethodIdentity:
+		return m, true
+	// Friendly aliases.
+	case "ispss", "privilegecloud", "privilege-cloud", "oauth2", "oauth":
+		return AuthMethodIdentity, true
+	default:
+		return m, false
+	}
+}
 
 // HTTPError represents a non-2xx HTTP response from the PVWA API. It allows
 // callers to react to specific status codes (e.g. treat 404 as "not found"
@@ -55,9 +95,16 @@ func httpStatus(err error) int {
 
 // Client encapsulates CyberArk PVWA REST API interactions
 type Client struct {
-	BaseURL                    string
-	Username                   string
-	Password                   string
+	BaseURL  string
+	Username string
+	Password string
+	// AuthMethod selects how Authenticate() obtains a session token. Use the
+	// AuthMethod* constants. Defaults to AuthMethodCyberArk (self-hosted PVWA).
+	AuthMethod string
+	// IdentityTenantURL is the CyberArk Identity (ISPSS) tenant base URL used to
+	// obtain an OAuth2 platform token, e.g. https://abc1234.id.cyberark.cloud.
+	// Required when AuthMethod is AuthMethodIdentity (Privilege Cloud / SaaS).
+	IdentityTenantURL          string
 	AuthTimeout                time.Duration
 	ReqTimeout                 time.Duration
 	UserExtendedDetailsTimeout time.Duration
@@ -106,9 +153,10 @@ func NewClient(baseURL, username, password string, insecure bool, caBundle strin
 	}
 
 	return &Client{
-		BaseURL:  baseURL,
-		Username: username,
-		Password: password,
+		BaseURL:    baseURL,
+		Username:   username,
+		Password:   password,
+		AuthMethod: AuthMethodCyberArk,
 		HTTPClient: &http.Client{
 			Transport: transport,
 			Timeout:   360 * time.Second,
@@ -177,8 +225,8 @@ func (c *Client) requestWithRetriesAndReauth(method, urlPath string, body interf
 		if jsonData != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
-		if c.Token != "" {
-			req.Header.Set("Authorization", c.Token)
+		if header := c.authorizationHeaderValue(); header != "" {
+			req.Header.Set("Authorization", header)
 		}
 
 		var cancel context.CancelFunc
@@ -372,15 +420,310 @@ func userHasIdentity(user models.User) bool {
 	return user.Username != "" || userIDString(user.ID) != ""
 }
 
-// Authenticate logs into the CyberArk PVWA API
+// isIdentityAuth reports whether the client uses CyberArk Identity (ISPSS)
+// OAuth2 authentication (Privilege Cloud / SaaS).
+func (c *Client) isIdentityAuth() bool {
+	method, _ := NormalizeAuthMethod(c.AuthMethod)
+	return method == AuthMethodIdentity
+}
+
+// authorizationHeaderValue returns the value to set on the Authorization header.
+// Identity (OAuth2) tokens are bearer tokens and must be prefixed with "Bearer ";
+// self-hosted PVWA session tokens are sent verbatim.
+func (c *Client) authorizationHeaderValue() string {
+	if c.Token == "" {
+		return ""
+	}
+	if c.isIdentityAuth() {
+		return "Bearer " + c.Token
+	}
+	return c.Token
+}
+
+// Authenticate obtains a session token from CyberArk. For self-hosted PVWA it
+// uses the /API/Auth/{method}/Logon endpoint; for Privilege Cloud (SaaS) it uses
+// the CyberArk Identity (ISPSS) OAuth2 client-credentials flow.
 func (c *Client) Authenticate() error {
-	authURL := fmt.Sprintf("%s/PasswordVault/API/Auth/CyberArk/Logon", c.BaseURL)
+	if c.isIdentityAuth() {
+		return c.authenticateIdentity()
+	}
+	return c.authenticateSelfHosted()
+}
+
+// authenticateIdentity authenticates against CyberArk Identity Security Platform
+// Shared Services (ISPSS), used by Privilege Cloud (SaaS). It first tries the
+// OAuth2 client-credentials grant (for OAuth confidential client service users);
+// if that is rejected it falls back to the interactive CyberArk Identity
+// username/password flow (StartAuthentication → AdvanceAuthentication). The
+// resulting platform token is a bearer token used against the Privilege Cloud
+// PasswordVault REST API.
+func (c *Client) authenticateIdentity() error {
+	if strings.TrimSpace(c.IdentityTenantURL) == "" {
+		return fmt.Errorf("identity authentication requires the CyberArk Identity tenant URL (e.g. https://<tenant>.id.cyberark.cloud)")
+	}
+
+	// 1. OAuth2 client_credentials — for OAuth confidential client service users.
+	token, ccErr := c.identityClientCredentialsToken()
+	if ccErr == nil {
+		c.Token = token
+		c.Logger.Infof("Authenticated to CyberArk Identity via OAuth2 client_credentials (token length: %d chars)", len(c.Token))
+		return nil
+	}
+	c.Logger.Debugf("OAuth2 client_credentials grant not accepted (%v); falling back to CyberArk Identity username/password authentication", ccErr)
+
+	// 2. Interactive username/password — StartAuthentication → AdvanceAuthentication.
+	token, err := c.identityInteractiveToken()
+	if err != nil {
+		return fmt.Errorf("CyberArk Identity authentication failed (OAuth2 client_credentials grant rejected: %v): %w", ccErr, err)
+	}
+	c.Token = token
+	c.Logger.Infof("Authenticated to CyberArk Identity via username/password (token length: %d chars)", len(c.Token))
+	return nil
+}
+
+// identityClientCredentialsToken obtains a platform token via the OAuth2
+// client-credentials grant. The service user's username is the client_id and the
+// password is the client_secret. Returns the access_token on success.
+func (c *Client) identityClientCredentialsToken() (string, error) {
+	tokenURL := strings.TrimRight(c.IdentityTenantURL, "/") + "/oauth2/platformtoken"
+	form := url.Values{}
+	form.Set("grant_type", "client_credentials")
+	form.Set("client_id", c.Username)
+	form.Set("client_secret", c.Password)
+
+	c.Logger.Debugf("Requesting CyberArk Identity platform token from %s (OAuth2 client_credentials) as %s", tokenURL, c.Username)
+
+	req, err := http.NewRequest("POST", tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("failed to create token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	ctx, cancel := context.WithTimeout(context.Background(), c.AuthTimeout)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("token request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read token response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+	}
+
+	var tokenResp struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+	if err := json.Unmarshal(bodyBytes, &tokenResp); err != nil {
+		return "", fmt.Errorf("failed to parse token response: %w", err)
+	}
+	token := strings.TrimSpace(tokenResp.AccessToken)
+	if token == "" {
+		return "", fmt.Errorf("token response did not contain an access_token")
+	}
+	return token, nil
+}
+
+// identityChallengeMechanism is one authentication mechanism (e.g. password,
+// OTP, OOB) offered within a CyberArk Identity challenge.
+type identityChallengeMechanism struct {
+	AnswerType  string `json:"AnswerType"`
+	Name        string `json:"Name"`
+	MechanismId string `json:"MechanismId"`
+}
+
+// identityChallenge is a set of mechanisms the user may satisfy to advance
+// authentication. Multiple challenges in sequence indicate additional factors.
+type identityChallenge struct {
+	Mechanisms []identityChallengeMechanism `json:"Mechanisms"`
+}
+
+type identityAuthResult struct {
+	SessionId        string              `json:"SessionId"`
+	Summary          string              `json:"Summary"`
+	Token            string              `json:"Token"`
+	Challenges       []identityChallenge `json:"Challenges"`
+	IdpRedirectUrl   string              `json:"IdpRedirectUrl"`
+	IdpRedirectShort string              `json:"IdpRedirectShort"`
+}
+
+type identityAuthResponse struct {
+	Success bool               `json:"success"`
+	Result  identityAuthResult `json:"Result"`
+	Message string             `json:"Message"`
+}
+
+// identityInteractiveToken performs the CyberArk Identity username/password flow
+// (StartAuthentication → AdvanceAuthentication) and returns the platform bearer
+// token. It returns a clear, actionable error when the account requires MFA or
+// federated/SAML sign-in, neither of which can be completed non-interactively.
+func (c *Client) identityInteractiveToken() (string, error) {
+	base := strings.TrimRight(c.IdentityTenantURL, "/")
+
+	var startResp identityAuthResponse
+	if err := c.doIdentityJSONPost(base+"/Security/StartAuthentication",
+		map[string]string{"User": c.Username, "Version": "1.0"}, &startResp); err != nil {
+		return "", fmt.Errorf("StartAuthentication request failed: %w", err)
+	}
+	if !startResp.Success {
+		return "", fmt.Errorf("StartAuthentication rejected for %q: %s", c.Username, firstNonEmpty(startResp.Message, "unknown error"))
+	}
+	res := startResp.Result
+
+	// Federated / SAML sign-in redirects to an external IdP and cannot be
+	// completed non-interactively.
+	if res.IdpRedirectUrl != "" || res.IdpRedirectShort != "" || hasFederatedMechanism(res.Challenges) {
+		return "", fmt.Errorf("account %q uses federated/SAML sign-in, which cannot be completed non-interactively; use an OAuth confidential client service user with --auth-method identity instead", c.Username)
+	}
+	if res.SessionId == "" {
+		return "", fmt.Errorf("StartAuthentication did not return a session for %q", c.Username)
+	}
+
+	upMech, ok := findPasswordMechanism(res.Challenges)
+	if !ok {
+		return "", fmt.Errorf("CyberArk Identity did not offer a username/password challenge for %q (the account may require a different authentication mechanism)", c.Username)
+	}
+
+	var advResp identityAuthResponse
+	if err := c.doIdentityJSONPost(base+"/Security/AdvanceAuthentication",
+		map[string]string{
+			"SessionId":   res.SessionId,
+			"MechanismId": upMech.MechanismId,
+			"Action":      "Answer",
+			"Answer":      c.Password,
+		}, &advResp); err != nil {
+		return "", fmt.Errorf("AdvanceAuthentication request failed: %w", err)
+	}
+	if !advResp.Success {
+		return "", fmt.Errorf("username/password authentication rejected for %q: %s", c.Username, firstNonEmpty(advResp.Message, "invalid credentials"))
+	}
+
+	summary := advResp.Result.Summary
+	token := strings.TrimSpace(advResp.Result.Token)
+	if summary == "LoginSuccess" {
+		if token == "" {
+			return "", fmt.Errorf("authentication succeeded but no platform token was returned for %q", c.Username)
+		}
+		return token, nil
+	}
+
+	// A "next challenge" summary unambiguously means another factor is required,
+	// even if a partial token is present.
+	switch summary {
+	case "StartNextChallenge", "NewPackage", "OobPending":
+		return "", fmt.Errorf("account %q requires multi-factor authentication (MFA), which cannot be completed non-interactively; create an OAuth confidential client service user that is excluded from MFA and use it with --auth-method identity", c.Username)
+	}
+
+	// Some tenants return a token with a non-LoginSuccess summary; accept it.
+	if token != "" {
+		return token, nil
+	}
+	return "", fmt.Errorf("account %q requires an additional authentication factor that cannot be completed non-interactively (CyberArk Identity state: %q); use an OAuth confidential client service user excluded from MFA with --auth-method identity", c.Username, firstNonEmpty(summary, "unknown"))
+}
+
+// doIdentityJSONPost POSTs a JSON body to a CyberArk Identity endpoint and decodes
+// the response into out. The X-IDAP-NATIVE-CLIENT header asks Identity to return
+// the platform token in the response body rather than as a session cookie.
+func (c *Client) doIdentityJSONPost(reqURL string, body interface{}, out interface{}) error {
+	jsonData, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", reqURL, bytes.NewReader(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-IDAP-NATIVE-CLIENT", "true")
+
+	ctx, cancel := context.WithTimeout(context.Background(), c.AuthTimeout)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+	}
+	if out != nil {
+		if err := json.Unmarshal(bodyBytes, out); err != nil {
+			return fmt.Errorf("failed to parse response: %w", err)
+		}
+	}
+	return nil
+}
+
+// findPasswordMechanism returns the username/password ("UP") mechanism from the
+// offered challenges, if present.
+func findPasswordMechanism(challenges []identityChallenge) (identityChallengeMechanism, bool) {
+	for _, ch := range challenges {
+		for _, m := range ch.Mechanisms {
+			if strings.EqualFold(m.Name, "UP") {
+				return m, true
+			}
+		}
+	}
+	return identityChallengeMechanism{}, false
+}
+
+// hasFederatedMechanism reports whether any offered mechanism is a federated /
+// SAML / IdP-redirect mechanism that cannot be answered non-interactively.
+func hasFederatedMechanism(challenges []identityChallenge) bool {
+	for _, ch := range challenges {
+		for _, m := range ch.Mechanisms {
+			name := strings.ToLower(m.Name)
+			answerType := strings.ToLower(m.AnswerType)
+			if strings.Contains(name, "saml") || strings.Contains(name, "fed") ||
+				strings.Contains(answerType, "redirect") || strings.Contains(answerType, "saml") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// authenticateSelfHosted logs into a self-hosted CyberArk PVWA API using the
+// configured authentication method (CyberArk, LDAP, RADIUS, or Windows).
+func (c *Client) authenticateSelfHosted() error {
+	method, ok := NormalizeAuthMethod(c.AuthMethod)
+	if !ok {
+		return fmt.Errorf("unsupported auth method %q", c.AuthMethod)
+	}
+	segment := selfHostedLogonPathSegment[method]
+	authURL := fmt.Sprintf("%s/PasswordVault/API/Auth/%s/Logon", c.BaseURL, segment)
 	payload := map[string]string{
 		"username": c.Username,
 		"password": c.Password,
 	}
 
-	c.Logger.Debugf("Authenticating to %s as user %s", c.BaseURL, c.Username)
+	c.Logger.Debugf("Authenticating to %s as user %s (method %s)", c.BaseURL, c.Username, segment)
 
 	// Don't use retry logic for initial auth request to avoid infinite recursion
 	jsonData, err := json.Marshal(payload)
@@ -496,6 +839,14 @@ func truncateString(s string, maxLen int) string {
 // Logoff terminates the session with PVWA
 func (c *Client) Logoff() error {
 	if c.Token == "" {
+		return nil
+	}
+
+	// Privilege Cloud (Identity / ISPSS) uses short-lived OAuth2 bearer tokens
+	// that expire on their own; there is no PVWA session to terminate.
+	if c.isIdentityAuth() {
+		c.Token = ""
+		c.Logger.Debug("Identity (OAuth2) token discarded; no PVWA logoff required")
 		return nil
 	}
 
