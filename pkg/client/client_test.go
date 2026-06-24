@@ -373,6 +373,156 @@ func TestAuthenticateIdentityRequiresTenantURL(t *testing.T) {
 	}
 }
 
+// identityInteractiveServer returns an httptest server that rejects the OAuth2
+// client_credentials grant and drives the interactive StartAuthentication →
+// AdvanceAuthentication flow. The advance handler is supplied by the caller.
+func identityInteractiveServer(t *testing.T, startResult map[string]interface{}, advance http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/oauth2/platformtoken":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_client"}`))
+		case "/Security/StartAuthentication":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": true,
+				"Result":  startResult,
+			})
+		case "/Security/AdvanceAuthentication":
+			advance(w, r)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+}
+
+func TestAuthenticateIdentityFallsBackToInteractive(t *testing.T) {
+	startResult := map[string]interface{}{
+		"SessionId": "sess-1",
+		"Challenges": []map[string]interface{}{
+			{"Mechanisms": []map[string]interface{}{
+				{"Name": "UP", "AnswerType": "Text", "MechanismId": "mech-up"},
+			}},
+		},
+	}
+	var gotAnswer, gotMech string
+	server := identityInteractiveServer(t, startResult, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotAnswer = body["Answer"]
+		gotMech = body["MechanismId"]
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"Result":  map[string]interface{}{"Summary": "LoginSuccess", "Token": "platform-bearer-xyz"},
+		})
+	})
+	defer server.Close()
+
+	client := testClient(server.URL)
+	client.AuthMethod = AuthMethodIdentity
+	client.IdentityTenantURL = server.URL
+
+	if err := client.Authenticate(); err != nil {
+		t.Fatalf("Authenticate returned error: %v", err)
+	}
+	if client.Token != "platform-bearer-xyz" {
+		t.Fatalf("token = %q, want platform-bearer-xyz", client.Token)
+	}
+	if gotAnswer != "pass" || gotMech != "mech-up" {
+		t.Fatalf("advance body = (answer=%q, mech=%q)", gotAnswer, gotMech)
+	}
+	if client.authorizationHeaderValue() != "Bearer platform-bearer-xyz" {
+		t.Fatalf("auth header = %q, want Bearer platform-bearer-xyz", client.authorizationHeaderValue())
+	}
+}
+
+func TestAuthenticateIdentityInteractiveMFARequired(t *testing.T) {
+	startResult := map[string]interface{}{
+		"SessionId": "sess-1",
+		"Challenges": []map[string]interface{}{
+			{"Mechanisms": []map[string]interface{}{
+				{"Name": "UP", "AnswerType": "Text", "MechanismId": "mech-up"},
+			}},
+			{"Mechanisms": []map[string]interface{}{
+				{"Name": "OTP", "AnswerType": "Text", "MechanismId": "mech-otp"},
+			}},
+		},
+	}
+	server := identityInteractiveServer(t, startResult, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"Result":  map[string]interface{}{"Summary": "StartNextChallenge"},
+		})
+	})
+	defer server.Close()
+
+	client := testClient(server.URL)
+	client.AuthMethod = AuthMethodIdentity
+	client.IdentityTenantURL = server.URL
+
+	err := client.Authenticate()
+	if err == nil {
+		t.Fatal("expected MFA error")
+	}
+	if !strings.Contains(err.Error(), "multi-factor") {
+		t.Fatalf("expected MFA error, got: %v", err)
+	}
+}
+
+func TestAuthenticateIdentityInteractiveFederatedSAML(t *testing.T) {
+	startResult := map[string]interface{}{
+		"SessionId":      "sess-1",
+		"IdpRedirectUrl": "https://idp.example.com/saml/login",
+	}
+	server := identityInteractiveServer(t, startResult, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("AdvanceAuthentication must not be called for federated accounts")
+	})
+	defer server.Close()
+
+	client := testClient(server.URL)
+	client.AuthMethod = AuthMethodIdentity
+	client.IdentityTenantURL = server.URL
+
+	err := client.Authenticate()
+	if err == nil {
+		t.Fatal("expected federated/SAML error")
+	}
+	if !strings.Contains(err.Error(), "federated/SAML") {
+		t.Fatalf("expected federated/SAML error, got: %v", err)
+	}
+}
+
+func TestAuthenticateIdentityInteractiveBadPassword(t *testing.T) {
+	startResult := map[string]interface{}{
+		"SessionId": "sess-1",
+		"Challenges": []map[string]interface{}{
+			{"Mechanisms": []map[string]interface{}{
+				{"Name": "UP", "AnswerType": "Text", "MechanismId": "mech-up"},
+			}},
+		},
+	}
+	server := identityInteractiveServer(t, startResult, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"Message": "Authentication (login or challenge) has failed.",
+		})
+	})
+	defer server.Close()
+
+	client := testClient(server.URL)
+	client.AuthMethod = AuthMethodIdentity
+	client.IdentityTenantURL = server.URL
+
+	err := client.Authenticate()
+	if err == nil {
+		t.Fatal("expected rejection error")
+	}
+	if !strings.Contains(err.Error(), "rejected") {
+		t.Fatalf("expected rejection error, got: %v", err)
+	}
+}
+
 func TestListApplicationsWithAuthEnrichesAuthentications(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

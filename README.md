@@ -36,7 +36,13 @@ The resulting `cyberark_export.json` file can be directly imported into BloodHou
 
 #### Privilege Cloud (SaaS / ISPSS)
 
-CyberArkHound also supports **CyberArk Privilege Cloud**, the SaaS-based offering on the Identity Security Platform Shared Services (ISPSS). The data model and the PasswordVault REST API are the same as self-hosted PVWA — only **authentication** differs: Privilege Cloud authenticates through **CyberArk Identity** using the OAuth2 `client_credentials` flow instead of the PVWA logon endpoint.
+CyberArkHound also supports **CyberArk Privilege Cloud**, the SaaS-based offering on the Identity Security Platform Shared Services (ISPSS). The data model and the PasswordVault REST API are the same as self-hosted PVWA — only **authentication** differs: Privilege Cloud authenticates through **CyberArk Identity**.
+
+With `--auth-method identity`, CyberArkHound authenticates in two stages:
+1. **OAuth2 `client_credentials`** — tried first, for [OAuth confidential client service users](#service-user-setup-for-privilege-cloud) (recommended). `--username`/`--password` are the `client_id`/`client_secret`.
+2. **Username/password fallback** — if the `client_credentials` grant is rejected, CyberArkHound falls back to the interactive CyberArk Identity flow (`StartAuthentication` → `AdvanceAuthentication`) and stores the returned platform bearer token. `--username`/`--password` are the regular Identity username and password.
+
+If the account requires **multi-factor authentication (MFA)** or uses **federated / SAML sign-in**, the username/password fallback cannot complete non-interactively and CyberArkHound returns a clear error — use an OAuth confidential client service user (excluded from MFA) instead.
 
 ```bash
 ./cyberarkhound \
@@ -107,6 +113,8 @@ For **Privilege Cloud (SaaS / ISPSS)**, the collector authenticates through Cybe
 4. **Grant the same vault access** as self-hosted: `Audit Users` plus `List` / `View Safe Members` on all safes (directly or via a group).
 5. **Run CyberArkHound with `--auth-method identity`**, passing the `client_id` as `--username`, the `client_secret` as `--password`, and the Identity tenant URL as `--identity-url`.
 
+> A regular (non-OAuth) CyberArk Identity user also works: CyberArkHound automatically falls back to the username/password `StartAuthentication` → `AdvanceAuthentication` flow when the `client_credentials` grant is rejected. That user must **not** be subject to MFA or federated/SAML sign-in, since those require interactive completion. The OAuth confidential client approach is still recommended because it is purpose-built for non-interactive automation.
+
 #### What the Tool Can view
 With `Audit Users` authorization, the tool can:
 - ✅ List all vault users and groups
@@ -124,7 +132,8 @@ With 'list' and 'View Safe Members' on each safe, the tool can:
 
 #### API Endpoints Used
 - `POST /API/Auth/{CyberArk,LDAP,radius,Windows}/Logon` - Authentication (self-hosted PVWA; method selected by `--auth-method`)
-- `POST /oauth2/platformtoken` on the CyberArk Identity tenant - Authentication (Privilege Cloud / ISPSS, `--auth-method identity`; OAuth2 `client_credentials`)
+- `POST /oauth2/platformtoken` on the CyberArk Identity tenant - Authentication (Privilege Cloud / ISPSS, `--auth-method identity`; OAuth2 `client_credentials`, tried first)
+- `POST /Security/StartAuthentication` + `POST /Security/AdvanceAuthentication` on the CyberArk Identity tenant - Username/password fallback when `client_credentials` is rejected (`--auth-method identity`; not usable with MFA/SAML accounts)
 - `GET /API/safes` - List all safes
 - `GET /API/Safes/{safeUrlId}/Members` - List safe members and permissions
 - `GET /API/Accounts` - List accounts (filtered by safe)
