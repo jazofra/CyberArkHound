@@ -353,6 +353,12 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 	platformSessionMonitoring := make(map[string]bool) // platformID (lowercase) -> requirePrivilegedSessionMonitoringAndIsolation
 	platformSessionRecording := make(map[string]bool)  // platformID (lowercase) -> recordAndSaveSessionActivity
 	platformPSMServerID := make(map[string]string)     // platformID (lowercase) -> PSMServerID
+	// platformID (lowercase) -> ordered linked-account types as defined by the
+	// platform. Position is significant: index 0 corresponds to ExtraPass1,
+	// index 1 to ExtraPass2, and so on. Used to resolve the real type name of a
+	// platform-defined "additional" linked account (e.g. a Unix JumpAccount or a
+	// Cisco EnablePassword) instead of guessing from the ExtraPassID alone.
+	platformLinkedTypes := make(map[string][]models.PlatformLinkedAccountType)
 	if len(platforms) > 0 {
 		logger.Infof("Processing %d platforms...", len(platforms))
 		for _, p := range platforms {
@@ -441,6 +447,9 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			platformSessionRecording[strings.ToLower(pid)] = p.SessionManagement.RecordAndSaveSessionActivity
 			if p.SessionManagement.PSMServerID != "" {
 				platformPSMServerID[strings.ToLower(pid)] = p.SessionManagement.PSMServerID
+			}
+			if len(p.LinkedAccounts) > 0 {
+				platformLinkedTypes[strings.ToLower(pid)] = p.LinkedAccounts
 			}
 		}
 		logger.Infof("Indexed %d platform IDs for matching", len(platformsByID))
@@ -1326,22 +1335,21 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 					continue
 				}
 
-				// Map ExtraPassID to human-readable link type
-				linkType := "unknown"
-				switch link.ExtraPassID {
-				case 1:
-					linkType = "logon"
-				case 2:
-					linkType = "enable"
-				case 3:
-					linkType = "reconcile"
-				}
+				// Resolve the link type from the source account's platform
+				// metadata. Only ExtraPass1 (logon) and ExtraPass3 (reconcile)
+				// are fixed roles; every other slot is a platform-defined
+				// "additional" account whose real type name is looked up
+				// positionally in Platform.linkedAccounts.
+				linkType, linkTypeDisplay := resolveLinkedAccountType(
+					link.ExtraPassID, platformLinkedTypes[accountPlatformID[sourceNodeID]])
 
 				og.AddEdge("CyberArk_LinkedTo", sourceNodeID, targetNodeID,
 					"id", "id", map[string]interface{}{
-						"linkType": linkType,
-						"linkName": link.Name,
-						"safeName": link.SafeName,
+						"linkType":            linkType,
+						"linkTypeDisplayName": linkTypeDisplay,
+						"extraPassID":         link.ExtraPassID,
+						"linkName":            link.Name,
+						"safeName":            link.SafeName,
 					}, false)
 				linkedEdgeCount++
 			}
@@ -1615,6 +1623,47 @@ func isWildcardAllowedSafes(allowedSafes string) bool {
 		return true
 	}
 	return false
+}
+
+// resolveLinkedAccountType maps a linked account's ExtraPassID to a machine
+// linkType and a human-readable display name.
+//
+// CyberArk only fixes two of the extra-password slots: ExtraPass1 is always the
+// logon account and ExtraPass3 is always the reconcile account. Every other slot
+// (ExtraPass2, ExtraPass4, …) is a platform-defined "additional" account whose
+// real type is declared, in order, in Platform.linkedAccounts — for example a
+// Unix JumpAccount or a Cisco EnablePassword. The slots line up positionally:
+// linkedAccounts[0] describes ExtraPass1, linkedAccounts[1] describes ExtraPass2,
+// and so on.
+//
+// When platform metadata is available we resolve the additional slot's true type
+// name from it. When it is not (platforms weren't collected, or the platform
+// declares fewer linked accounts than the ExtraPassID implies) we fall back to a
+// generic "additional" label. Note this deliberately no longer labels ExtraPass2
+// as "enable": that was only ever correct for Cisco-style platforms and
+// mislabeled every other additional account.
+func resolveLinkedAccountType(extraPassID int, platformTypes []models.PlatformLinkedAccountType) (linkType, displayName string) {
+	switch extraPassID {
+	case 1:
+		return "logon", "Logon Account"
+	case 3:
+		return "reconcile", "Reconcile Account"
+	}
+
+	// Any other slot is a platform-defined additional account. Resolve its real
+	// type name positionally from the platform's linkedAccounts metadata.
+	if extraPassID >= 1 && extraPassID-1 < len(platformTypes) {
+		la := platformTypes[extraPassID-1]
+		if la.Name != "" {
+			display := la.DisplayName
+			if display == "" {
+				display = la.Name
+			}
+			return la.Name, display
+		}
+	}
+
+	return "additional", "Additional Account"
 }
 
 // looksLikeIP reports whether s is an IPv4/IPv6 literal (as opposed to a

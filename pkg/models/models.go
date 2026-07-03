@@ -104,15 +104,15 @@ type SafeMember struct {
 
 // Account represents a CyberArk account
 type Account struct {
-	ID                         string                 `json:"id"`
-	Name                       string                 `json:"name"`
-	Address                    string                 `json:"address"`
-	UserName                   string                 `json:"userName"`
-	PlatformID                 string                 `json:"platformId"`
-	SafeName                   string                 `json:"safeName"`
-	SafeUrlId                  string                 `json:"safeUrlId"`
-	SecretType                 string                 `json:"secretType"`
-	PlatformAccountProperties  map[string]interface{} `json:"platformAccountProperties"`
+	ID                        string                 `json:"id"`
+	Name                      string                 `json:"name"`
+	Address                   string                 `json:"address"`
+	UserName                  string                 `json:"userName"`
+	PlatformID                string                 `json:"platformId"`
+	SafeName                  string                 `json:"safeName"`
+	SafeUrlId                 string                 `json:"safeUrlId"`
+	SecretType                string                 `json:"secretType"`
+	PlatformAccountProperties map[string]interface{} `json:"platformAccountProperties"`
 	// SecretManagement is the raw "secretManagement" object from the Gen2
 	// Accounts API. Its nested fields (automaticManagementEnabled,
 	// manualManagementReason, lastModifiedTime, lastVerifiedTime,
@@ -146,13 +146,18 @@ type AccountActivity struct {
 	IPAddress string      `json:"IPAddress"`
 }
 
-// LinkedAccount represents a linked account (logon, reconcile, or enable account)
+// LinkedAccount represents a linked account attached to an account through one
+// of its extra-password slots (logon, reconcile, or a platform-defined
+// additional account such as a jump or enable account).
 type LinkedAccount struct {
-	Name        string `json:"Name"`
-	FolderPath  string `json:"FolderPath"`
-	SafeName    string `json:"SafeName"`
-	AccountID   string `json:"AccountID"`
-	ExtraPassID int    `json:"ExtraPassID"` // 1=Logon, 2=Enable, 3=Reconcile
+	Name       string `json:"Name"`
+	FolderPath string `json:"FolderPath"`
+	SafeName   string `json:"SafeName"`
+	AccountID  string `json:"AccountID"`
+	// ExtraPassID identifies the extra-password slot. 1=Logon and 3=Reconcile are
+	// fixed roles; every other slot (2, 4, …) is a platform-defined "additional"
+	// account whose real type name lives in Platform.linkedAccounts.
+	ExtraPassID int `json:"ExtraPassID"`
 }
 
 // PlatformGeneral holds the general section of a platform response
