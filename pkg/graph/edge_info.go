@@ -373,9 +373,10 @@ var EdgeInfoMap = map[string]EdgeInfo{
 	"CyberArk_LinkedTo": {
 		Description: "The source account has a credential dependency on the target account. " +
 			"The linkType property specifies the relationship type: " +
-			"'logon' means the target account provides the credentials CyberArk uses to connect to the source account's target system (the logon account is used to authenticate to the machine where the source account lives); " +
-			"'reconcile' means the target account is used to reset the source account's password when rotation fails; " +
-			"'enable' means the target account is used to enable/unlock the source account during password rotation. " +
+			"'logon' (ExtraPass1) means the target account provides the credentials CyberArk uses to connect to the source account's target system (the logon account is used to authenticate to the machine where the source account lives); " +
+			"'reconcile' (ExtraPass3) means the target account is used to reset the source account's password when rotation fails; " +
+			"any other value is a platform-defined additional account (ExtraPass2, ExtraPass4, …) whose real type name comes from the platform's linkedAccounts metadata — for example a Unix 'JumpAccount' or a Cisco 'EnablePassword' used to elevate during password rotation. " +
+			"The raw slot is preserved in the extraPassID property and the platform's display name in linkTypeDisplayName. " +
 			"Compromising a logon account gives implicit access to all accounts that depend on it, since CyberArk uses the logon account to manage those accounts on the target system.",
 		WindowsAbuse: "For linkType=logon — the logon account's password is used by CyberArk to connect to the target system. " +
 			"Retrieving the logon account's password gives credentials valid on the target system, " +

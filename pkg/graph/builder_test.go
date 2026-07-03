@@ -1463,6 +1463,141 @@ func TestReconcileHijack_OnlyReconcileLinkType(t *testing.T) {
 	}
 }
 
+// buildLinkedGraph builds a graph from platforms, accounts and linked-account
+// data — the inputs the CyberArk_LinkedTo edge and its type resolution depend on.
+func buildLinkedGraph(platforms []models.Platform, accounts []models.Account, linked map[string][]models.LinkedAccount) *OpenGraph {
+	logger := logrus.New()
+	logger.SetLevel(logrus.WarnLevel)
+	og, _ := BuildOpenGraph(BuildInput{
+		Accounts:       accounts,
+		Platforms:      platforms,
+		LinkedAccounts: linked,
+		PVWATag:        "PVWA",
+		LogLevel:       "WARNING",
+	}, logger)
+	return og
+}
+
+// linkedToEdgeFor returns the single CyberArk_LinkedTo edge in og, failing if
+// there is not exactly one.
+func linkedToEdgeFor(t *testing.T, og *OpenGraph) *Edge {
+	t.Helper()
+	edges := edgesByKind(og, "CyberArk_LinkedTo")
+	if len(edges) != 1 {
+		t.Fatalf("expected 1 CyberArk_LinkedTo edge, got %d", len(edges))
+	}
+	return edges[0]
+}
+
+// A Unix platform's ExtraPass2 slot is a JumpAccount, not an "enable" account.
+// It must resolve from the platform's linkedAccounts metadata.
+func TestLinkedTo_UnixJumpAccount(t *testing.T) {
+	platforms := []models.Platform{{
+		General: models.PlatformGeneral{ID: "UnixSSH", Name: "UnixSSH"},
+		LinkedAccounts: []models.PlatformLinkedAccountType{
+			{Name: "LogonAccount", DisplayName: "Logon Account"},         // ExtraPass1
+			{Name: "JumpAccount", DisplayName: "Jump Account"},           // ExtraPass2
+			{Name: "ReconcileAccount", DisplayName: "Reconcile Account"}, // ExtraPass3
+		},
+	}}
+	accounts := []models.Account{
+		{ID: "acc1", UserName: "svc", SafeName: "Prod", PlatformID: "UnixSSH"},
+		{ID: "jump1", UserName: "jump", SafeName: "Prod", PlatformID: "UnixSSH"},
+	}
+	linked := map[string][]models.LinkedAccount{
+		"acc1": {{Name: "jump", AccountID: "jump1", SafeName: "Prod", ExtraPassID: 2}},
+	}
+
+	e := linkedToEdgeFor(t, buildLinkedGraph(platforms, accounts, linked))
+	if e.Props["linkType"] != "JumpAccount" {
+		t.Errorf("expected linkType JumpAccount, got %v", e.Props["linkType"])
+	}
+	if e.Props["linkTypeDisplayName"] != "Jump Account" {
+		t.Errorf("expected linkTypeDisplayName 'Jump Account', got %v", e.Props["linkTypeDisplayName"])
+	}
+	if e.Props["extraPassID"] != 2 {
+		t.Errorf("expected extraPassID 2, got %v", e.Props["extraPassID"])
+	}
+}
+
+// A Cisco platform's ExtraPass2 slot is an EnablePassword. It resolves to the
+// platform-declared name rather than a hard-coded label.
+func TestLinkedTo_CiscoEnablePassword(t *testing.T) {
+	platforms := []models.Platform{{
+		General: models.PlatformGeneral{ID: "CiscoSSH", Name: "CiscoSSH"},
+		LinkedAccounts: []models.PlatformLinkedAccountType{
+			{Name: "LogonAccount", DisplayName: "Logon Account"},     // ExtraPass1
+			{Name: "EnablePassword", DisplayName: "Enable Password"}, // ExtraPass2
+		},
+	}}
+	accounts := []models.Account{
+		{ID: "acc1", UserName: "svc", SafeName: "Net", PlatformID: "CiscoSSH"},
+		{ID: "en1", UserName: "enable", SafeName: "Net", PlatformID: "CiscoSSH"},
+	}
+	linked := map[string][]models.LinkedAccount{
+		"acc1": {{Name: "enable", AccountID: "en1", SafeName: "Net", ExtraPassID: 2}},
+	}
+
+	e := linkedToEdgeFor(t, buildLinkedGraph(platforms, accounts, linked))
+	if e.Props["linkType"] != "EnablePassword" {
+		t.Errorf("expected linkType EnablePassword, got %v", e.Props["linkType"])
+	}
+	if e.Props["linkTypeDisplayName"] != "Enable Password" {
+		t.Errorf("expected linkTypeDisplayName 'Enable Password', got %v", e.Props["linkTypeDisplayName"])
+	}
+}
+
+// Without platform metadata, only the fixed roles resolve. ExtraPass2 must fall
+// back to a generic "additional" label — and must NOT be mislabeled "enable".
+func TestLinkedTo_NoPlatformMetadata_Fallback(t *testing.T) {
+	accounts := []models.Account{
+		{ID: "acc1", UserName: "svc", SafeName: "Prod", PlatformID: "SomePlatform"},
+		{ID: "logon1", UserName: "logon", SafeName: "Prod", PlatformID: "SomePlatform"},
+		{ID: "extra1", UserName: "extra", SafeName: "Prod", PlatformID: "SomePlatform"},
+		{ID: "recon1", UserName: "recon", SafeName: "Prod", PlatformID: "SomePlatform"},
+	}
+	linked := map[string][]models.LinkedAccount{
+		"acc1": {
+			{Name: "logon", AccountID: "logon1", SafeName: "Prod", ExtraPassID: 1},
+			{Name: "extra", AccountID: "extra1", SafeName: "Prod", ExtraPassID: 2},
+			{Name: "recon", AccountID: "recon1", SafeName: "Prod", ExtraPassID: 3},
+		},
+	}
+
+	// No Platforms provided.
+	og := buildLinkedGraph(nil, accounts, linked)
+	byTarget := map[string]*Edge{}
+	for _, e := range edgesByKind(og, "CyberArk_LinkedTo") {
+		byTarget[e.End.Value] = e
+	}
+	if len(byTarget) != 3 {
+		t.Fatalf("expected 3 CyberArk_LinkedTo edges, got %d", len(byTarget))
+	}
+
+	cases := []struct {
+		target   string
+		linkType string
+	}{
+		{"CAACCOUNT-LOGON1-PVWA", "logon"},
+		{"CAACCOUNT-EXTRA1-PVWA", "additional"},
+		{"CAACCOUNT-RECON1-PVWA", "reconcile"},
+	}
+	for _, c := range cases {
+		e := byTarget[c.target]
+		if e == nil {
+			t.Fatalf("no edge to %s", c.target)
+		}
+		if e.Props["linkType"] != c.linkType {
+			t.Errorf("target %s: expected linkType %q, got %v", c.target, c.linkType, e.Props["linkType"])
+		}
+	}
+
+	// Regression guard: ExtraPass2 must never resolve to the old "enable" label.
+	if byTarget["CAACCOUNT-EXTRA1-PVWA"].Props["linkType"] == "enable" {
+		t.Error("ExtraPassID=2 was mislabeled 'enable'")
+	}
+}
+
 func TestPSMBreakout_AccountProperties(t *testing.T) {
 	platforms := []models.Platform{{
 		General: models.PlatformGeneral{ID: "WinDomain", Name: "WinDomain"},

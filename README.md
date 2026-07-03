@@ -71,7 +71,7 @@ The required vault authorizations (`Audit Users` plus `List`/`View Safe Members`
 - **LDAP/Directory sync tracking**: Identify synced vs local users and groups
 - **External AD entity inference**: Automatic detection of relationships to Active Directory
 - **Account activity tracking**: Optional CyberArk_UsedAccount edges showing actual usage patterns
-- **Linked account chain analysis**: Optional CyberArk_LinkedTo edges mapping logon/reconcile/enable account dependencies for credential chain traversal
+- **Linked account chain analysis**: Optional CyberArk_LinkedTo edges mapping logon/reconcile/additional account dependencies for credential chain traversal
 - **Safe creator and CPM tracking**: CyberArk_Created and CyberArk_ManagedBy edges showing who created and manages each safe
 - **Platform-based grouping**: Optional CyberArk_Platform nodes and CyberArk_UsesPlatform edges for shared attack surface analysis
 - **PSM infrastructure mapping**: Optional CyberArk_PSMServer and CyberArk_ConnectionComponent nodes with edges showing which PSM servers and connection protocols (RDP, SSH, etc.) each platform and account uses; CyberArk_PSMServerHostedOn external edges link PSM servers to their AD Computer objects
@@ -139,7 +139,7 @@ With 'list' and 'View Safe Members' on each safe, the tool can:
 - `GET /API/Accounts` - List accounts (filtered by safe)
 - `GET /API/Accounts/{accountId}` - Get account details
 - `GET /API/Accounts/{accountId}/Activities` - Get account activity logs (optional, requires `--include-activity`)
-- `GET /API/Accounts/{accountId}/LinkedAccounts` - Get linked accounts: logon, reconcile, enable (optional, requires `--include-linked-accounts`)
+- `GET /API/Accounts/{accountId}/LinkedAccounts` - Get linked accounts: logon, reconcile, and platform-defined additional accounts (optional, requires `--include-linked-accounts`)
 - `GET /API/Platforms/` - List all platforms with full configuration (optional, requires `--include-platforms`)
 - `GET /API/Platforms/Targets` - List target platforms with exception flags (optional, requires `--include-platforms`; also used as fallback when `/API/Platforms/` fails)
 - `GET /API/Platforms/Targets/{id}/PrivilegedSessionManagement` - Get per-platform PSM connectors (optional, requires `--include-platforms`)
@@ -260,7 +260,7 @@ When the bulk `GET /API/Users?ExtendedDetails=true` endpoint times out, CyberArk
 - `--activity-limit` Max activities per account to fetch from API (default: 100)
 
 **Linked Accounts & Platforms:**
-- `--include-linked-accounts` Include linked account data (creates CyberArk_LinkedTo edges for logon/reconcile/enable account chains)
+- `--include-linked-accounts` Include linked account data (creates CyberArk_LinkedTo edges for logon/reconcile/additional account chains)
 - `--include-platforms` Include platform data (creates CyberArk_Platform nodes and CyberArk_UsesPlatform edges)
 - `--include-psm` Include PSM server and connection component data (creates CyberArk_PSMServer and CyberArk_ConnectionComponent nodes with linking edges)
 - `--include-applications` Include CCP/AIMWebService application (AppID) data (creates CyberArk_Application nodes and CyberArk_CanRetrieveViaCCP edges). Requires the collector to be able to list Applications (typically the `Manage Users` vault authorization or membership in the relevant application safes)
@@ -306,7 +306,7 @@ _Queries: [Privilege escalation](#privilege-escalation-cyberark_cangrantaccessto
 | `CyberArk_CanHijackViaReconcile` | User/Group → Account | Safe member `addAccounts`/`manageSafe` + reconcile linked account (`GET /API/Accounts/{id}/LinkedAccounts`) | Privilege escalation — can coerce the CPM to reset a target's password using a privileged reconcile account ([Nigmatullin, SO-CON 2026](#tradecraft-reference)) |
 | `CyberArk_CanApprove` | User/Group → Safe | Safe member `requestsAuthorizationLevel1`/`Level2` | Can approve dual-controlled access requests (L1/L2) |
 | `CyberArk_UsedAccount` | User → Account | `GET /API/Accounts/{id}/Activities` | Actual usage audit trail — who really accessed what |
-| `CyberArk_LinkedTo` | Account → Account | `GET /API/Accounts/{id}/LinkedAccounts` | Logon/reconcile/enable credential chains — compromising one propagates to all dependents |
+| `CyberArk_LinkedTo` | Account → Account | `GET /API/Accounts/{id}/LinkedAccounts` | Logon/reconcile/additional credential chains — compromising one propagates to all dependents |
 | `CyberArk_Created` | User → Safe | Existing `Safe.Creator` field | Shows who created each safe (implicit ownership/access) |
 | `CyberArk_ManagedBy` | CPM User → Safe | Existing `Safe.ManagingCPM` field | CPM accounts have privileged password management access |
 | `CyberArk_UsesPlatform` | Account → Platform | `GET /API/Platforms/Targets` | Shared platform config = shared attack surface |
@@ -407,14 +407,16 @@ When `--include-platforms` is not used, the platform policy cannot be checked. I
 _Queries: [Dual control (approval) analysis](#dual-control-approval-analysis) and [Platforms & PSM infrastructure](#platforms--psm-infrastructure)._
 
 #### CyberArk_LinkedTo (Account → Account) - Optional
-**Linked account dependencies** - Maps credential chains where one account depends on another for logon, reconciliation, or enablement:
+**Linked account dependencies** - Maps credential chains where one account depends on another for logon, reconciliation, or a platform-defined additional role:
 - Created when `--include-linked-accounts` flag is used
 - Based on CyberArk linked accounts via `/API/Accounts/{accountId}/LinkedAccounts`
-- Link types: `logon` (ExtraPassID=1), `enable` (ExtraPassID=2), `reconcile` (ExtraPassID=3)
+- Link types: `logon` (ExtraPass1) and `reconcile` (ExtraPass3) are fixed roles. Every other slot (ExtraPass2, ExtraPass4, …) is a platform-defined **additional** account whose real type name is resolved positionally from the platform's `linkedAccounts` metadata — e.g. a Unix `JumpAccount` or a Cisco `EnablePassword`. When platform metadata isn't collected, additional slots fall back to the generic label `additional`.
 - Critical for attack path analysis: compromising a logon account gives access to all accounts that depend on it
 
 **Edge Properties**:
-- `linkType`: Type of link — `logon`, `enable`, `reconcile`, or `unknown`
+- `linkType`: Resolved type of link — `logon`, `reconcile`, the platform-defined type name (e.g. `JumpAccount`, `EnablePassword`), or `additional` when platform metadata is unavailable
+- `linkTypeDisplayName`: Human-readable display name for the link type (from platform metadata when available)
+- `extraPassID`: Raw CyberArk extra-password slot number (1=logon, 3=reconcile, others=additional)
 - `linkName`: Name of the linked account relationship
 - `safeName`: Safe containing the linked account
 
@@ -642,6 +644,12 @@ RETURN p
 // Reconcile dependencies
 MATCH p=(a:CyberArk_Account)-[:CyberArk_LinkedTo {linkType: "reconcile"}]->(reconciler:CyberArk_Account)
 RETURN p
+
+// Platform-defined additional accounts (e.g. Unix JumpAccount, Cisco EnablePassword)
+// resolved from platform metadata — ExtraPass2/4/… slots, not logon or reconcile
+MATCH p=(a:CyberArk_Account)-[r:CyberArk_LinkedTo]->(extra:CyberArk_Account)
+WHERE NOT r.linkType IN ["logon", "reconcile"]
+RETURN a.name, r.linkType, r.linkTypeDisplayName, r.extraPassID, extra.name
 
 // Attack path: access a logon account, inherit every dependent account
 MATCH p=(u:CyberArk_User)-[:CyberArk_HasAccessTo]->(logon:CyberArk_Account)<-[:CyberArk_LinkedTo {linkType: "logon"}]-(dependent:CyberArk_Account)
@@ -1124,7 +1132,7 @@ flowchart TD
  CyberArk_Safe -- CyberArk_Contains --> CyberArk_Account
  CyberArk_User -. CyberArk_Created .-> CyberArk_Safe
  CyberArk_User -. CyberArk_ManagedBy<br>(CPM) .-> CyberArk_Safe
- CyberArk_Account -. CyberArk_LinkedTo<br>(logon/reconcile/enable) .-> CyberArk_Account
+ CyberArk_Account -. CyberArk_LinkedTo<br>(logon/reconcile/additional) .-> CyberArk_Account
  CyberArk_Account -- CyberArk_UsesPlatform --> CyberArk_Platform["fa:fa-server CyberArk_Platform"]
  CyberArk_Account -- CyberArk_ManagedByPSM --> CyberArk_PSMServer["fa:fa-desktop CyberArk_PSMServer"]
  CyberArk_Platform -- CyberArk_UsesPSMServer --> CyberArk_PSMServer

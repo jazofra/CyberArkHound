@@ -45,7 +45,7 @@ func main() {
 	activityLimit := pflag.Int("activity-limit", 100, "Max activities per account")
 
 	// Linked accounts and platforms flags
-	includeLinkedAccounts := pflag.Bool("include-linked-accounts", true, "Include linked account data (creates CyberArk_LinkedTo edges for logon/reconcile/enable chains)")
+	includeLinkedAccounts := pflag.Bool("include-linked-accounts", true, "Include linked account data (creates CyberArk_LinkedTo edges for logon/reconcile/additional account chains)")
 	includePlatforms := pflag.Bool("include-platforms", true, "Include platform data (creates CyberArk_Platform nodes and CyberArk_UsesPlatform edges)")
 	includePSM := pflag.Bool("include-psm", true, "Include PSM server and connection component data (creates CyberArk_PSMServer and CyberArk_ConnectionComponent nodes)")
 	includeApplications := pflag.Bool("include-applications", true, "Include CCP/AIMWebService Application (AppID) data (creates CyberArk_Application nodes and CyberArk_CanRetrieveViaCCP edges)")
