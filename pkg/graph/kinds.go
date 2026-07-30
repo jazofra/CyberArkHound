@@ -2,6 +2,8 @@
 // BloodHound OpenGraph representations from CyberArk PVWA data.
 package graph
 
+//go:generate go run ../../cmd/gen-schema
+
 // NodeKinds is the canonical set of CyberArk node kinds CyberArkHound emits.
 // It is the single source of truth used by the drift-guard test to keep
 // extension/schema.json and cyberark_model.json in sync. When you add a node

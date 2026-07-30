@@ -1,9 +1,11 @@
 package graph
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
@@ -98,6 +100,81 @@ func TestEdgeInfoMapKeysAreCanonical(t *testing.T) {
 		if !want[kind] {
 			t.Errorf("EdgeInfoMap has documentation for %q which is not in graph.EdgeKinds (typo or removed edge?)", kind)
 		}
+	}
+}
+
+func TestNodeInfoMapKeysAreCanonical(t *testing.T) {
+	want := toSet(NodeKinds)
+	for kind := range NodeInfoMap {
+		if !want[kind] {
+			t.Errorf("NodeInfoMap has documentation for %q which is not in graph.NodeKinds (typo or removed node?)", kind)
+		}
+	}
+}
+
+// TestEveryKindHasEntityInfo ensures each canonical node and edge kind ships a
+// non-empty Entity Panel info block, so a newly added kind cannot silently reach
+// users without curated context.
+func TestEveryKindHasEntityInfo(t *testing.T) {
+	for _, kind := range NodeKinds {
+		if len(NodeInfoSections(kind)) == 0 {
+			t.Errorf("node kind %q has no Entity Panel info sections (add it to NodeInfoMap)", kind)
+		}
+	}
+	for _, kind := range EdgeKinds {
+		if len(EdgeInfoSections(kind)) == 0 {
+			t.Errorf("edge kind %q has no Entity Panel info sections (add it to EdgeInfoMap)", kind)
+		}
+	}
+}
+
+// TestSchemaJSONInfoInSync is the drift guard for the generated Entity Panel
+// content: extension/schema.json must equal the output of graph.BuildSchemaJSON,
+// so the committed schema always reflects NodeInfoMap / EdgeInfoMap. When it
+// fails, regenerate with `go generate ./...` (or `go run ./cmd/gen-schema`).
+func TestSchemaJSONInfoInSync(t *testing.T) {
+	path := filepath.Join("..", "..", "extension", "schema.json")
+	committed, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", path, err)
+	}
+
+	regenerated, err := BuildSchemaJSON(committed)
+	if err != nil {
+		t.Fatalf("BuildSchemaJSON failed: %v", err)
+	}
+
+	if !bytes.Equal(committed, regenerated) {
+		t.Errorf("extension/schema.json is out of sync with NodeInfoMap/EdgeInfoMap; run `go generate ./...` to regenerate it")
+	}
+}
+
+// TestSchemaInfoSectionsAreWellFormed checks that every generated info section
+// satisfies the OpenGraph constraints BloodHound enforces: a valid section id, a
+// non-empty title, a positive position, and non-empty markdown content.
+func TestSchemaInfoSectionsAreWellFormed(t *testing.T) {
+	idPattern := regexp.MustCompile(`^[a-z0-9_-]{1,128}$`)
+	check := func(kind string, sections map[string]InfoSection) {
+		for id, sec := range sections {
+			if !idPattern.MatchString(id) {
+				t.Errorf("%s: info section id %q does not match ^[a-z0-9_-]{1,128}$", kind, id)
+			}
+			if sec.Title == "" {
+				t.Errorf("%s: info section %q has an empty title", kind, id)
+			}
+			if sec.Position < 1 {
+				t.Errorf("%s: info section %q has non-positive position %d", kind, id, sec.Position)
+			}
+			if sec.Markdown.Content == "" {
+				t.Errorf("%s: info section %q has empty markdown content", kind, id)
+			}
+		}
+	}
+	for _, kind := range NodeKinds {
+		check(kind, NodeInfoSections(kind))
+	}
+	for _, kind := range EdgeKinds {
+		check(kind, EdgeInfoSections(kind))
 	}
 }
 
