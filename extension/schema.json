@@ -2,7 +2,7 @@
   "schema": {
     "name": "CyberArkHound",
     "display_name": "CyberArk Extension (CyberArkHound)",
-    "version": "v2.0.0",
+    "version": "v2.1.0",
     "namespace": "CyberArk"
   },
   "node_kinds": [
