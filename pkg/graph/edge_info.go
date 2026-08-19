@@ -646,4 +646,34 @@ var EdgeInfoMap = map[string]EdgeInfo{
 			"https://attack.mitre.org/techniques/T1078/003/",
 		},
 	},
+	"CyberArk_InstanceContains": {
+		Description: "The source CyberArk instance (PVWA/Vault) contains the target top-level configuration object — a safe, platform, PSM server, or connection component. " +
+			"Users and groups are deliberately excluded from this containment edge to avoid a large edge fan-out in LDAP-synced vaults. " +
+			"This is structural environment containment used for scoping a graph to a single deployment; it is not an attack path on its own.",
+		OpsecNotes: "This relationship is derived from collected structure and generates no audit events by itself. " +
+			"Use it to bound queries to one vault before pivoting into the access and escalation edges (CyberArk_HasAccessTo, CyberArk_CanGrantAccessTo, CyberArk_CanRetrieveViaCCP) that do represent real attack paths.",
+		References: []string{
+			"https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/the-privileged-access-security-solution.htm",
+		},
+	},
+	"CyberArk_PSMServerHostedOn": {
+		Description: "The source CyberArk PSM server runs on the target Active Directory computer, inferred by matching the PSM server's configured address to a computer in a target domain. " +
+			"This cross-domain correlation edge bridges CyberArk session infrastructure to its underlying host, so the computer's Active Directory attack surface and the PSM server's session exposure can be reasoned about together.",
+		WindowsAbuse: "Compromising the underlying computer is equivalent to compromising the PSM server it hosts: every session the PSM brokers, and every recording it stages locally, becomes reachable.\n\n" +
+			"# From the host, PSM for Windows stages recordings before transfer:\n" +
+			"# C:\\ProgramData\\CyberArk\\PSM\\Sessions\\\n" +
+			"# Pivot to the host via its normal Windows attack surface (RDP, WinRM, SMB),\n" +
+			"# then follow this PSM server's CyberArk_ManagedByPSM / CyberArk_UsesPSMServer edges\n" +
+			"# to see exactly which accounts and platforms route their sessions through it.",
+		LinuxAbuse: "For PSM for SSH (PSMP) the host is Linux; landing on it exposes the SSH session broker and its logs:\n\n" +
+			"ls /opt/CARKpsmp/\n" +
+			"ls /var/opt/CARKpsmp/logs/\n" +
+			"cat /etc/opt/CARKpsmp/basic_psmpserver.conf",
+		OpsecNotes: "PSM hosts are high-value and typically hardened and heavily monitored; interactive access to them is conspicuous. " +
+			"The correlation is inferred by name/address match and may be approximate — verify the mapping before relying on it. All sessions brokered by the PSM remain fully logged and recorded regardless of host access.",
+		References: []string{
+			"https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/manage-psm-for-windows.htm",
+			"https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/the-psm-for-ssh.htm",
+		},
+	},
 }

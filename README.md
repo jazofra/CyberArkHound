@@ -1188,6 +1188,47 @@ After loading, BloodHound will render CyberArk nodes with meaningful icons/color
 - Keep color palette distinct for rapid visual triage (avoid near-duplicate hex codes).
 - Version the file if distributing across teams (e.g., `cyberark_model.v1.json`).
 
+### BloodHound Entity Panel Info (OpenGraph `info`)
+
+BloodHound v9.5 (2026-07-29) lets an OpenGraph extension publish **curated Entity Panel content once per kind**, instead of copying it onto every node and edge. `extension/schema.json` carries an `info` block on each node and relationship kind: a map of accordion sections keyed by a stable id, each with a `title`, an integer `position`, and a `markdown.content` body:
+
+```json
+"CyberArk_HasAccessTo": {
+  "name": "CyberArk_HasAccessTo",
+  "description": "…",
+  "is_traversable": true,
+  "info": {
+    "overview":      { "title": "Overview",             "position": 1, "markdown": { "content": "…" } },
+    "windows_abuse": { "title": "Windows Abuse",        "position": 2, "markdown": { "content": "```powershell\n…\n```" } },
+    "linux_abuse":   { "title": "Linux Abuse",          "position": 3, "markdown": { "content": "```bash\n…\n```" } },
+    "opsec":         { "title": "OPSEC Considerations", "position": 4, "markdown": { "content": "…" } },
+    "references":    { "title": "References",           "position": 5, "markdown": { "content": "- <https://…>" } }
+  }
+}
+```
+
+BloodHound renders these sections in the Entity Panel accordion **after** the built-in **Object Information** panel, ordered by `position` then `title`, and serves them from the entity lookup APIs when called with `include-info=true` (e.g. `GET /api/v2/relationships/{id}?include-info=true`). Every CyberArkHound node kind (Instance, User, Group, Safe, Account, Platform, PSM Server, Connection Component, Application) and every relationship kind carries an overview plus, where relevant, abuse, OPSEC, and reference sections.
+
+Because this context now lives once per kind in the schema, CyberArkHound **no longer duplicates edge documentation onto every edge instance** in the exported graph — exports are considerably smaller, and only each edge's own data properties are emitted.
+
+To load the panels, upload `extension/schema.json` as the CyberArk extension definition (alongside applying `cyberark_model.json` icons/colors) before ingesting the exported graph.
+
+#### Maintaining the entity info
+
+The panel content is generated from a single Go source of truth:
+
+- Node content lives in `graph.NodeInfoMap` (`pkg/graph/node_info.go`).
+- Edge content lives in `graph.EdgeInfoMap` (`pkg/graph/edge_info.go`).
+- `extension/schema.json` is generated from those maps by `cmd/gen-schema`.
+
+After editing either map, regenerate the schema:
+
+```bash
+go generate ./...        # or: go run ./cmd/gen-schema
+```
+
+A drift-guard test (`pkg/graph/schema_test.go`) fails the build if `extension/schema.json` is out of sync with the Go maps, and asserts every canonical kind ships a well-formed `info` block.
+
 ### Logging and Verbosity Control
 
 The tool provides flexible logging control to balance visibility with output volume:
@@ -1284,6 +1325,8 @@ Module layout:
 ```
 cmd/cyberarkhound/
     main.go            # CLI entry point / orchestration
+cmd/gen-schema/
+    main.go            # Regenerates extension/schema.json from the Go info maps
 pkg/
     client/
         client.go      # CyberArk PVWA API client
@@ -1291,14 +1334,23 @@ pkg/
         models.go      # Data structures for API responses
     graph/
         builder.go     # OpenGraph construction
+        kinds.go       # Canonical node/edge kind lists (+ go:generate)
+        edge_info.go   # EdgeInfoMap — per-edge-kind Entity Panel docs
+        node_info.go   # NodeInfoMap — per-node-kind Entity Panel docs
+        entity_info.go # EdgeInfo/NodeInfo -> schema "info" accordion sections
+        schema.go      # schema.json round-trip + info injection
         pvwa_tag.go    # PVWA URL tagging algorithm
         utils.go       # Graph utilities, permission maps
     exporter/
         exporter.go    # BloodHound JSON export
+extension/
+    schema.json        # OpenGraph extension definition (generated info blocks)
 ```
 
 ### Extending
 Add new edge types or property mappings inside `pkg/graph/builder.go`. Keep transformations pure and avoid network calls there. For additional export formats create a new package (e.g. `pkg/neo4j/exporter.go`) and reuse the existing OpenGraph object.
+
+When you add a node or edge kind, register it in `pkg/graph/kinds.go`, add its Entity Panel documentation to `NodeInfoMap`/`EdgeInfoMap`, and run `go generate ./...` to refresh `extension/schema.json`. The drift-guard tests in `pkg/graph/schema_test.go` enforce that the canonical kinds, the model/schema files, and the info maps all stay in sync.
 
 ### Security Notes
 - Prefer supplying credentials via environment variables or a secure secret store.

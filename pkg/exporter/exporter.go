@@ -43,8 +43,15 @@ func sortEdgesStable(edges []*graph.Edge) {
 	sort.SliceStable(edges, func(i, j int) bool { return keys[edges[i]] < keys[edges[j]] })
 }
 
-// buildEdgeDict serializes an edge to a BloodHound-compatible map, merging in EdgeInfo documentation
-// (windowsAbuse, linuxAbuse, opsec, references, general) so BloodHound's entity panel can display them.
+// buildEdgeDict serializes an edge to a BloodHound-compatible map.
+//
+// Edge documentation (overview, windows/linux abuse, OPSEC, references) is no
+// longer copied onto every edge instance. As of BloodHound v9.5 (2026-07-29)
+// that curated context lives once per relationship kind in the OpenGraph schema
+// (extension/schema.json "info" sections) and BloodHound serves it from the
+// entity lookup APIs with include-info=true. Keeping it out of per-edge
+// properties avoids repeating the same large text blocks across every edge and
+// keeps exports lean. Only the edge's own data properties are emitted here.
 func buildEdgeDict(edge *graph.Edge) map[string]interface{} {
 	edgeDict := map[string]interface{}{
 		"kind": edge.Kind,
@@ -58,30 +65,11 @@ func buildEdgeDict(edge *graph.Edge) map[string]interface{} {
 		},
 	}
 
-	props := make(map[string]interface{})
-	for k, v := range edge.Props {
-		props[k] = v
-	}
-
-	if info, ok := graph.EdgeInfoMap[edge.Kind]; ok {
-		if info.Description != "" {
-			props["general"] = info.Description
+	if len(edge.Props) > 0 {
+		props := make(map[string]interface{}, len(edge.Props))
+		for k, v := range edge.Props {
+			props[k] = v
 		}
-		if info.WindowsAbuse != "" {
-			props["windowsAbuse"] = info.WindowsAbuse
-		}
-		if info.LinuxAbuse != "" {
-			props["linuxAbuse"] = info.LinuxAbuse
-		}
-		if info.OpsecNotes != "" {
-			props["opsec"] = info.OpsecNotes
-		}
-		if len(info.References) > 0 {
-			props["references"] = strings.Join(info.References, "\n")
-		}
-	}
-
-	if len(props) > 0 {
 		edgeDict["properties"] = props
 	}
 
