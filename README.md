@@ -251,6 +251,16 @@ Download pre-compiled binaries from the [Releases](https://github.com/jazofra/Cy
 - `--user-extended-details-timeout` Timeout for optional `Users?ExtendedDetails=true` before falling back to the basic user list (default: 60s)
 - `--safe-page-limit` Safes page size for pagination (default: 100; lower can help slow or error-prone PVWA)
 - `--max-reauth-attempts` Max re-authentication attempts on HTTP 401 before giving up (default: 5)
+- `--continue-on-error` Export the safes collected so far when safe enumeration fails partway through (default: true). Set `--continue-on-error=false` to abort instead of writing an incomplete graph
+
+**Resilience during safe enumeration:**
+
+Large vaults can trip server-side PVWA failures while a page of safes is being built — most commonly `HTTP 500 CAWS00001E "Error mapping types"`, caused by a single safe record PVWA cannot serialise, or a plain timeout on a large page. CyberArkHound recovers instead of discarding hours of collection:
+
+1. Transient server errors (5xx) are retried with exponential backoff.
+2. If a page keeps failing, its size is halved and the same offset retried (e.g. 100 → 50 → 25 → … → 1).
+3. Once the failure is isolated to a single safe, that safe is skipped with a warning and enumeration continues. `--safe-page-limit` sets the starting page size; there is no lower bound on the reduction.
+4. If enumeration still cannot continue, the safes already collected are exported (unless `--continue-on-error=false`) and the run ends with an explicit `Export completed with INCOMPLETE data` warning listing what is missing.
 
 When the bulk `GET /API/Users?ExtendedDetails=true` endpoint times out, CyberArkHound falls back to `GET /API/Users` and enriches each user individually through the user details endpoint. This preserves extended user fields while avoiding a single large PVWA response as a hard dependency. The existing `--workers` value controls this per-user enrichment concurrency.
 
