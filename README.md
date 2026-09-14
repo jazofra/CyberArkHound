@@ -518,9 +518,11 @@ _Queries: [CCP / AIMWebService attack surface](#ccp--aimwebservice-attack-surfac
 
 A single catalogue of Cypher queries for the CyberArk OpenGraph, grouped by attack-path theme. Paste them into BloodHound's **Cypher search** (Explore → Cypher). Swap the example literals (`name: "jdoe"`, `"prod"`, …) for values from your environment.
 
-**Path form vs. tabular form.** Where a query walks one or more relationships it returns the **whole path** — `MATCH p=(…)-[…]->(…) RETURN p` — so BloodHound draws the nodes *and* the edges between them (the actual attack path), not just a list of endpoints. Queries that count, aggregate, or filter a single node type return columns instead, because there is no path to draw.
+**Every query returns the whole path.** Each query is written as `MATCH p=(…)-[…]->(…) RETURN p` so BloodHound draws the nodes *and* the edges between them (the actual attack path), never just a list of endpoint names or attributes. Even the "which platforms/safes/AppIDs are misconfigured" checks return a path — they walk the natural relationship (an account to its platform, a safe to its accounts, an application to the credentials it can reach) so the finding renders as a subgraph you can pivot from, not a flat table.
 
-> **Tip — path *and* edge properties:** bind the relationship as well so you can sort or annotate by its properties while still returning the path, e.g. `MATCH p=(u)-[r:CyberArk_UsedAccount]->(a) RETURN p ORDER BY r.lastUsedTime DESC`. Edge/node properties are visible on the rendered path.
+> **Tip — path *and* edge properties:** bind the relationship as well so you can sort or annotate by its properties while still returning the path, e.g. `MATCH p=(u)-[r:CyberArk_UsedAccount]->(a) RETURN p ORDER BY r.lastUsedTime DESC`. Edge/node properties stay visible on the rendered path.
+>
+> **Need a ranked count or a flat inventory instead?** Wrap any query below with an aggregation — e.g. `MATCH (pf:CyberArk_Platform)<-[:CyberArk_UsesPlatform]-(a) RETURN pf.name, count(a) ORDER BY count(a) DESC`. The library defaults to paths on purpose; reach for a tabular form only when you specifically want a count.
 
 #### Direct account access (`CyberArk_HasAccessTo`)
 ```cypher
@@ -591,21 +593,21 @@ MATCH p=(u:CyberArk_User)-[:CyberArk_HasAccessTo {requiresSessionMonitoring: fal
 RETURN p
 ```
 
-Node-only reports (single node type, no path to draw):
+Platform policy audits — each returns the accounts sitting on the flagged platform, so the exposure renders as a path:
 ```cypher
-// Platforms with dual control ENABLED
-MATCH (pf:CyberArk_Platform {requireDualControlPasswordAccessApproval: true})
-RETURN pf.name, pf.systemType
+// Accounts on platforms with dual control ENABLED
+MATCH p=(a:CyberArk_Account)-[:CyberArk_UsesPlatform]->(pf:CyberArk_Platform {requireDualControlPasswordAccessApproval: true})
+RETURN p
 
-// Platforms where dual control is DISABLED as a Master Policy exception (audit)
-MATCH (pf:CyberArk_Platform)
+// Accounts on platforms where dual control is DISABLED as a Master Policy exception (audit)
+MATCH p=(a:CyberArk_Account)-[:CyberArk_UsesPlatform]->(pf:CyberArk_Platform)
 WHERE pf.requireDualControlPasswordAccessApproval = false AND pf.dualControlIsException = true
-RETURN pf.name, pf.systemType
+RETURN p
 
-// Platforms where session monitoring is disabled as a Master Policy exception
-MATCH (pf:CyberArk_Platform)
+// Accounts on platforms where session monitoring is disabled as a Master Policy exception
+MATCH p=(a:CyberArk_Account)-[:CyberArk_UsesPlatform]->(pf:CyberArk_Platform)
 WHERE pf.requirePrivilegedSessionMonitoringAndIsolation = false AND pf.sessionMonitoringIsException = true
-RETURN pf.name, pf.systemType
+RETURN p
 ```
 
 #### Actual usage / activity (`CyberArk_UsedAccount`)
@@ -625,10 +627,9 @@ MATCH p=(u:CyberArk_User)-[:CyberArk_UsedAccount]->(a:CyberArk_Account)
 WHERE NOT (u)-[:CyberArk_HasAccessTo]->(a)
 RETURN p
 
-// Most active users (aggregate report)
-MATCH (u:CyberArk_User)-[r:CyberArk_UsedAccount]->(a:CyberArk_Account)
-RETURN u.name, COUNT(a) AS accountsUsed, SUM(r.usageCount) AS totalAccesses
-ORDER BY totalAccesses DESC LIMIT 10
+// Heaviest usage first — usage paths ordered by the edge's usageCount
+MATCH p=(u:CyberArk_User)-[r:CyberArk_UsedAccount]->(a:CyberArk_Account)
+RETURN p ORDER BY r.usageCount DESC
 ```
 
 #### Linked account / credential chains (`CyberArk_LinkedTo`)
@@ -649,7 +650,7 @@ RETURN p
 // resolved from platform metadata — ExtraPass2/4/… slots, not logon or reconcile
 MATCH p=(a:CyberArk_Account)-[r:CyberArk_LinkedTo]->(extra:CyberArk_Account)
 WHERE NOT r.linkType IN ["logon", "reconcile"]
-RETURN a.name, r.linkType, r.linkTypeDisplayName, r.extraPassID, extra.name
+RETURN p ORDER BY r.extraPassID
 
 // Attack path: access a logon account, inherit every dependent account
 MATCH p=(u:CyberArk_User)-[:CyberArk_HasAccessTo]->(logon:CyberArk_Account)<-[:CyberArk_LinkedTo {linkType: "logon"}]-(dependent:CyberArk_Account)
@@ -678,14 +679,14 @@ WHERE cpm.name CONTAINS "CPM"
 RETURN p
 
 // Safes managed by a specific CPM (inventory)
-MATCH (cpm:CyberArk_User)-[:CyberArk_ManagedBy]->(s:CyberArk_Safe)
+MATCH p=(cpm:CyberArk_User)-[:CyberArk_ManagedBy]->(s:CyberArk_Safe)
 WHERE cpm.name CONTAINS "CPM"
-RETURN cpm.name, COLLECT(s.safeName) AS managedSafes
+RETURN p
 
-// Safes with NO managing CPM (unrotated credentials)
-MATCH (s:CyberArk_Safe)
+// Safes with NO managing CPM, and the (unrotated) credentials they hold
+MATCH p=(s:CyberArk_Safe)-[:CyberArk_Contains]->(a:CyberArk_Account)
 WHERE NOT ()-[:CyberArk_ManagedBy]->(s)
-RETURN s.safeName
+RETURN p
 ```
 
 #### Platforms & PSM infrastructure
@@ -710,26 +711,21 @@ RETURN p
 MATCH p=(psm:CyberArk_PSMServer)-[:CyberArk_PSMServerHostedOn]->(c:Computer)
 RETURN p
 
-// Platforms with the most accounts (blast radius) — aggregate report
-MATCH (a:CyberArk_Account)-[:CyberArk_UsesPlatform]->(pf:CyberArk_Platform)
-RETURN pf.name, pf.systemType, COUNT(a) AS accountCount ORDER BY accountCount DESC
+// Blast radius — every account fanning into its platform (the fan-out shows which platforms carry the most)
+MATCH p=(a:CyberArk_Account)-[:CyberArk_UsesPlatform]->(pf:CyberArk_Platform)
+RETURN p
 
 // Inactive platforms still carrying accounts
-MATCH (a:CyberArk_Account)-[:CyberArk_UsesPlatform]->(pf:CyberArk_Platform {active: false})
-RETURN pf.name, COUNT(a) AS accountsOnInactivePlatform
+MATCH p=(a:CyberArk_Account)-[:CyberArk_UsesPlatform]->(pf:CyberArk_Platform {active: false})
+RETURN p
 
 // Platforms built from the /API/Platforms/Targets fallback (investigate /API/Platforms/ failure)
-MATCH (a:CyberArk_Account)-[:CyberArk_UsesPlatform]->(pf:CyberArk_Platform {dataSource: "targets-fallback"})
-RETURN pf.name, COUNT(a) AS accountCount
+MATCH p=(a:CyberArk_Account)-[:CyberArk_UsesPlatform]->(pf:CyberArk_Platform {dataSource: "targets-fallback"})
+RETURN p
 
 // Connection-component inventory (which platforms use each connector)
-MATCH (pf:CyberArk_Platform)-[:CyberArk_HasConnectionComponent]->(cc:CyberArk_ConnectionComponent)
-RETURN cc.connectorId, cc.displayName, COLLECT(pf.name) AS platforms
-
-// Platforms that support RDP (connectionComponents contains PSM-RDP)
-MATCH (pf:CyberArk_Platform)
-WHERE 'PSM-RDP' IN pf.connectionComponents
-RETURN pf.name, pf.connectionComponents
+MATCH p=(pf:CyberArk_Platform)-[:CyberArk_HasConnectionComponent]->(cc:CyberArk_ConnectionComponent)
+RETURN p
 ```
 
 #### CCP / AIMWebService attack surface (`CyberArk_CanRetrieveViaCCP`)
@@ -754,13 +750,13 @@ RETURN p
 MATCH p=(app:CyberArk_Application)-[:CyberArk_CCPAllowedFrom {machineIsOnlyRestriction: true}]->(c:Computer)
 RETURN p
 
-// Unrestricted AppIDs (node report — no Allowed Machines / OS user / path / hash / certificate)
-MATCH (app:CyberArk_Application {isUnrestricted: true})
-RETURN app.name, app.description, app.businessOwnerEmail
+// Unrestricted AppIDs (no Allowed Machines / OS user / path / hash / certificate) and the credentials they reach
+MATCH p=(app:CyberArk_Application {isUnrestricted: true})-[:CyberArk_CanRetrieveViaCCP]->(a:CyberArk_Account)
+RETURN p
 
-// Platforms with a wildcard AllowedSafes (audit / restrict)
-MATCH (pf:CyberArk_Platform {allowedSafesIsWildcard: true})
-RETURN pf.name, pf.systemType, pf.allowedSafes
+// Accounts on platforms with a wildcard AllowedSafes (audit / restrict)
+MATCH p=(a:CyberArk_Account)-[:CyberArk_UsesPlatform]->(pf:CyberArk_Platform {allowedSafesIsWildcard: true})
+RETURN p
 ```
 
 #### Cross-domain / AD correlation (external edges)
@@ -787,21 +783,21 @@ RETURN p
 
 These reproduce the end-of-run [Security Findings](#security-findings) summary as graph queries:
 ```cypher
-// Unrestricted CCP applications (Critical)
-MATCH (app:CyberArk_Application {isUnrestricted: true})
-RETURN app.name, app.businessOwnerEmail
+// Unrestricted CCP applications and the credentials they reach (Critical)
+MATCH p=(app:CyberArk_Application {isUnrestricted: true})-[:CyberArk_CanRetrieveViaCCP]->(a:CyberArk_Account)
+RETURN p
 
 // Credentials retrievable by unrestricted AppIDs via CCP (Critical)
 MATCH p=(app:CyberArk_Application)-[:CyberArk_CanRetrieveViaCCP {appIsUnrestricted: true, canRetrievePassword: true}]->(a:CyberArk_Account)
 RETURN p
 
-// Default AIMWebService application present (High)
-MATCH (app:CyberArk_Application {isDefaultCCPApp: true})
-RETURN app.name
+// Everything the default AIMWebService application can reach (High)
+MATCH p=(app:CyberArk_Application {isDefaultCCPApp: true})-[:CyberArk_CanRetrieveViaCCP]->(a:CyberArk_Account)
+RETURN p
 
-// Platforms with wildcard AllowedSafes = .* (High)
-MATCH (pf:CyberArk_Platform {allowedSafesIsWildcard: true})
-RETURN pf.name, pf.allowedSafes
+// Accounts on platforms with wildcard AllowedSafes = .* (High)
+MATCH p=(a:CyberArk_Account)-[:CyberArk_UsesPlatform]->(pf:CyberArk_Platform {allowedSafesIsWildcard: true})
+RETURN p
 
 // Reconcile-account hijack paths (High): principal -> privileged reconcile account
 MATCH p=(principal)-[:CyberArk_CanHijackViaReconcile]->(a:CyberArk_Account)
@@ -811,15 +807,15 @@ RETURN p
 MATCH p=(app:CyberArk_Application)-[:CyberArk_CCPAllowedFrom {machineIsOnlyRestriction: true}]->(c:Computer)
 RETURN p
 
-// PSM-routed accounts with session isolation/recording OFF (Medium)
-MATCH (a:CyberArk_Account {managedByPSM: true})
+// PSM-routed accounts with session isolation/recording OFF, and the PSM server that brokers them (Medium)
+MATCH p=(a:CyberArk_Account {managedByPSM: true})-[:CyberArk_ManagedByPSM]->(psm:CyberArk_PSMServer)
 WHERE a.sessionMonitoringEnabled = false OR a.sessionRecordingEnabled = false
-RETURN a.name, a.safeName, a.sessionMonitoringEnabled, a.sessionRecordingEnabled
+RETURN p
 
-// Safes with no managing CPM — unrotated credentials (Medium)
-MATCH (s:CyberArk_Safe)
+// Safes with no managing CPM, and the unrotated credentials they hold (Medium)
+MATCH p=(s:CyberArk_Safe)-[:CyberArk_Contains]->(a:CyberArk_Account)
 WHERE s.managingCPM IS NULL OR s.managingCPM = ""
-RETURN s.safeName
+RETURN p
 ```
 
 ### Security Findings
@@ -955,9 +951,9 @@ The three CCP findings (`CCP_UNRESTRICTED_APP`, `CCP_UNRESTRICTED_RETRIEVAL`, `C
   - Cross-reference which accounts in these safes are reachable: do they have `CyberArk_HasAccessTo` or `CyberArk_CanRetrieveViaCCP` edges? Those are the credentials whose value won't rotate out from under you.
   - Check the account's `lastModifiedTime` / `lastReconciledTime` to confirm staleness (a years-old timestamp is a strong signal).
   ```cypher
-  MATCH (s:CyberArk_Safe)-[:CyberArk_Contains]->(a:CyberArk_Account)
+  MATCH p=(s:CyberArk_Safe)-[:CyberArk_Contains]->(a:CyberArk_Account)
   WHERE (s.managingCPM IS NULL OR s.managingCPM = "")
-  RETURN s.safeName, a.name, a.lastModifiedTime ORDER BY a.lastModifiedTime
+  RETURN p ORDER BY a.lastModifiedTime
   ```
 - **Remediation:** assign a CPM to the safe and enable periodic change/verification on the accounts.
 
