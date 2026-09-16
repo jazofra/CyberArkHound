@@ -38,6 +38,7 @@ func main() {
 	userExtendedDetailsTimeout := pflag.Duration("user-extended-details-timeout", client.UserExtendedDetailsTimeout, "Timeout for optional Users?ExtendedDetails=true before falling back to basic users")
 	safePageLimit := pflag.Int("safe-page-limit", client.SafePageLimit, "Safes page size for /API/safes pagination (lower can help slow or error-prone PVWA)")
 	maxReauthAttempts := pflag.Int("max-reauth-attempts", 5, "Max re-authentication attempts on HTTP 401 before giving up")
+	continueOnError := pflag.Bool("continue-on-error", true, "Export the data collected so far when safe enumeration fails partway through (the export will be incomplete); set false to abort instead")
 
 	// Activity tracking flags
 	includeActivity := pflag.Bool("include-activity", true, "Include account activity data (creates CyberArk_UsedAccount edges)")
@@ -119,6 +120,10 @@ func main() {
 	pvwaTag := graph.PVWATagFromArg(*pvwaURL)
 	logger.Infof("PVWA tag: %s", pvwaTag)
 
+	// Reasons the collection could not cover the whole environment, reported
+	// again at the end so a partial export is never mistaken for a full one.
+	var incomplete []string
+
 	// Create CyberArk client
 	apiClient := client.NewClient(*pvwaURL, *username, *password, *insecure, *caBundle, logger)
 	apiClient.AuthMethod = normalizedAuthMethod
@@ -180,9 +185,16 @@ func main() {
 		logger.Infof("Searching for safe: %s", *testSafe)
 	}
 
+	// ListSafes returns whatever it collected before failing, so a run that
+	// dies on a single bad page does not throw away hours of collection.
 	safes, err := apiClient.ListSafes(limitSafesPtr, testSafePtr)
 	if err != nil {
-		logger.Fatalf("Failed to fetch safes: %v", err)
+		if !*continueOnError || len(safes) == 0 {
+			logger.Fatalf("Failed to fetch safes: %v", err)
+		}
+		logger.Errorf("Failed to fetch safes: %v", err)
+		logger.Warnf("Continuing with the %d safes collected before the failure (disable with --continue-on-error=false)", len(safes))
+		incomplete = append(incomplete, fmt.Sprintf("safe enumeration stopped early after %d safes: %v", len(safes), err))
 	}
 
 	if testSafePtr != nil && len(safes) == 0 {
@@ -501,7 +513,15 @@ func main() {
 		logger.Warnf("Logoff failed: %v", err)
 	}
 
-	logger.Info("Export completed successfully!")
+	if len(incomplete) > 0 {
+		logger.Warn("Export completed with INCOMPLETE data:")
+		for _, reason := range incomplete {
+			logger.Warnf("  - %s", reason)
+		}
+		logger.Warn("The exported graph does not represent the full CyberArk environment.")
+	} else {
+		logger.Info("Export completed successfully!")
+	}
 
 	// Print summary statistics
 	summary := og.GetSummary()

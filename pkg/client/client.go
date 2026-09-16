@@ -26,6 +26,13 @@ import (
 const (
 	// SafePageLimit is the default number of safes to retrieve per page.
 	SafePageLimit = 100
+	// safeIsolationPageLimit is the page size below which a reduced safes page
+	// is treated as a probe to isolate a single unreadable safe rather than as
+	// the new working page size for the rest of the collection.
+	safeIsolationPageLimit = 10
+	// maxConsecutiveSafeSkips caps how many safes in a row may be skipped
+	// before ListSafes stops trying to read the remaining pages.
+	maxConsecutiveSafeSkips = 25
 	// UserExtendedDetailsTimeout is the default timeout for the optional user
 	// enrichment endpoint before falling back to the basic user list.
 	UserExtendedDetailsTimeout = 60 * time.Second
@@ -299,7 +306,24 @@ func (c *Client) requestWithRetriesAndReauth(method, urlPath string, body interf
 			if readErr != nil {
 				return nil, fmt.Errorf("HTTP %d: failed to read error response: %w", resp.StatusCode, readErr)
 			}
-			return nil, &HTTPError{StatusCode: resp.StatusCode, Body: string(bodyBytes)}
+			httpErr := &HTTPError{StatusCode: resp.StatusCode, Body: string(bodyBytes)}
+
+			// Server-side failures are usually transient (PVWA under load, a
+			// recycling app pool, a gateway hiccup), so retry them like network
+			// errors.  The known safe page mapping bug is excluded: it fails
+			// identically on every attempt, so retrying only burns another
+			// request timeout, and ListSafes recovers by shrinking the page.
+			if resp.StatusCode >= 500 && !isPVWASafePageServerError(httpErr) {
+				c.Logger.Warnf("HTTP %d on attempt %d for %s: %s", resp.StatusCode, attempt, urlPath, previewBody(string(bodyBytes)))
+				if maxRetries > 0 && attempt >= maxRetries {
+					return nil, fmt.Errorf("max retries reached: %w", httpErr)
+				}
+				c.throttleVariableDuration(backoff)
+				backoff = time.Duration(math.Min(float64(backoff)*c.RetryMultiplier, float64(c.RetryMaxBackoff)))
+				continue
+			}
+
+			return nil, httpErr
 		}
 
 		// Guard against PVWA returning HTML (e.g. IIS login/error page) on
@@ -310,11 +334,7 @@ func (c *Client) requestWithRetriesAndReauth(method, urlPath string, body interf
 		if ct != "" && !strings.Contains(ct, "application/json") && !strings.Contains(ct, "text/json") {
 			bodyBytes, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			preview := string(bodyBytes)
-			if len(preview) > 200 {
-				preview = preview[:200] + "..."
-			}
-			c.Logger.Warnf("Non-JSON response (Content-Type: %s) for %s: %s", ct, urlPath, preview)
+			c.Logger.Warnf("Non-JSON response (Content-Type: %s) for %s: %s", ct, urlPath, previewBody(string(bodyBytes)))
 			if maxRetries > 0 && attempt >= maxRetries {
 				return nil, fmt.Errorf("non-JSON response for %s (Content-Type: %s)", urlPath, ct)
 			}
@@ -350,15 +370,31 @@ func isPVWASafePageServerError(err error) bool {
 			strings.Contains(msg, "IReadOnlyCollection`1 -> List`1"))
 }
 
+// isRecoverableSafePageError reports whether a safes page failure is worth
+// retrying with a smaller page: a timeout, the known PVWA type-mapping bug, or
+// any other server-side failure.
+func isRecoverableSafePageError(err error) bool {
+	return isTimeoutError(err) || isPVWASafePageServerError(err) || httpStatus(err) >= 500
+}
+
+// lowerSafePageLimit halves a safes page size, bottoming out at a single safe
+// so that one record PVWA cannot serialise can be isolated and skipped instead
+// of taking a whole page (and the rest of the collection) down with it.
 func lowerSafePageLimit(limit int) int {
-	if limit <= 50 {
-		return limit
+	if limit <= 1 {
+		return 1
 	}
-	newLimit := limit / 2
-	if newLimit < 50 {
-		newLimit = 50
+	return limit / 2
+}
+
+// previewBody truncates a response body so it can be logged safely.
+func previewBody(body string) string {
+	const maxPreview = 200
+	body = strings.TrimSpace(body)
+	if len(body) > maxPreview {
+		return body[:maxPreview] + "..."
 	}
-	return newLimit
+	return body
 }
 
 func userIDString(id interface{}) string {
@@ -863,14 +899,25 @@ func (c *Client) Logoff() error {
 	return nil
 }
 
-// ListSafes retrieves all safes with pagination
+// ListSafes retrieves all safes with pagination.
+//
+// PVWA can fail server-side while building a safes page (HTTP 500 CAWS00001E
+// "Error mapping types") or time out on large ones.  Rather than abandoning a
+// collection that may already have run for hours, the page size is halved and
+// the same offset retried; once a single safe is shown to be the culprit, that
+// record is skipped and enumeration continues.  Safes collected so far are
+// always returned, even alongside an error, so the caller can decide whether a
+// partial result is usable.
 func (c *Client) ListSafes(limitCount *int, search *string) ([]models.Safe, error) {
 	safes := make([]models.Safe, 0)
-	limit := c.SafePageLimit
-	if limit <= 0 {
-		limit = SafePageLimit
+	pageLimit := c.SafePageLimit
+	if pageLimit <= 0 {
+		pageLimit = SafePageLimit
 	}
+	limit := pageLimit
 	offset := 0
+	skipped := 0
+	consecutiveSkips := 0
 
 	for {
 		safeURL := fmt.Sprintf("%s/PasswordVault/API/safes?limit=%d&offset=%d", c.BaseURL, limit, offset)
@@ -881,17 +928,31 @@ func (c *Client) ListSafes(limitCount *int, search *string) ([]models.Safe, erro
 		c.Logger.Infof("Fetching safes page: offset=%d limit=%d collected=%d", offset, limit, len(safes))
 		resp, err := c.requestWithRetries("GET", safeURL, nil, c.ReqTimeout, 3)
 		if err != nil {
-			// PVWA can be slow or fail server-side when building large safe pages.
-			// Reduce the page size and retry the same offset for those known cases.
-			if (isTimeoutError(err) || isPVWASafePageServerError(err)) && limit > 50 {
-				newLimit := lowerSafePageLimit(limit)
-				if newLimit != limit {
-					c.Logger.Warnf("ListSafes failed at offset=%d limit=%d (%v), retrying with limit=%d", offset, limit, err, newLimit)
-					limit = newLimit
-					continue
-				}
+			if !isRecoverableSafePageError(err) {
+				return safes, fmt.Errorf("failed to list safes: %w", err)
 			}
-			return nil, fmt.Errorf("failed to list safes: %w", err)
+
+			// The page may simply be more than PVWA can build: halve it and
+			// retry the same offset.
+			if limit > 1 {
+				newLimit := lowerSafePageLimit(limit)
+				c.Logger.Warnf("ListSafes failed at offset=%d limit=%d (%v), retrying with limit=%d", offset, limit, err, newLimit)
+				limit = newLimit
+				continue
+			}
+
+			// Down to a single safe and still failing: this one record is
+			// unreadable server-side. Skip it so the rest are still collected.
+			consecutiveSkips++
+			if consecutiveSkips > maxConsecutiveSafeSkips {
+				return safes, fmt.Errorf("failed to list safes: %d consecutive safes could not be read (last offset=%d): %w", consecutiveSkips, offset, err)
+			}
+			skipped++
+			c.Logger.Warnf("Skipping safe at offset=%d: PVWA cannot return it (%v). It will be missing from the export.", offset, err)
+			offset++
+			// Stay at a single safe so a run of bad records is skipped one by
+			// one; the next page that succeeds restores the working page size.
+			continue
 		}
 
 		var data struct {
@@ -899,10 +960,11 @@ func (c *Client) ListSafes(limitCount *int, search *string) ([]models.Safe, erro
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 			resp.Body.Close()
-			return nil, fmt.Errorf("failed to decode safes response: %w", err)
+			return safes, fmt.Errorf("failed to decode safes response: %w", err)
 		}
 		resp.Body.Close()
 
+		consecutiveSkips = 0
 		safes = append(safes, data.Value...)
 		c.Logger.Infof("Fetched safes page: offset=%d limit=%d page_count=%d collected=%d", offset, limit, len(data.Value), len(safes))
 
@@ -916,9 +978,24 @@ func (c *Client) ListSafes(limitCount *int, search *string) ([]models.Safe, erro
 		}
 
 		offset += len(data.Value)
+
+		if limit < pageLimit {
+			if limit >= safeIsolationPageLimit {
+				// PVWA could not build pages of the configured size here, so
+				// keep the smaller one for the rest of the collection.
+				pageLimit = limit
+			} else {
+				// The tiny page was only a probe to isolate a bad record.
+				limit = pageLimit
+			}
+		}
 	}
 
-	c.Logger.Infof("Collected %d safes", len(safes))
+	if skipped > 0 {
+		c.Logger.Warnf("Collected %d safes; skipped %d safe(s) PVWA could not return", len(safes), skipped)
+	} else {
+		c.Logger.Infof("Collected %d safes", len(safes))
+	}
 	return safes, nil
 }
 

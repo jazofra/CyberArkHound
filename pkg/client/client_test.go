@@ -69,6 +69,153 @@ func TestListSafesReducesPageLimitOnPVWAMappingError(t *testing.T) {
 	}
 }
 
+func TestListSafesSkipsSafeThatPVWACannotReturn(t *testing.T) {
+	const totalSafes = 100
+	const poisoned = 37
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+		if err != nil {
+			t.Fatalf("invalid limit: %v", err)
+		}
+		offset, err := strconv.Atoi(r.URL.Query().Get("offset"))
+		if err != nil {
+			t.Fatalf("invalid offset: %v", err)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		// PVWA cannot build any page containing the poisoned record.
+		if offset <= poisoned && poisoned < offset+limit {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"ErrorCode":"CAWS00001E","ErrorMessage":"Error mapping types."}`))
+			return
+		}
+
+		page := make([]map[string]string, 0, limit)
+		for i := offset; i < offset+limit && i < totalSafes; i++ {
+			name := fmt.Sprintf("Safe%03d", i)
+			page = append(page, map[string]string{"safeName": name, "safeUrlId": name})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"value": page})
+	}))
+	defer server.Close()
+
+	client := testClient(server.URL)
+	client.SafePageLimit = 20
+
+	safes, err := client.ListSafes(nil, nil)
+	if err != nil {
+		t.Fatalf("ListSafes returned error: %v", err)
+	}
+	if len(safes) != totalSafes-1 {
+		t.Fatalf("collected %d safes, want %d", len(safes), totalSafes-1)
+	}
+	skippedName := fmt.Sprintf("Safe%03d", poisoned)
+	for _, safe := range safes {
+		if safe.SafeName == skippedName {
+			t.Fatalf("unreadable safe %s should have been skipped", skippedName)
+		}
+	}
+}
+
+func TestListSafesReturnsCollectedSafesOnFatalError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		offset, err := strconv.Atoi(r.URL.Query().Get("offset"))
+		if err != nil {
+			t.Fatalf("invalid offset: %v", err)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if offset >= 40 {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"ErrorCode":"PASWS013E","ErrorMessage":"Not authorized"}`))
+			return
+		}
+
+		limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+		if err != nil {
+			t.Fatalf("invalid limit: %v", err)
+		}
+		page := make([]map[string]string, 0, limit)
+		for i := offset; i < offset+limit; i++ {
+			name := fmt.Sprintf("Safe%03d", i)
+			page = append(page, map[string]string{"safeName": name, "safeUrlId": name})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"value": page})
+	}))
+	defer server.Close()
+
+	client := testClient(server.URL)
+	client.SafePageLimit = 20
+
+	safes, err := client.ListSafes(nil, nil)
+	if err == nil {
+		t.Fatal("ListSafes returned no error, want failure")
+	}
+	if len(safes) != 40 {
+		t.Fatalf("ListSafes returned %d safes alongside the error, want the 40 collected before it", len(safes))
+	}
+}
+
+func TestListSafesStopsAfterConsecutiveUnreadableSafes(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"ErrorCode":"CAWS00001E","ErrorMessage":"Error mapping types."}`))
+	}))
+	defer server.Close()
+
+	client := testClient(server.URL)
+	client.SafePageLimit = 1
+
+	safes, err := client.ListSafes(nil, nil)
+	if err == nil {
+		t.Fatal("ListSafes returned no error, want failure")
+	}
+	if len(safes) != 0 {
+		t.Fatalf("ListSafes returned %d safes, want 0", len(safes))
+	}
+	// One request per skipped safe: the mapping error is deterministic, so it
+	// must not be retried inside requestWithRetries.
+	if want := maxConsecutiveSafeSkips + 1; requests != want {
+		t.Fatalf("made %d requests, want %d", requests, want)
+	}
+}
+
+func TestRequestRetriesTransientServerErrors(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("upstream unavailable"))
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"value": []map[string]string{{"safeName": "SafeA", "safeUrlId": "SafeA"}},
+		})
+	}))
+	defer server.Close()
+
+	client := testClient(server.URL)
+
+	safes, err := client.ListSafes(nil, nil)
+	if err != nil {
+		t.Fatalf("ListSafes returned error: %v", err)
+	}
+	if len(safes) != 1 || safes[0].SafeName != "SafeA" {
+		t.Fatalf("unexpected safes: %+v", safes)
+	}
+	if attempts != 3 {
+		t.Fatalf("made %d attempts, want 3", attempts)
+	}
+}
+
 func TestListUsersFallsBackWhenExtendedDetailsTimesOut(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
