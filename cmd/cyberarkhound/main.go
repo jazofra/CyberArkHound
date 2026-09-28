@@ -127,7 +127,7 @@ func main() {
 	// Create CyberArk client
 	apiClient := client.NewClient(*pvwaURL, *username, *password, *insecure, *caBundle, logger)
 	apiClient.AuthMethod = normalizedAuthMethod
-	apiClient.IdentityTenantURL = *identityURL
+	apiClient.IdentityTenantURL = client.NormalizeBaseURL(*identityURL)
 	apiClient.ReqTimeout = *requestTimeout
 	apiClient.AuthTimeout = *authTimeout
 	apiClient.UserExtendedDetailsTimeout = *userExtendedDetailsTimeout
