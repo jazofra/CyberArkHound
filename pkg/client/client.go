@@ -144,8 +144,30 @@ func (r *cancelOnCloseReadCloser) Close() error {
 	return err
 }
 
-// NewClient creates a new CyberArk API client
+// NormalizeBaseURL turns a user-supplied server address into a base URL the
+// HTTP client can use: surrounding whitespace and trailing slashes are removed
+// and https:// is assumed when no scheme is given (Go's net/http rejects
+// scheme-less URLs with `unsupported protocol scheme ""`). An explicit
+// http:// or https:// scheme is preserved. The empty string is returned as is.
+func NormalizeBaseURL(raw string) string {
+	u := strings.TrimSpace(raw)
+	if u == "" {
+		return ""
+	}
+	if !strings.Contains(u, "://") {
+		u = "https://" + u
+	}
+	return strings.TrimRight(u, "/")
+}
+
+// NewClient creates a new CyberArk API client. baseURL is normalised with
+// NormalizeBaseURL, so a bare hostname such as "pvwa.example.com" is accepted.
 func NewClient(baseURL, username, password string, insecure bool, caBundle string, logger *logrus.Logger) *Client {
+	baseURL = NormalizeBaseURL(baseURL)
+	if strings.HasPrefix(baseURL, "http://") && logger != nil {
+		logger.Warnf("PVWA URL %s uses plain HTTP; credentials will be sent unencrypted", baseURL)
+	}
+
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: insecure,

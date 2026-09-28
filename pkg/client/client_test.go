@@ -722,3 +722,57 @@ func TestListApplicationsWithAuthEnrichesAuthentications(t *testing.T) {
 		t.Errorf("LockedApp should have a machineAddress authentication, got %v", byID["LockedApp"])
 	}
 }
+
+func TestNormalizeBaseURL(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"bare host", "pvwa.example.com", "https://pvwa.example.com"},
+		{"bare host with port", "pvwa.example.com:8443", "https://pvwa.example.com:8443"},
+		{"https preserved", "https://pvwa.example.com", "https://pvwa.example.com"},
+		{"http preserved", "http://pvwa.example.com", "http://pvwa.example.com"},
+		{"trailing slash trimmed", "https://pvwa.example.com/", "https://pvwa.example.com"},
+		{"bare host trailing slash", "pvwa.example.com/", "https://pvwa.example.com"},
+		{"whitespace trimmed", "  pvwa.example.com \n", "https://pvwa.example.com"},
+		{"empty", "", ""},
+		{"blank", "   ", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeBaseURL(tt.in); got != tt.want {
+				t.Fatalf("NormalizeBaseURL(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewClientNormalizesBaseURL(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+	c := NewClient("pvwa.example.com/", "user", "pass", false, "", logger)
+	if c.BaseURL != "https://pvwa.example.com" {
+		t.Fatalf("BaseURL = %q, want https://pvwa.example.com", c.BaseURL)
+	}
+}
+
+// A scheme-less TLS server address must reach the server over HTTPS instead of
+// failing with `unsupported protocol scheme ""`.
+func TestAuthenticateAcceptsSchemelessURL(t *testing.T) {
+	var logonPath string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		logonPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`"token"`))
+	}))
+	defer server.Close()
+
+	c := testClient(strings.TrimPrefix(server.URL, "https://"))
+	if err := c.Authenticate(); err != nil {
+		t.Fatalf("Authenticate() with scheme-less URL failed: %v", err)
+	}
+	if logonPath != "/PasswordVault/API/Auth/CyberArk/Logon" {
+		t.Fatalf("logon path = %q", logonPath)
+	}
+}

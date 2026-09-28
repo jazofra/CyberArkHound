@@ -13,8 +13,8 @@ import (
 // - 2 characters from the next label tokens (split on '-' and '_')
 //
 // Examples:
-// - aps.varian.com -> APVA
-// - cyberark.siemens-healthineers.com -> CYSH
+// - pvwa.example.com -> PVEX
+// - cyberark.acme-corp.example.com -> CYAC
 func PVWATagFromArg(pvwaArg string) string {
 	host := extractHostname(pvwaArg)
 	host = strings.ToLower(strings.TrimSpace(host))
