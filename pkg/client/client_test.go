@@ -439,8 +439,8 @@ func TestAuthenticateUsesConfiguredSelfHostedMethod(t *testing.T) {
 	if logonPath != "/PasswordVault/API/Auth/LDAP/Logon" {
 		t.Fatalf("logon path = %q, want /PasswordVault/API/Auth/LDAP/Logon", logonPath)
 	}
-	if client.authorizationHeaderValue() != "ldap-token" {
-		t.Fatalf("self-hosted auth header = %q, want raw token", client.authorizationHeaderValue())
+	if client.authorizationHeaderValue(client.Token) != "ldap-token" {
+		t.Fatalf("self-hosted auth header = %q, want raw token", client.authorizationHeaderValue(client.Token))
 	}
 }
 
@@ -579,8 +579,8 @@ func TestAuthenticateIdentityFallsBackToInteractive(t *testing.T) {
 	if gotAnswer != "pass" || gotMech != "mech-up" {
 		t.Fatalf("advance body = (answer=%q, mech=%q)", gotAnswer, gotMech)
 	}
-	if client.authorizationHeaderValue() != "Bearer platform-bearer-xyz" {
-		t.Fatalf("auth header = %q, want Bearer platform-bearer-xyz", client.authorizationHeaderValue())
+	if client.authorizationHeaderValue(client.Token) != "Bearer platform-bearer-xyz" {
+		t.Fatalf("auth header = %q, want Bearer platform-bearer-xyz", client.authorizationHeaderValue(client.Token))
 	}
 }
 
