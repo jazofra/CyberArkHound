@@ -512,7 +512,7 @@ func (c *Client) doWithRetries(ctx context.Context, method, urlPath string, body
 			attempt--
 
 			var waitErr error
-			if hasRetryAfter {
+			if hasRetryAfter && retryAfter > 0 {
 				if retryAfter > maxRetryAfter {
 					retryAfter = maxRetryAfter
 				}
@@ -629,23 +629,6 @@ func previewBody(body string) string {
 	return body
 }
 
-func userIDString(id interface{}) string {
-	switch v := id.(type) {
-	case string:
-		return strings.TrimSpace(v)
-	case float64:
-		return fmt.Sprintf("%.0f", v)
-	case int:
-		return fmt.Sprintf("%d", v)
-	case int64:
-		return fmt.Sprintf("%d", v)
-	case json.Number:
-		return v.String()
-	default:
-		return ""
-	}
-}
-
 func mergeUserDetails(base models.User, details models.User) models.User {
 	if details.ID != nil {
 		base.ID = details.ID
@@ -685,7 +668,7 @@ func mergeUserDetails(base models.User, details models.User) models.User {
 }
 
 func userHasIdentity(user models.User) bool {
-	return user.Username != "" || userIDString(user.ID) != ""
+	return user.Username != "" || models.IDString(user.ID) != ""
 }
 
 // isIdentityAuth reports whether the client uses CyberArk Identity (ISPSS)
@@ -1221,6 +1204,7 @@ func (c *Client) ListSafes(limitCount *int, search *string) ([]models.Safe, erro
 
 	if skipped > 0 {
 		c.Logger.Warnf("Collected %d safes; skipped %d safe(s) PVWA could not return", len(safes), skipped)
+		c.noteIncomplete("%d safe(s) could not be returned by PVWA and are missing, along with their members and accounts", skipped)
 	} else {
 		c.Logger.Infof("Collected %d safes", len(safes))
 	}
@@ -1551,10 +1535,10 @@ func decodeUsersResponse(body io.Reader) ([]models.User, error) {
 
 func (c *Client) GetUserDetails(user models.User, timeout time.Duration) (*models.User, error) {
 	identifiers := make([]string, 0, 2)
-	if id := userIDString(user.ID); id != "" {
+	if id := models.IDString(user.ID); id != "" {
 		identifiers = append(identifiers, id)
 	}
-	if user.Username != "" && user.Username != userIDString(user.ID) {
+	if user.Username != "" && user.Username != models.IDString(user.ID) {
 		identifiers = append(identifiers, user.Username)
 	}
 	if len(identifiers) == 0 {
@@ -1704,7 +1688,7 @@ func (c *Client) ListGroups(limitCount *int, concurrency int) ([]models.Group, e
 
 	parallel.ForEach(c.context(), groups, concurrency, func(idx int, g models.Group) {
 		// ID is interface{} because PVWA returns it as a number or a string.
-		groupID := userIDString(g.ID)
+		groupID := models.IDString(g.ID)
 		if groupID == "" {
 			groupID = g.GroupName
 		}
@@ -1894,19 +1878,26 @@ func (c *Client) ListApplicationsWithAuth(concurrency int) ([]models.Application
 
 	var failed atomic.Int64
 
-	// Each worker writes only apps[idx], so no further locking is needed.
+	// Every application counts as unknown until its restrictions are read,
+	// so one left unchecked by an interrupted collection is not mistaken for
+	// one without restrictions. Each worker writes only apps[idx].
+	for i := range apps {
+		apps[i].AuthenticationsUnknown = true
+	}
 	parallel.ForEach(c.context(), apps, concurrency, func(idx int, app models.Application) {
 		if app.AppID == "" {
 			return
 		}
 		auths, err := c.GetApplicationAuthentications(app.AppID)
 		if err != nil {
-			failed.Add(1)
-			c.Logger.Warnf("Failed to fetch authentications for application %s: %v", app.AppID, err)
-			apps[idx].AuthenticationsUnknown = true
+			if c.context().Err() == nil {
+				failed.Add(1)
+				c.Logger.Warnf("Failed to fetch authentications for application %s: %v", app.AppID, err)
+			}
 			return
 		}
 		apps[idx].Authentications = auths
+		apps[idx].AuthenticationsUnknown = false
 	})
 
 	if n := failed.Load(); n > 0 {

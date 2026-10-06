@@ -107,7 +107,7 @@ func TestRateLimitHonoursRetryAfter(t *testing.T) {
 	var hits atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if hits.Add(1) == 1 {
-			w.Header().Set("Retry-After", "0")
+			w.Header().Set("Retry-After", "1")
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
@@ -127,8 +127,38 @@ func TestRateLimitHonoursRetryAfter(t *testing.T) {
 		t.Fatalf("request failed: %v", err)
 	}
 	resp.Body.Close()
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Fatalf("request took %s; Retry-After: 0 should have been honoured", elapsed)
+	if elapsed := time.Since(start); elapsed < 900*time.Millisecond || elapsed > 5*time.Second {
+		t.Fatalf("request took %s; Retry-After: 1 should have made it wait about a second", elapsed)
+	}
+}
+
+func TestZeroRetryAfterStillBacksOff(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) <= 3 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer server.Close()
+
+	client := testClient(server.URL)
+	client.RetryInitialBackoff = 100 * time.Millisecond
+	client.RetryMaxBackoff = time.Second
+	client.MaxRateLimitRetries = 0 // retry indefinitely: must still pause
+
+	start := time.Now()
+	resp, err := client.requestWithRetries("GET", server.URL+"/x", nil, time.Second, 3)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+	// Backoff of 100ms, 200ms and 400ms between the four attempts.
+	if elapsed := time.Since(start); elapsed < 600*time.Millisecond {
+		t.Fatalf("three rate-limited retries took only %s; Retry-After: 0 must not mean retrying at once", elapsed)
 	}
 }
 
@@ -373,5 +403,41 @@ func TestListSafeMembersUsesSafeURLIDVerbatim(t *testing.T) {
 	}
 	if !strings.HasPrefix(gotURI, "/PasswordVault/API/Safes/R%26D/Members?") {
 		t.Fatalf("request URI = %q, want the safeUrlId sent verbatim", gotURI)
+	}
+}
+
+func TestInterruptedApplicationEnrichmentLeavesAppsUnknown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/Applications/") {
+			_, _ = io.WriteString(w, `{"application":[{"AppID":"A1"},{"AppID":"A2"},{"AppID":"A3"}]}`)
+			return
+		}
+		// The first restrictions lookup is answered, then the collection is
+		// interrupted.
+		cancel()
+		_, _ = io.WriteString(w, `{"authentication":[]}`)
+	}))
+	defer server.Close()
+
+	client := testClient(server.URL)
+	client.SetContext(ctx)
+	apps, err := client.ListApplicationsWithAuth(1)
+	if err != nil {
+		t.Fatalf("ListApplicationsWithAuth: %v", err)
+	}
+	unknown := 0
+	for _, a := range apps {
+		if a.AuthenticationsUnknown {
+			unknown++
+		}
+	}
+	if unknown < 2 {
+		t.Fatalf("applications not checked before the interruption must be unknown, got %+v", apps)
+	}
+	if len(client.IncompleteReasons()) != 0 {
+		t.Errorf("an interruption is not an API failure: %v", client.IncompleteReasons())
 	}
 }

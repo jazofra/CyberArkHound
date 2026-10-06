@@ -117,6 +117,11 @@ func TestListSafesSkipsSafeThatPVWACannotReturn(t *testing.T) {
 			t.Fatalf("unreadable safe %s should have been skipped", skippedName)
 		}
 	}
+	// The skipped safe is a gap in the collection and must be reported.
+	reasons := client.IncompleteReasons()
+	if len(reasons) != 1 || !strings.Contains(reasons[0], "1 safe(s) could not be returned by PVWA") {
+		t.Fatalf("skipped safe not reported as missing: %v", reasons)
+	}
 }
 
 func TestListSafesReturnsCollectedSafesOnFatalError(t *testing.T) {

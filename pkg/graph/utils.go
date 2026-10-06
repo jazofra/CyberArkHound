@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -353,24 +352,6 @@ func mapFloat(m map[string]interface{}, key string) (float64, bool) {
 		return f, err == nil
 	default:
 		return 0, false
-	}
-}
-
-// idString renders a CyberArk object ID, which PVWA returns as a JSON number
-// or a string. Numbers are printed as integers: formatting the decoded float64
-// with %v would turn 1234567 into "1.234567e+06". A missing ID yields "".
-func idString(id interface{}) string {
-	switch v := id.(type) {
-	case nil:
-		return ""
-	case string:
-		return strings.TrimSpace(v)
-	case float64:
-		return strconv.FormatFloat(v, 'f', -1, 64)
-	case json.Number:
-		return v.String()
-	default:
-		return fmt.Sprintf("%v", v)
 	}
 }
 

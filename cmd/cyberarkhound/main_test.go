@@ -127,6 +127,10 @@ func TestResolvePassword(t *testing.T) {
 	if err := resolvePassword(&config{}, env(""), prompt("")); err == nil {
 		t.Error("empty prompted password should be rejected")
 	}
+	// "--password $PW" with PW unset: reject rather than send an empty password.
+	if err := resolvePassword(&config{passwordFlag: true}, env("env"), prompt("typed")); err == nil || !strings.Contains(err.Error(), "--password is empty") {
+		t.Errorf("an explicitly empty --password should be rejected, got %v", err)
+	}
 }
 
 // fakePVWA is a minimal in-memory PVWA serving one safe, one account, two

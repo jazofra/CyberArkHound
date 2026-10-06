@@ -58,7 +58,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 	if now.IsZero() {
 		now = time.Now()
 	}
-	targetDomains := normalizeDomains(in.TargetDomains)
+	targetDomains := NormalizeDomains(in.TargetDomains)
 
 	og := NewOpenGraph(logger)
 	if pvwaTag == "" {
@@ -157,7 +157,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		props := map[string]interface{}{
 			"id":                           caNodeID,
 			"name":                         u.Username,
-			"userId":                       idString(u.ID),
+			"userId":                       models.IDString(u.ID),
 			"isLDAPSynced":                 isLDAP,
 			"enabled":                      u.Enabled,
 			"suspended":                    u.Suspended,
@@ -247,7 +247,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			logger.Infof("  Processed %d/%d groups (%.1f%%)", idx+1, len(groups), float64(idx+1)/float64(len(groups))*100)
 		}
 
-		groupID := idString(g.ID)
+		groupID := models.IDString(g.ID)
 		groupName := g.GroupName
 		if groupName == "" {
 			groupName = groupID
@@ -1790,10 +1790,10 @@ func nodeRefFromID(id, pvwaTag string) nodeRef {
 	return nodeRef{kind: "CyberArkBase", name: name}
 }
 
-// normalizeDomains trims whitespace and trailing dots from the target domains
-// and drops empty entries, so " corp.local" or "corp.local." produce the same
-// AD names as "corp.local".
-func normalizeDomains(domains []string) []string {
+// NormalizeDomains trims whitespace and trailing dots from target domains and
+// drops empty entries, so " corp.local" or "corp.local." produce the same AD
+// names as "corp.local".
+func NormalizeDomains(domains []string) []string {
 	out := make([]string, 0, len(domains))
 	for _, d := range domains {
 		d = strings.TrimRight(strings.TrimSpace(d), ".")

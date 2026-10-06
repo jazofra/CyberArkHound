@@ -91,17 +91,27 @@ type collector struct {
 	checkpointPath     string
 	checkpointInterval time.Duration
 
-	// mu guards snap, the progress sets and the checkpoint state while
-	// workers run. Only the collecting goroutine writes stages.
+	// mu guards snap, the progress sets and lastSave while workers run.
+	// Only the collecting goroutine writes stages.
 	mu       sync.Mutex
 	snap     *snapshot.Snapshot
 	stages   map[string]bool
 	scanned  map[string]string // lower-cased safe name -> safe name
 	detailed map[string]bool
 	activity map[string]bool
+	// recordedMembers and recordedAccounts are the (lower-cased) safes that
+	// already have members or discovered accounts recorded, which a repeated
+	// attempt for that safe must replace.
+	recordedMembers  map[string]bool
+	recordedAccounts map[string]bool
 	// notes are this run's reasons the collection is incomplete.
-	notes      []string
-	lastSave   time.Time
+	notes    []string
+	lastSave time.Time
+	saveSeq  uint64 // sequence number of the latest snapshot copy
+
+	// saveMu serialises writing snapshot copies to the checkpoint path.
+	saveMu     sync.Mutex
+	writtenSeq uint64 // sequence number of the copy on disk
 	saveFailed bool
 	// predefinedExcludedBefore records that an earlier run of a resumed
 	// collection could not collect built-in safe members.
@@ -131,6 +141,14 @@ func newCollector(ctx context.Context, cfg *config, api *client.Client, logger *
 		interval = defaultCheckpointInterval
 	}
 	p := snap.Progress
+	recordedMembers := make(map[string]bool)
+	for _, m := range snap.SafeMembers {
+		recordedMembers[strings.ToLower(m.SafeName)] = true
+	}
+	recordedAccounts := make(map[string]bool)
+	for _, a := range p.DiscoveredAccounts {
+		recordedAccounts[strings.ToLower(a.SafeName)] = true
+	}
 	return &collector{
 		ctx:                      ctx,
 		cfg:                      cfg,
@@ -143,6 +161,8 @@ func newCollector(ctx context.Context, cfg *config, api *client.Client, logger *
 		scanned:                  safeNameSet(p.ScannedSafes),
 		detailed:                 toSet(p.DetailedAccounts),
 		activity:                 toSet(p.ActivityFetched),
+		recordedMembers:          recordedMembers,
+		recordedAccounts:         recordedAccounts,
 		predefinedExcludedBefore: p.PredefinedMembersExcluded,
 	}
 }
@@ -191,15 +211,28 @@ func (c *collector) optional(err error, what, consequence string) {
 	c.note("%s could not be fetched (%s): %s", what, consequence, summarizeErr(err))
 }
 
-// stage runs fn unless an earlier run of this collection completed it. The
-// stage is recorded as complete only if fn succeeds, the client noted no new
-// gaps while it ran, and the collection was not interrupted, so a resumed
-// collection retries anything that came back partial.
+// stage runs a single-shot stage (users, groups, safes, ...) unless an
+// earlier run of this collection completed it.
 func (c *collector) stage(name, what string, fn func() error) error {
 	if c.stages[name] {
 		c.logger.Infof("Skipping %s: already collected by an earlier run", what)
 		return nil
 	}
+	return c.runStage(name, fn)
+}
+
+// items runs a per-item stage (safe contents, account details, activity).
+// It always runs: it fetches only the items not done yet, and on a resumed
+// collection those can include items an earlier stage discovers only now.
+func (c *collector) items(name string, fn func() error) {
+	_ = c.runStage(name, fn)
+}
+
+// runStage runs fn and records the stage as complete only if fn succeeds,
+// the client noted no new gaps while it ran, and the collection was not
+// interrupted, so a resumed collection retries anything that came back
+// partial.
+func (c *collector) runStage(name string, fn func() error) error {
 	gapsBefore := len(c.api.IncompleteReasons())
 	err := fn()
 	if err == nil && !c.interrupted() && len(c.api.IncompleteReasons()) == gapsBefore {
@@ -212,30 +245,62 @@ func (c *collector) stage(name, what string, fn func() error) error {
 }
 
 // checkpoint saves the collection so far, at most once per checkpoint
-// interval unless force is set.
+// interval unless force is set. The snapshot is copied under the lock and
+// written outside it, so workers are not held up while the file is written.
 func (c *collector) checkpoint(force bool) {
 	if c.checkpointPath == "" {
 		return
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if !force && time.Since(c.lastSave) < c.checkpointInterval {
+		c.mu.Unlock()
 		return
 	}
+	c.lastSave = time.Now()
 	c.snap.Incomplete = []string{fmt.Sprintf("the collection had not finished when this file was saved; continue it with --resume %s", c.checkpointPath)}
-	c.saveLocked()
+	snap, seq := c.copyLocked()
+	c.mu.Unlock()
+	c.write(snap, seq)
 }
 
-func (c *collector) saveLocked() {
+// copyLocked returns a copy of the snapshot that later updates do not
+// change, numbered so that saves happen in order. Slices and maps that are
+// appended to or edited in place are copied; the others are only ever
+// replaced as a whole and can be shared.
+func (c *collector) copyLocked() (*snapshot.Snapshot, uint64) {
 	c.syncProgressLocked()
-	if err := snapshot.Save(c.checkpointPath, c.snap); err != nil {
+	cp := *c.snap
+	cp.Incomplete = append([]string(nil), c.snap.Incomplete...)
+	cp.SafeMembers = append([]models.SafeMember(nil), c.snap.SafeMembers...)
+	cp.Accounts = append([]models.Account(nil), c.snap.Accounts...)
+	if c.snap.AccountActivities != nil {
+		cp.AccountActivities = make(map[string][]models.AccountActivity, len(c.snap.AccountActivities))
+		for id, acts := range c.snap.AccountActivities {
+			cp.AccountActivities[id] = acts
+		}
+	}
+	progress := *c.snap.Progress
+	progress.DiscoveredAccounts = append([]snapshot.AccountRef(nil), c.snap.Progress.DiscoveredAccounts...)
+	cp.Progress = &progress
+	c.saveSeq++
+	return &cp, c.saveSeq
+}
+
+// write saves a snapshot copy unless a newer one is already on disk.
+func (c *collector) write(snap *snapshot.Snapshot, seq uint64) {
+	c.saveMu.Lock()
+	defer c.saveMu.Unlock()
+	if seq < c.writtenSeq {
+		return
+	}
+	if err := snapshot.Save(c.checkpointPath, snap); err != nil {
 		if !c.saveFailed {
 			c.logger.Errorf("Failed to save collection progress to %s: %v", c.checkpointPath, err)
 		}
 		c.saveFailed = true
 		return
 	}
-	c.lastSave = time.Now()
+	c.writtenSeq = seq
 }
 
 func (c *collector) syncProgressLocked() {
@@ -364,16 +429,16 @@ func (c *collector) collect() error {
 		return nil
 	}
 
-	_ = c.stage(snapshot.StageSafeContents, "safe members and accounts", c.collectSafeContents)
+	c.items(snapshot.StageSafeContents, c.collectSafeContents)
 	if c.interrupted() {
 		return nil
 	}
-	_ = c.stage(snapshot.StageAccountDetails, "account details", c.collectAccountDetails)
+	c.items(snapshot.StageAccountDetails, c.collectAccountDetails)
 	if c.interrupted() {
 		return nil
 	}
 	if cfg.includeActivity {
-		_ = c.stage(snapshot.StageActivity, "account activity", c.collectActivity)
+		c.items(snapshot.StageActivity, c.collectActivity)
 	}
 	return nil
 }
@@ -506,10 +571,15 @@ func (c *collector) recordSafe(safeName string, members []models.SafeMember, mem
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Earlier data for the safe is only searched for when there is some, so
+	// a normal collection does not rescan everything recorded so far.
 	if membersOK {
-		c.snap.SafeMembers = removeWhere(c.snap.SafeMembers, func(m models.SafeMember) bool {
-			return strings.ToLower(m.SafeName) == key
-		})
+		if c.recordedMembers[key] {
+			c.snap.SafeMembers = removeWhere(c.snap.SafeMembers, func(m models.SafeMember) bool {
+				return strings.ToLower(m.SafeName) == key
+			})
+		}
+		c.recordedMembers[key] = true
 		for _, m := range members {
 			if m.SafeName == "" {
 				m.SafeName = safeName
@@ -519,9 +589,12 @@ func (c *collector) recordSafe(safeName string, members []models.SafeMember, mem
 	}
 	if accountsOK {
 		p := c.snap.Progress
-		p.DiscoveredAccounts = removeWhere(p.DiscoveredAccounts, func(a snapshot.AccountRef) bool {
-			return strings.ToLower(a.SafeName) == key
-		})
+		if c.recordedAccounts[key] {
+			p.DiscoveredAccounts = removeWhere(p.DiscoveredAccounts, func(a snapshot.AccountRef) bool {
+				return strings.ToLower(a.SafeName) == key
+			})
+		}
+		c.recordedAccounts[key] = true
 		for _, a := range accounts {
 			if a.ID != "" {
 				p.DiscoveredAccounts = append(p.DiscoveredAccounts, snapshot.AccountRef{ID: a.ID, SafeName: safeName})
@@ -658,8 +731,6 @@ func (c *collector) collectActivity() error {
 // is incomplete, and saves it to the checkpoint path.
 func (c *collector) finish(fatal error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	c.normalizeLocked()
 
 	var reasons []string
@@ -675,11 +746,14 @@ func (c *collector) finish(fatal error) {
 		reasons = append(reasons, "built-in safe members (Master, Vault Admins, Auditors, ...) are missing from safes listed by an earlier run: PVWA rejected the includePredefinedUsers filter")
 	}
 	c.snap.Incomplete = reasons
-
 	if c.checkpointPath == "" {
+		c.mu.Unlock()
 		return
 	}
-	c.saveLocked()
+	snap, seq := c.copyLocked()
+	c.mu.Unlock()
+
+	c.write(snap, seq)
 	switch {
 	case c.saveFailed:
 		c.logger.Errorf("The collection could not be saved to %s", c.checkpointPath)

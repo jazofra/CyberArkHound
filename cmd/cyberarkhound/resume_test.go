@@ -26,14 +26,16 @@ type multiSafePVWA struct {
 
 	mu   sync.Mutex
 	hits map[string]int
-	// failMembers lists safes whose member listing fails with HTTP 403.
-	failMembers map[string]bool
+	// failMembers and failAccounts list safes whose member or account
+	// listing fails with HTTP 403.
+	failMembers  map[string]bool
+	failAccounts map[string]bool
 	// onRequest, if set, runs before each API request is answered.
 	onRequest func(path string)
 }
 
 func newMultiSafePVWA(t *testing.T, safes int) *multiSafePVWA {
-	f := &multiSafePVWA{safes: safes, hits: map[string]int{}, failMembers: map[string]bool{}}
+	f := &multiSafePVWA{safes: safes, hits: map[string]int{}, failMembers: map[string]bool{}, failAccounts: map[string]bool{}}
 	f.Server = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.Close)
 	return f
@@ -74,7 +76,7 @@ func (f *multiSafePVWA) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.hits[path]++
 	hook := f.onRequest
-	failMembers := f.failMembers
+	failMembers, failAccounts := f.failMembers, f.failAccounts
 	f.mu.Unlock()
 
 	switch path {
@@ -113,6 +115,10 @@ func (f *multiSafePVWA) serve(w http.ResponseWriter, r *http.Request) {
 			{"memberName":"bob","memberType":"User","safeName":%q,"permissions":{"listAccounts":true,"manageSafeMembers":true}}]}`, safe, safe))
 	case strings.HasPrefix(path, "/PasswordVault/API/Accounts?safeName eq Safe"):
 		i := strings.TrimPrefix(path, "/PasswordVault/API/Accounts?safeName eq Safe")
+		if failAccounts["Safe"+i] {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
 		write(fmt.Sprintf(`{"value":[{"id":"%s_1"},{"id":"%s_2"}],"count":2}`, i, i))
 	case strings.HasSuffix(path, "/Activities"):
 		write(`{"Activities":[{"User":"alice","Action":"Retrieve password","Date":4102444800}]}`)
@@ -392,5 +398,46 @@ func TestResumeRejectsOtherPVWA(t *testing.T) {
 	}
 	if _, err := parseFlags([]string{"--resume", raw, "--from-raw", raw, "--output", "o", "--target-domains", "d"}); err == nil {
 		t.Error("--resume with --from-raw should be rejected")
+	}
+}
+
+// A safe whose accounts could not be listed is rescanned on resume, and the
+// accounts found then still get their details and activity, although the
+// details and activity stages finished in the first run.
+func TestResumeDetailsAccountsOfRetriedSafe(t *testing.T) {
+	const safes = 3
+	want := cleanExport(t, safes)
+
+	f := newMultiSafePVWA(t, safes)
+	f.failAccounts["Safe1"] = true
+	dir := t.TempDir()
+	raw := filepath.Join(dir, "raw.json")
+	if code := run(context.Background(), mustParse(t, multiArgs(f, filepath.Join(dir, "first.json"), "--save-raw", raw)...), quietLogger()); code != exitOK {
+		t.Fatalf("first run exit code = %d", code)
+	}
+	if first := loadProgress(t, raw); !strings.Contains(strings.Join(first.Incomplete, "\n"), "accounts could not be listed for 1 of 3 safes") {
+		t.Fatalf("first run should report the failed safe: %v", first.Incomplete)
+	}
+
+	f.mu.Lock()
+	f.failAccounts = map[string]bool{}
+	f.mu.Unlock()
+	f.resetHits()
+
+	out := filepath.Join(dir, "resumed.json")
+	if code := run(context.Background(), mustParse(t, resumeArgs(raw, out)...), quietLogger()); code != exitOK {
+		t.Fatalf("resumed run exit code = %d", code)
+	}
+	for _, id := range []string{"1_1", "1_2"} {
+		if f.count("/PasswordVault/API/Accounts/"+id) != 1 || f.count("/PasswordVault/API/Accounts/"+id+"/Activities") != 1 {
+			t.Errorf("account %s of the retried safe was not detailed and its activity fetched", id)
+		}
+	}
+	got, _ := os.ReadFile(out)
+	if string(got) != string(want) {
+		t.Error("export after retrying the safe's account listing differs from a clean collection")
+	}
+	if final := loadProgress(t, raw); len(final.Incomplete) != 0 {
+		t.Errorf("collection should be complete after the retry: %v", final.Incomplete)
 	}
 }

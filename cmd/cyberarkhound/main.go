@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/siemens-healthineers/cyberarkhound/pkg/client"
+	"github.com/siemens-healthineers/cyberarkhound/pkg/graph"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
 	"golang.org/x/term"
@@ -191,7 +192,7 @@ func parseFlags(args []string) (*config, error) {
 	}
 
 	// Leftover positional arguments are additional target domains.
-	cfg.targetDomains = normalizeDomains(append(cfg.targetDomains, fs.Args()...))
+	cfg.targetDomains = graph.NormalizeDomains(append(cfg.targetDomains, fs.Args()...))
 
 	level, err := logrus.ParseLevel(strings.TrimSpace(*logLevel))
 	if err != nil {
@@ -250,22 +251,15 @@ func parseFlags(args []string) (*config, error) {
 	return cfg, nil
 }
 
-// normalizeDomains trims whitespace and trailing dots and drops empty entries,
-// so "--target-domains 'a.com, b.com'" behaves like "a.com,b.com".
-func normalizeDomains(domains []string) []string {
-	out := make([]string, 0, len(domains))
-	for _, d := range domains {
-		if d = strings.TrimRight(strings.TrimSpace(d), "."); d != "" {
-			out = append(out, d)
-		}
-	}
-	return out
-}
-
 // resolvePassword fills in cfg.password from, in order: --password, the
 // CYBERARK_PASSWORD environment variable, or an interactive prompt.
 func resolvePassword(cfg *config, getenv func(string) string, prompt func() (string, error)) error {
 	if cfg.passwordFlag {
+		// An explicitly empty value is almost always an unset shell
+		// variable ("--password $PW"); sending it would only fail to log in.
+		if cfg.password == "" {
+			return errors.New("--password is empty")
+		}
 		return nil
 	}
 	if p := getenv(passwordEnvVar); p != "" {
