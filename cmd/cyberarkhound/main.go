@@ -70,7 +70,19 @@ type config struct {
 	findingsOutput string
 	saveRaw        string
 	fromRaw        string
+	resume         string
+
+	// checkpointInterval is how often a collection saves its progress
+	// (zero means defaultCheckpointInterval). Not a flag; tests shorten it.
+	checkpointInterval time.Duration
+	// explicit records which collection-option flags were set on the
+	// command line, so a resumed collection can say which ones it ignores.
+	explicit map[string]bool
 }
+
+// resumeOptionFlags are the flags whose values a resumed collection takes
+// from the original run instead of the command line.
+var resumeOptionFlags = []string{"limit-users", "limit-groups", "limit-safes", "test-safe", "activity-days", "activity-limit", "include-predefined-members"}
 
 // usageError is a command-line mistake; the caller prints usage after it.
 type usageError struct{ msg string }
@@ -125,8 +137,9 @@ func newFlagSet(cfg *config) (*pflag.FlagSet, *string, *bool, *bool) {
 
 	// Additional outputs and offline rebuilds
 	fs.StringVar(&cfg.findingsOutput, "findings-output", "", "Also write the security findings, with the objects behind each one, to this JSON file")
-	fs.StringVar(&cfg.saveRaw, "save-raw", "", "Also save the raw collected data to this JSON file, so the graph can be rebuilt later with --from-raw")
+	fs.StringVar(&cfg.saveRaw, "save-raw", "", "Also save the raw collected data to this JSON file, so the graph can be rebuilt later with --from-raw. Progress is saved periodically while collecting, so an interrupted or failed collection can be continued with --resume")
 	fs.StringVar(&cfg.fromRaw, "from-raw", "", "Build the graph from a file written by --save-raw instead of contacting PVWA")
+	fs.StringVar(&cfg.resume, "resume", "", "Continue an interrupted or failed collection from its --save-raw file: finished work is not fetched again, failed work is retried, and progress keeps being saved to that file (or to --save-raw)")
 
 	return fs, logLevel, debug, quiet
 }
@@ -143,6 +156,10 @@ func parseFlags(args []string) (*config, error) {
 		return nil, &usageError{err.Error()}
 	}
 	cfg.passwordFlag = fs.Changed("password")
+	cfg.explicit = make(map[string]bool)
+	for _, name := range resumeOptionFlags {
+		cfg.explicit[name] = fs.Changed(name)
+	}
 
 	// Leftover positional arguments are additional target domains.
 	cfg.targetDomains = normalizeDomains(append(cfg.targetDomains, fs.Args()...))
@@ -167,7 +184,8 @@ func parseFlags(args []string) (*config, error) {
 		missing = append(missing, "--target-domains")
 	}
 	if cfg.fromRaw == "" {
-		if cfg.pvwaURL == "" {
+		// A resumed collection takes the PVWA URL from its file by default.
+		if cfg.pvwaURL == "" && cfg.resume == "" {
 			missing = append(missing, "--pvwa")
 		}
 		if cfg.username == "" {
@@ -180,6 +198,9 @@ func parseFlags(args []string) (*config, error) {
 
 	if cfg.fromRaw != "" && cfg.saveRaw != "" {
 		return nil, &usageError{"--save-raw cannot be combined with --from-raw"}
+	}
+	if cfg.fromRaw != "" && cfg.resume != "" {
+		return nil, &usageError{"--resume cannot be combined with --from-raw"}
 	}
 
 	method, ok := client.NormalizeAuthMethod(cfg.authMethod)
@@ -250,6 +271,7 @@ func main() {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "Usage: cyberarkhound --pvwa URL --username USER --output FILE --target-domains DOMAINS [OPTIONS]\n")
+	fmt.Fprintf(w, "       cyberarkhound --resume FILE --username USER --output FILE --target-domains DOMAINS [OPTIONS]\n")
 	fmt.Fprintf(w, "       cyberarkhound --from-raw FILE --output FILE --target-domains DOMAINS [OPTIONS]\n\n")
 	fmt.Fprintf(w, "The password is read from --password, the %s environment variable, or an interactive prompt.\n\n", passwordEnvVar)
 	fs, _, _, _ := newFlagSet(&config{})

@@ -31,6 +31,15 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 			{AppID: "App1", Authentications: []models.ApplicationAuthentication{{AuthType: "machineAddress", AuthValue: "10.0.0.1"}}},
 			{AppID: "App2", AuthenticationsUnknown: true},
 		},
+		Progress: &Progress{
+			Options:            Options{LimitSafes: 5, ActivityDays: 3, ActivityLimit: 100, IncludePredefinedMembers: true},
+			Stages:             []string{StageUsers, StageGroups},
+			ScannedSafes:       []string{"S1"},
+			DiscoveredAccounts: []AccountRef{{ID: "1_1", SafeName: "S1"}},
+			DetailedAccounts:   []string{"1_1"},
+			ActivityFetched:    []string{"1_1"},
+			ResumedAt:          []time.Time{time.Date(2026, 5, 2, 9, 0, 0, 0, time.UTC)},
+		},
 	}
 
 	path := filepath.Join(t.TempDir(), "raw.json")

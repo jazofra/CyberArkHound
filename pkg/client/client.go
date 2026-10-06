@@ -311,6 +311,12 @@ func (c *Client) noteIncomplete(format string, args ...interface{}) {
 	c.issuesMu.Unlock()
 }
 
+// PredefinedMembersExcluded reports whether PVWA rejected the request for
+// built-in safe members, so that safes listed since then lack them.
+func (c *Client) PredefinedMembersExcluded() bool {
+	return c.predefinedFilterRejected.Load()
+}
+
 // IncompleteReasons returns, in the order they were recorded, the reasons the
 // collection could not cover everything (failed per-object lookups whose data
 // is missing from the export).

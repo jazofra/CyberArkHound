@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"runtime"
 	"sort"
@@ -44,6 +45,19 @@ func run(ctx context.Context, cfg *config, logger *logrus.Logger) int {
 			logger.Warnf("--pvwa is ignored with --from-raw; node IDs keep the original PVWA tag %s", snap.PVWATag)
 		}
 	} else {
+		var base *snapshot.Snapshot
+		checkpointPath := cfg.saveRaw
+		if cfg.resume != "" {
+			var err error
+			if base, err = loadResumable(cfg, logger); err != nil {
+				logger.Errorf("Cannot resume: %v", err)
+				return exitError
+			}
+			if checkpointPath == "" {
+				checkpointPath = cfg.resume
+			}
+		}
+
 		logger.Infof("PVWA tag: %s", pvwaTag(cfg))
 		api := newClient(ctx, cfg, logger)
 
@@ -74,21 +88,16 @@ func run(ctx context.Context, cfg *config, logger *logrus.Logger) int {
 			logger.Info("Enabled: parse sAMAccountName from distinguishedName CN for CyberArk_SyncsToUser edges")
 		}
 
+		c := newCollector(ctx, cfg, api, logger, base, checkpointPath)
 		var err error
-		snap, err = collect(ctx, cfg, api, logger)
+		snap, err = c.run()
 		if err != nil {
 			logger.Errorf("%v", err)
 			return exitError
 		}
 		logoff()
-
-		if cfg.saveRaw != "" {
-			if err := snapshot.Save(cfg.saveRaw, snap); err != nil {
-				logger.Errorf("Failed to save raw collection to %s: %v", cfg.saveRaw, err)
-				exitCode = exitError
-			} else {
-				logger.Infof("Saved raw collection to %s", cfg.saveRaw)
-			}
+		if c.saveFailed {
+			exitCode = exitError
 		}
 	}
 
@@ -144,6 +153,47 @@ func run(ctx context.Context, cfg *config, logger *logrus.Logger) int {
 		return exitInterrupted
 	}
 	return exitCode
+}
+
+// loadResumable loads the --resume file and makes cfg match the collection it
+// continues: the PVWA URL defaults to the file's, and the options that decide
+// what is fetched are taken from the original run.
+func loadResumable(cfg *config, logger *logrus.Logger) (*snapshot.Snapshot, error) {
+	snap, err := snapshot.Load(cfg.resume)
+	if err != nil {
+		return nil, err
+	}
+	if snap.Progress == nil {
+		return nil, fmt.Errorf("%s does not record collection progress, so it cannot be resumed", cfg.resume)
+	}
+	if cfg.pvwaURL == "" {
+		cfg.pvwaURL = snap.PVWAURL
+	} else if got, want := client.NormalizeBaseURL(cfg.pvwaURL), client.NormalizeBaseURL(snap.PVWAURL); got != want {
+		return nil, fmt.Errorf("%s was collected from %s, not %s", cfg.resume, want, got)
+	}
+
+	o := snap.Progress.Options
+	ignored := func(flag string, given, original interface{}) {
+		if cfg.explicit[flag] && given != original {
+			logger.Warnf("--%s=%v is ignored when resuming; the collection continues with the original value %v", flag, given, original)
+		}
+	}
+	ignored("limit-users", cfg.limitUsers, o.LimitUsers)
+	ignored("limit-groups", cfg.limitGroups, o.LimitGroups)
+	ignored("limit-safes", cfg.limitSafes, o.LimitSafes)
+	ignored("test-safe", cfg.testSafe, o.TestSafe)
+	ignored("activity-days", cfg.activityDays, o.ActivityDays)
+	ignored("activity-limit", cfg.activityLimit, o.ActivityLimit)
+	ignored("include-predefined-members", cfg.includePredefinedMembers, o.IncludePredefinedMembers)
+	cfg.limitUsers, cfg.limitGroups, cfg.limitSafes, cfg.testSafe = o.LimitUsers, o.LimitGroups, o.LimitSafes, o.TestSafe
+	cfg.activityDays, cfg.activityLimit = o.ActivityDays, o.ActivityLimit
+	cfg.includePredefinedMembers = o.IncludePredefinedMembers
+
+	p := snap.Progress
+	logger.Infof("Resuming the collection from %s (started %s; done: %d stages, %d/%d safes scanned, %d/%d accounts detailed)",
+		cfg.resume, snap.CollectedAt.Format(time.RFC3339), len(p.Stages),
+		len(p.ScannedSafes), len(snap.Safes), len(p.DetailedAccounts), len(p.DiscoveredAccounts))
+	return snap, nil
 }
 
 // tlsHint suggests a fix when a connection failed during the TLS handshake or

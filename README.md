@@ -87,6 +87,7 @@ The required vault authorizations (`Audit Users` plus `List`/`View Safe Members`
 - **Membership-aware access**: Expired safe memberships produce no access edges; group membership is taken from both each user's details and each group's member list
 - **Honest partial exports**: Every lookup that fails (a safe's members, an account's details, a group's member list, ...) is listed in an end-of-run INCOMPLETE report instead of being silently dropped
 - **Interruptible**: Ctrl+C stops the collection, logs off, and still exports what was gathered (exit code 130); a second Ctrl+C aborts immediately
+- **Resumable collections**: with `--save-raw`, progress is saved every minute and whenever the run stops; `--resume` continues an interrupted or failed collection without fetching finished work again, retries what failed, and produces the same export as an uninterrupted run
 - **Offline rebuilds**: `--save-raw` keeps the raw collected data; `--from-raw` rebuilds the graph from it without contacting PVWA
 - **Safe output files**: Exports are written atomically with owner-only (0600) permissions; a `.zip` output name produces a compressed archive
 - **Deterministic output**: Nodes, edges and permission lists are emitted in a stable, sorted order so exports diff cleanly across runs
@@ -250,6 +251,22 @@ The password is read from the `CYBERARK_PASSWORD` environment variable (or promp
     --output cyberark_export.json --target-domains corp.example.com,lab.example.com
 ```
 
+**Resume a long collection that was interrupted or failed:**
+```bash
+# Start with --save-raw: progress is saved every minute and when the run stops
+./cyberarkhound --pvwa https://pvwa.example.com --username svc-bloodhound \
+    --output cyberark_export.json --target-domains corp.example.com \
+    --save-raw cyberark_raw.json
+
+# ...the run is interrupted, crashes, or ends with some safes failing...
+
+# Continue where it stopped (the PVWA URL is taken from the file)
+./cyberarkhound --resume cyberark_raw.json --username svc-bloodhound \
+    --output cyberark_export.json --target-domains corp.example.com
+```
+
+A resumed collection skips the stages (users, groups, safes, platforms, PSM, applications) and the per-safe and per-account work an earlier run finished, and retries everything that failed — so resuming a finished collection that reported INCOMPLETE data retries just the failed parts. It keeps the original run's collection options (`--limit-*`, `--test-safe`, `--activity-*`, `--include-predefined-members`); other flags, such as `--include-*`, `--workers` and `--target-domains`, can differ. The result is the export an uninterrupted collection would have produced, except that data fetched by different runs reflects the vault at different times.
+
 **Performance tips for large environments:**
 - Increase `--workers` to 100-200 for faster parallel processing
 - Use `--log-level WARNING` to reduce logging overhead
@@ -258,14 +275,14 @@ The password is read from the `CYBERARK_PASSWORD` environment variable (or promp
 - HTTP 429 (rate limited) responses honour the server's `Retry-After` header and back off exponentially otherwise, up to `--max-rate-limit-retries` times per request
 - Use a `.zip` output name to keep very large exports small
 
-**Interrupting a collection:** the first Ctrl+C (or SIGTERM) stops the collection, logs off the PVWA session, and builds and exports whatever was collected so far, flagged as INCOMPLETE. A second Ctrl+C aborts immediately.
+**Interrupting a collection:** the first Ctrl+C (or SIGTERM) stops the collection, logs off the PVWA session, and builds and exports whatever was collected so far, flagged as INCOMPLETE. With `--save-raw`, the progress is saved too, so the collection can be continued with `--resume`. A second Ctrl+C aborts immediately.
 
 **Exit codes:** `0` success (including an export flagged INCOMPLETE, e.g. with `--continue-on-error`), `1` error, `130` interrupted.
 
 ### Command-Line Arguments
 
 **Required:**
-- `--pvwa` Base PVWA URL (self-hosted, e.g. https://pvwa.example.com) or Privilege Cloud URL (e.g. https://<subdomain>.privilegecloud.cyberark.cloud). Not needed with `--from-raw`
+- `--pvwa` Base PVWA URL (self-hosted, e.g. https://pvwa.example.com) or Privilege Cloud URL (e.g. https://<subdomain>.privilegecloud.cyberark.cloud). Not needed with `--from-raw` or `--resume`
 - `--username` API username (or OAuth `client_id` when `--auth-method identity`). Not needed with `--from-raw`
 - `--output` Destination file for BloodHound import. A `.zip` extension writes the JSON inside a zip archive
 - `--target-domains` One or more AD domain names (comma-separated) used to link accounts to AD users. Surrounding spaces and trailing dots are ignored
@@ -309,8 +326,9 @@ With `--from-raw`, the `--include-*` flags filter what is built from the raw dat
 
 **Additional outputs and offline rebuilds:**
 - `--findings-output` Also write the [security findings](#security-findings), with the objects behind each one, to this JSON file
-- `--save-raw` Also save the raw collected data (no credentials) to this JSON file
-- `--from-raw` Build the graph from a `--save-raw` file instead of contacting PVWA. Node IDs keep the original PVWA tag
+- `--save-raw` Also save the raw collected data (no credentials) to this JSON file. While collecting, progress is saved to it every minute and whenever the run stops, so the collection can be resumed
+- `--resume` Continue an interrupted or failed collection from its `--save-raw` file. Finished work is not fetched again and failed work is retried; progress keeps being saved to the same file (or to `--save-raw`, if given). `--pvwa` defaults to the file's PVWA URL; the password and authentication flags are needed as for any collection
+- `--from-raw` Build the graph from a `--save-raw` file instead of contacting PVWA. Node IDs keep the original PVWA tag. A file from an unfinished collection builds a graph flagged INCOMPLETE
 
 **Testing/Development:**
 - `--limit-users` Limit number of users to process (0 = no limit)
