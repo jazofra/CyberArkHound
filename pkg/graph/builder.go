@@ -1033,17 +1033,19 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			sort.Strings(grantedPerms)
 
 			if (canRetrieve || canUse) && !expired {
+				// One properties map serves every edge from this application
+				// into the safe; edge properties are never modified afterwards.
+				props := map[string]interface{}{
+					"safeName":            sm.SafeName,
+					"permissions":         grantedPerms,
+					"canRetrievePassword": canRetrieve,
+					"appIsUnrestricted":   appIsUnrestricted[appKey],
+					"allowedMachines":     appAllowedMachines[appKey],
+					"isDefaultCCPApp":     appIsDefaultCCP[appKey],
+					"inferred":            false,
+				}
 				for _, accountNodeID := range accountsBySafe[sm.SafeName] {
-					og.AddEdge("CyberArk_CanRetrieveViaCCP", appNodeID, accountNodeID,
-						"id", "id", map[string]interface{}{
-							"safeName":            sm.SafeName,
-							"permissions":         grantedPerms,
-							"canRetrievePassword": canRetrieve,
-							"appIsUnrestricted":   appIsUnrestricted[appKey],
-							"allowedMachines":     appAllowedMachines[appKey],
-							"isDefaultCCPApp":     appIsDefaultCCP[appKey],
-							"inferred":            false,
-						}, false)
+					og.AddEdge("CyberArk_CanRetrieveViaCCP", appNodeID, accountNodeID, "id", "id", props, false)
 				}
 			}
 			continue
@@ -1196,9 +1198,19 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			// When platform data is not available (--include-platforms not used), we fall
 			// back to the approver-presence heuristic: if the safe has members with L1/L2
 			// permissions, we assume dual control is likely intended.
+			//
+			// The properties depend only on the account's platform, so accounts
+			// on the same platform share one map (edge properties are never
+			// modified afterwards); on large vaults this saves most of the
+			// memory the edges take.
+			propsByPlatform := make(map[string]map[string]interface{})
 			accountsInSafe := accountsBySafe[sm.SafeName]
 			for _, accountNodeID := range accountsInSafe {
 				platID := accountPlatformID[accountNodeID]
+				if props, ok := propsByPlatform[platID]; ok {
+					og.AddEdge("CyberArk_HasAccessTo", memberNodeID, accountNodeID, "id", "id", props, false)
+					continue
+				}
 				requiresApproval := false
 				if !accessWithoutConfirmation {
 					_, platformLoaded := platformDualControl[platID]
@@ -1221,15 +1233,16 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 					recordsSessionActivity = platformSessionRecording[platID]
 				}
 
-				og.AddEdge("CyberArk_HasAccessTo", memberNodeID, accountNodeID,
-					"id", "id", map[string]interface{}{
-						"safeName":                  sm.SafeName,
-						"permissions":               matchedPermNames,
-						"inferred":                  false,
-						"requiresApproval":          requiresApproval,
-						"requiresSessionMonitoring": requiresSessionMonitoring,
-						"recordsSessionActivity":    recordsSessionActivity,
-					}, false)
+				props := map[string]interface{}{
+					"safeName":                  sm.SafeName,
+					"permissions":               matchedPermNames,
+					"inferred":                  false,
+					"requiresApproval":          requiresApproval,
+					"requiresSessionMonitoring": requiresSessionMonitoring,
+					"recordsSessionActivity":    recordsSessionActivity,
+				}
+				propsByPlatform[platID] = props
+				og.AddEdge("CyberArk_HasAccessTo", memberNodeID, accountNodeID, "id", "id", props, false)
 			}
 		}
 

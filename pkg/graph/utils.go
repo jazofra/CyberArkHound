@@ -21,7 +21,9 @@ type Node struct {
 	Properties map[string]interface{} `json:"properties"`
 }
 
-// Edge represents a BloodHound edge
+// Edge represents a BloodHound edge. Props must not be modified once the
+// edge is added: the builder shares one properties map among edges whose
+// properties are identical.
 type Edge struct {
 	Kind  string                 `json:"kind"`
 	Start EdgeRef                `json:"start"`

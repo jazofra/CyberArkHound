@@ -52,37 +52,42 @@ func sortedNodes(og *graph.OpenGraph) []*graph.Node {
 	return nodes
 }
 
-// buildEdgeDict serializes an edge to a BloodHound-compatible map.
+// edgeJSON and nodeJSON are the exported forms of an edge and a node.
+// Marshaling a struct avoids building a map per element; the fields are in
+// alphabetical order, the order encoding/json uses for map keys, so the bytes
+// are the same as those of the map form used before.
 //
-// Edge documentation (overview, windows/linux abuse, OPSEC, references) is no
-// longer copied onto every edge instance. As of BloodHound v9.5 (2026-07-29)
-// that curated context lives once per relationship kind in the OpenGraph schema
+// Edge documentation (overview, windows/linux abuse, OPSEC, references) is not
+// copied onto every edge instance. As of BloodHound v9.5 (2026-07-29) that
+// curated context lives once per relationship kind in the OpenGraph schema
 // (extension/schema.json "info" sections) and BloodHound serves it from the
-// entity lookup APIs with include-info=true. Keeping it out of per-edge
-// properties avoids repeating the same large text blocks across every edge and
-// keeps exports lean. Only the edge's own data properties are emitted here.
-func buildEdgeDict(edge *graph.Edge) map[string]interface{} {
-	edgeDict := map[string]interface{}{
-		"kind": edge.Kind,
-		"start": map[string]string{
-			"value":    edge.Start.Value,
-			"match_by": edge.Start.MatchBy,
-		},
-		"end": map[string]string{
-			"value":    edge.End.Value,
-			"match_by": edge.End.MatchBy,
-		},
-	}
+// entity lookup APIs with include-info=true. Only the edge's own data
+// properties are emitted.
+type edgeJSON struct {
+	End        edgeRefJSON            `json:"end"`
+	Kind       string                 `json:"kind"`
+	Properties map[string]interface{} `json:"properties,omitempty"`
+	Start      edgeRefJSON            `json:"start"`
+}
 
-	if len(edge.Props) > 0 {
-		props := make(map[string]interface{}, len(edge.Props))
-		for k, v := range edge.Props {
-			props[k] = v
-		}
-		edgeDict["properties"] = props
-	}
+type edgeRefJSON struct {
+	MatchBy string `json:"match_by"`
+	Value   string `json:"value"`
+}
 
-	return edgeDict
+type nodeJSON struct {
+	ID         string                 `json:"id"`
+	Kinds      []string               `json:"kinds"`
+	Properties map[string]interface{} `json:"properties"`
+}
+
+func toEdgeJSON(edge *graph.Edge) edgeJSON {
+	return edgeJSON{
+		End:        edgeRefJSON{MatchBy: edge.End.MatchBy, Value: edge.End.Value},
+		Kind:       edge.Kind,
+		Properties: edge.Props,
+		Start:      edgeRefJSON{MatchBy: edge.Start.MatchBy, Value: edge.Start.Value},
+	}
 }
 
 // IsZipPath reports whether outputFile asks for a zip archive (by its .zip
@@ -190,7 +195,7 @@ func writeGraphJSON(out io.Writer, og *graph.OpenGraph, logger *logrus.Logger) e
 		if (idx+1)%edgeInterval == 0 || idx+1 == totalInternalEdges {
 			logger.Infof("  Processed %d/%d edges (%.1f%%)", idx+1, totalInternalEdges, float64(idx+1)/float64(totalInternalEdges)*100)
 		}
-		if err := writeElement(&edgeWritten, buildEdgeDict(edge)); err != nil {
+		if err := writeElement(&edgeWritten, toEdgeJSON(edge)); err != nil {
 			return err
 		}
 	}
@@ -200,7 +205,7 @@ func writeGraphJSON(out io.Writer, og *graph.OpenGraph, logger *logrus.Logger) e
 			if (idx+1)%edgeInterval == 0 || idx+1 == totalExternalEdges {
 				logger.Infof("  Processed %d/%d external edges (%.1f%%)", idx+1, totalExternalEdges, float64(idx+1)/float64(totalExternalEdges)*100)
 			}
-			if err := writeElement(&edgeWritten, buildEdgeDict(edge)); err != nil {
+			if err := writeElement(&edgeWritten, toEdgeJSON(edge)); err != nil {
 				return err
 			}
 		}
@@ -218,12 +223,7 @@ func writeGraphJSON(out io.Writer, og *graph.OpenGraph, logger *logrus.Logger) e
 		if (idx+1)%nodeInterval == 0 || idx+1 == totalNodes {
 			logger.Infof("  Processed %d/%d nodes (%.1f%%)", idx+1, totalNodes, float64(idx+1)/float64(totalNodes)*100)
 		}
-		nodeDict := map[string]interface{}{
-			"id":         node.ID,
-			"kinds":      node.Kinds,
-			"properties": node.Properties,
-		}
-		if err := writeElement(&nodeWritten, nodeDict); err != nil {
+		if err := writeElement(&nodeWritten, nodeJSON{ID: node.ID, Kinds: node.Kinds, Properties: node.Properties}); err != nil {
 			return err
 		}
 	}
