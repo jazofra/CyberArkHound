@@ -221,8 +221,8 @@ func loadResumable(cfg *config, logger *logrus.Logger) (*snapshot.Snapshot, erro
 	cfg.includePredefinedMembers = o.IncludePredefinedMembers
 
 	p := snap.Progress
-	logger.Infof("Resuming the collection from %s (started %s; done: %d stages, %d/%d safes scanned, %d/%d accounts detailed)",
-		cfg.resume, snap.CollectedAt.Format(time.RFC3339), len(p.Stages),
+	logger.Infof("Resuming the collection of %s from %s (started %s; done: %d stages, %d/%d safes scanned, %d/%d accounts detailed)",
+		client.NormalizeBaseURL(cfg.pvwaURL), cfg.resume, snap.CollectedAt.Format(time.RFC3339), len(p.Stages),
 		len(p.ScannedSafes), len(snap.Safes), len(p.DetailedAccounts), len(p.DiscoveredAccounts))
 	return snap, nil
 }
