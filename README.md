@@ -168,10 +168,23 @@ With 'list' and 'View Safe Members' on each safe, the tool can:
 - Treat the export, `--save-raw` and `--findings-output` files as sensitive: they map every privileged account and who can reach it. CyberArkHound creates them readable by the owner only (0600); keep them that way when copying them around
 - The session token is never written to the logs, even at debug level
 
+#### TLS troubleshooting
+CyberArkHound uses Go's current TLS defaults, which reject some legacy server configurations. If connecting to an older PVWA fails during the TLS handshake (errors containing `tls:` or `x509:`), find out which legacy option the server needs and re-enable only that one, for a single run, with the `GODEBUG` environment variable:
+
+| Setting | Re-enables |
+|---------|------------|
+| `tlsrsakex=1` | RSA key-exchange cipher suites (no forward secrecy) |
+| `tls3des=1` | 3DES cipher suites |
+| `tlssha1=1` | SHA-1 signatures in TLS 1.2 handshakes |
+| `x509negativeserial=1` | Certificates with a negative serial number |
+| `tlsmlkem=0,tlssecpmlkem=0` | Leaves out post-quantum key shares, for middleboxes that reject large TLS ClientHello messages |
+
+For example: `GODEBUG=tlsrsakex=1 ./cyberarkhound ...`. These weaken the connection, so fixing the server configuration is the better long-term answer. For a certificate issued by an internal CA, pass it with `--ca-bundle` instead of using `--insecure`.
+
 ### Installation
 
 **Requirements:**
-- Go 1.21 or later
+- Go 1.26 or later (older Go installations download the required toolchain automatically)
 - Git (for cloning the repository)
 
 **Build from source:**
@@ -266,7 +279,7 @@ The password is read from the `CYBERARK_PASSWORD` environment variable (or promp
 **Optional:**
 - `--workers` Concurrency for parallel operations (default: 50, recommended: 100-200 for large environments)
 - `--insecure` Disable SSL verification (NOT recommended for production)
-- `--ca-bundle` Path to custom CA bundle for SSL verification
+- `--ca-bundle` PEM file of CA certificates to trust in addition to the system roots (e.g. an internal CA that issued the PVWA certificate). An unreadable file or one without certificates stops the run before any request is sent
 - `--auth-timeout` Authentication timeout as a duration, e.g. `2m` (default: 6m)
 - `--request-timeout` Request timeout as a duration, e.g. `10m` (default: 6m)
 - `--quiet` Show only warnings and errors

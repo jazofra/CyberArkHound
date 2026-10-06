@@ -6,6 +6,7 @@ import (
 	"io"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,6 +54,9 @@ func run(ctx context.Context, cfg *config, logger *logrus.Logger) int {
 		}
 		if err := api.Authenticate(); err != nil {
 			logger.Errorf("Authentication failed: %v", err)
+			if hint := tlsHint(err); hint != "" {
+				logger.Warn(hint)
+			}
 			return exitError
 		}
 
@@ -140,6 +144,19 @@ func run(ctx context.Context, cfg *config, logger *logrus.Logger) int {
 		return exitInterrupted
 	}
 	return exitCode
+}
+
+// tlsHint suggests a fix when a connection failed during the TLS handshake or
+// certificate verification, or returns "" for any other error.
+func tlsHint(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "x509: certificate signed by unknown authority"):
+		return "The server's certificate is not trusted. Pass the issuing CA certificate(s) with --ca-bundle rather than disabling verification with --insecure."
+	case strings.Contains(msg, "tls:") || strings.Contains(msg, "x509:"):
+		return "The TLS connection failed. If this PVWA only offers legacy TLS options, see \"TLS troubleshooting\" in the README for the GODEBUG settings that re-enable them."
+	}
+	return ""
 }
 
 // buildInput turns a collection into graph-builder input. The --include-*

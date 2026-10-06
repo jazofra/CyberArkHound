@@ -347,3 +347,15 @@ func TestParseFlagsHelp(t *testing.T) {
 		t.Fatalf("--help should return pflag.ErrHelp, got %v", err)
 	}
 }
+
+func TestTLSHint(t *testing.T) {
+	if hint := tlsHint(errors.New(`Post "https://pvwa/": tls: failed to verify certificate: x509: certificate signed by unknown authority`)); !strings.Contains(hint, "--ca-bundle") {
+		t.Errorf("unknown-authority hint should point to --ca-bundle, got %q", hint)
+	}
+	if hint := tlsHint(errors.New("remote error: tls: handshake failure")); !strings.Contains(hint, "GODEBUG") {
+		t.Errorf("handshake hint should point to GODEBUG, got %q", hint)
+	}
+	if hint := tlsHint(errors.New("authentication failed with HTTP 403: denied")); hint != "" {
+		t.Errorf("non-TLS errors should get no hint, got %q", hint)
+	}
+}
