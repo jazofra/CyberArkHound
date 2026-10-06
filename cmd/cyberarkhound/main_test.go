@@ -359,3 +359,38 @@ func TestTLSHint(t *testing.T) {
 		t.Errorf("non-TLS errors should get no hint, got %q", hint)
 	}
 }
+
+func TestPVWATagFlag(t *testing.T) {
+	base := []string{"--pvwa", "pvwa.example.com", "--username", "u", "--output", "o", "--target-domains", "d"}
+	if cfg := mustParse(t, base...); pvwaTag(cfg) != "PVEX" {
+		t.Errorf("derived tag = %q, want PVEX", pvwaTag(cfg))
+	}
+	if cfg := mustParse(t, append(base, "--pvwa-tag", "prod-eu")...); pvwaTag(cfg) != "PROD-EU" {
+		t.Errorf("explicit tag = %q, want PROD-EU", pvwaTag(cfg))
+	}
+	for _, bad := range []string{"-x", "has space", "a/b", strings.Repeat("x", 33)} {
+		if _, err := parseFlags(append(base, "--pvwa-tag", bad)); err == nil {
+			t.Errorf("--pvwa-tag %q should be rejected", bad)
+		}
+	}
+}
+
+func TestFromRawCanRetag(t *testing.T) {
+	f := newFakePVWA(t)
+	dir := t.TempDir()
+	raw := filepath.Join(dir, "raw.json")
+	if code := run(context.Background(), mustParse(t, liveArgs(f, dir, "--save-raw", raw)...), quietLogger()); code != exitOK {
+		t.Fatalf("collection exit code = %d", code)
+	}
+	out := filepath.Join(dir, "retagged.json")
+	cfg := mustParse(t, "--from-raw", raw, "--output", out, "--target-domains", "corp.local", "--pvwa-tag", "vaultb")
+	if code := run(context.Background(), cfg, quietLogger()); code != exitOK {
+		t.Fatalf("rebuild exit code = %d", code)
+	}
+	doc := readExport(t, out)
+	for _, n := range doc.Graph.Nodes {
+		if !strings.HasSuffix(n.ID, "-VAULTB") && n.ID != "CAINSTANCE-VAULTB" {
+			t.Errorf("node %s does not carry the new tag", n.ID)
+		}
+	}
+}

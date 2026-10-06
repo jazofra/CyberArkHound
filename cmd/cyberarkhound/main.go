@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -32,6 +33,7 @@ const (
 // config holds the parsed command line.
 type config struct {
 	pvwaURL       string
+	pvwaTag       string // explicit node-ID namespace tag; "" derives it from the PVWA URL
 	username      string
 	password      string
 	passwordFlag  bool // password came from --password
@@ -84,6 +86,9 @@ type config struct {
 // from the original run instead of the command line.
 var resumeOptionFlags = []string{"limit-users", "limit-groups", "limit-safes", "test-safe", "activity-days", "activity-limit", "include-predefined-members"}
 
+// validPVWATag restricts --pvwa-tag to characters that are safe in node IDs.
+var validPVWATag = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$`)
+
 // usageError is a command-line mistake; the caller prints usage after it.
 type usageError struct{ msg string }
 
@@ -94,6 +99,7 @@ func newFlagSet(cfg *config) (*pflag.FlagSet, *string, *bool, *bool) {
 	fs.SetOutput(io.Discard)
 
 	fs.StringVar(&cfg.pvwaURL, "pvwa", "", "PVWA / Privilege Cloud base URL (required)")
+	fs.StringVar(&cfg.pvwaTag, "pvwa-tag", "", "Tag that namespaces node IDs (default: 4 characters derived from the PVWA host name). Set a distinct tag for each vault when importing several into one BloodHound")
 	fs.StringVar(&cfg.username, "username", "", "API username (or OAuth client_id for --auth-method identity) (required)")
 	fs.StringVar(&cfg.password, "password", "", "API password (or OAuth client_secret for --auth-method identity). Prefer the "+passwordEnvVar+" environment variable or the interactive prompt: a value given here is visible in the process list")
 	fs.StringVar(&cfg.authMethod, "auth-method", "cyberark", "Authentication method: cyberark, ldap, radius, windows (self-hosted PVWA), or identity (Privilege Cloud / ISPSS SaaS)")
@@ -201,6 +207,13 @@ func parseFlags(args []string) (*config, error) {
 	}
 	if cfg.fromRaw != "" && cfg.resume != "" {
 		return nil, &usageError{"--resume cannot be combined with --from-raw"}
+	}
+
+	if cfg.pvwaTag != "" {
+		if !validPVWATag.MatchString(cfg.pvwaTag) {
+			return nil, &usageError{fmt.Sprintf("invalid --pvwa-tag %q: use 1-32 letters, digits, '-' or '_', starting with a letter or digit", cfg.pvwaTag)}
+		}
+		cfg.pvwaTag = strings.ToUpper(cfg.pvwaTag)
 	}
 
 	method, ok := client.NormalizeAuthMethod(cfg.authMethod)

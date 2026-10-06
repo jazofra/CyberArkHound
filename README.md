@@ -308,6 +308,7 @@ A resumed collection skips the stages (users, groups, safes, platforms, PSM, app
 - `--max-rate-limit-retries` Max HTTP 429 retries per request before giving up (default: 10; 0 retries indefinitely)
 - `--continue-on-error` Export the data collected so far when safe enumeration fails partway through (default: true; the export is flagged INCOMPLETE)
 - `--include-predefined-members` Collect built-in safe members such as Master, Vault Admins and Auditors (default: true)
+- `--pvwa-tag` Tag that namespaces node IDs (1–32 letters, digits, `-` or `_`). Defaults to 4 characters derived from the PVWA host name; set a distinct tag per vault when importing several into one BloodHound (see [Output](#output))
 
 When the bulk `GET /API/Users?ExtendedDetails=true` endpoint times out, CyberArkHound falls back to `GET /API/Users` and enriches each user individually through the user details endpoint. This preserves extended user fields while avoiding a single large PVWA response as a hard dependency. The existing `--workers` value controls this per-user enrichment concurrency.
 
@@ -1134,7 +1135,7 @@ Exports are **deterministic**: nodes are written sorted by `id`, edges by `(kind
 ### Output
 The resulting JSON structure follows BloodHound OpenGraph schema:
 
-Note: CyberArk node `id` values are namespaced with a 4-character PVWA tag derived from `--pvwa` (e.g., `causer-jdoe-APVA`) to avoid collisions when ingesting multiple PVWA instances.
+Note: CyberArk node `id` values are namespaced with a PVWA tag (e.g., `causer-jdoe-APVA`) so that several PVWA instances can be ingested into one BloodHound. By default the tag is 4 characters derived from the first two labels of the `--pvwa` host name, so different vaults can end up with the same tag — for example `pvwa-eu.corp.com` and `pvwa-us.corp.com` (both `PVCO`), or any two PVWAs addressed by IP. Vaults sharing a tag would have their nodes merged in BloodHound. When importing more than one vault, give each a distinct `--pvwa-tag` (e.g. `--pvwa-tag PROD-EU`). The tag also applies with `--from-raw`, so an existing raw collection can be re-tagged without collecting again; changing a vault's tag changes all of its node IDs, so re-import it rather than mixing old and new tags.
 ```json
 {
   "metadata": {

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"runtime"
 	"sort"
 	"strings"
@@ -20,9 +22,28 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// pvwaTag returns the node-ID namespace tag for a live collection.
+// pvwaTag returns the node-ID namespace tag for a live collection: --pvwa-tag
+// when given, otherwise the tag derived from the PVWA URL.
 func pvwaTag(cfg *config) string {
+	if cfg.pvwaTag != "" {
+		return cfg.pvwaTag
+	}
 	return graph.PVWATagFromArg(cfg.pvwaURL)
+}
+
+// warnGenericTag points out derived tags that are likely to collide with
+// another vault's in a shared BloodHound.
+func warnGenericTag(cfg *config, logger *logrus.Logger) {
+	if cfg.pvwaTag != "" {
+		return
+	}
+	host := cfg.pvwaURL
+	if u, err := url.Parse(client.NormalizeBaseURL(cfg.pvwaURL)); err == nil {
+		host = u.Hostname()
+	}
+	if net.ParseIP(host) != nil {
+		logger.Warnf("The PVWA is addressed by IP, so its node-ID tag (%s) is generic; if you import several vaults into one BloodHound, give each a distinct --pvwa-tag", pvwaTag(cfg))
+	}
 }
 
 // run performs one collection (or offline rebuild) and returns the process
@@ -42,7 +63,11 @@ func run(ctx context.Context, cfg *config, logger *logrus.Logger) int {
 		logger.Infof("Loaded raw collection from %s (collected %s from %s, PVWA tag %s)",
 			cfg.fromRaw, snap.CollectedAt.Format(time.RFC3339), snap.PVWAURL, snap.PVWATag)
 		if cfg.pvwaURL != "" {
-			logger.Warnf("--pvwa is ignored with --from-raw; node IDs keep the original PVWA tag %s", snap.PVWATag)
+			logger.Warnf("--pvwa is ignored with --from-raw; use --pvwa-tag to change the node-ID tag (%s)", snap.PVWATag)
+		}
+		if cfg.pvwaTag != "" && cfg.pvwaTag != snap.PVWATag {
+			logger.Infof("Re-tagging node IDs from %s to %s", snap.PVWATag, cfg.pvwaTag)
+			snap.PVWATag = cfg.pvwaTag
 		}
 	} else {
 		var base *snapshot.Snapshot
@@ -56,9 +81,15 @@ func run(ctx context.Context, cfg *config, logger *logrus.Logger) int {
 			if checkpointPath == "" {
 				checkpointPath = cfg.resume
 			}
+			// Keep the original collection's tag unless one is given.
+			if cfg.pvwaTag == "" {
+				cfg.pvwaTag = base.PVWATag
+			}
+			base.PVWATag = cfg.pvwaTag
 		}
 
 		logger.Infof("PVWA tag: %s", pvwaTag(cfg))
+		warnGenericTag(cfg, logger)
 		api := newClient(ctx, cfg, logger)
 
 		if cfg.authMethod == client.AuthMethodIdentity {
