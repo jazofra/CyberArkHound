@@ -1,578 +1,358 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
-	"runtime"
-	"sync"
+	"os/signal"
+	"regexp"
+	"runtime/debug"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/siemens-healthineers/cyberarkhound/pkg/client"
-	"github.com/siemens-healthineers/cyberarkhound/pkg/exporter"
 	"github.com/siemens-healthineers/cyberarkhound/pkg/graph"
-	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
+	"golang.org/x/term"
 )
 
-func main() {
-	// Define command-line flags
-	pvwaURL := pflag.String("pvwa", "", "PVWA / Privilege Cloud base URL (required)")
-	username := pflag.String("username", "", "API username (or OAuth client_id for --auth-method identity) (required)")
-	password := pflag.String("password", "", "API password (or OAuth client_secret for --auth-method identity) (required)")
-	authMethod := pflag.String("auth-method", "cyberark", "Authentication method: cyberark, ldap, radius, windows (self-hosted PVWA), or identity (Privilege Cloud / ISPSS SaaS)")
-	identityURL := pflag.String("identity-url", "", "CyberArk Identity tenant URL for --auth-method identity (e.g. https://<tenant>.id.cyberark.cloud)")
-	outputFile := pflag.String("output", "", "Output JSON file (required)")
-	targetDomains := pflag.StringSlice("target-domains", []string{}, "Target AD domain(s) for CyberArk_SyncsToADUser edges (required)")
-	parseSAMAccountName := pflag.Bool("parse-samaccountname", false, "Parse sAMAccountName/GID from LDAP distinguishedName CN for CyberArk_SyncsToUser edges (optional)")
+// version is set at release build time with -ldflags "-X main.version=...".
+var version = "dev"
 
-	workers := pflag.Int("workers", 50, "Concurrent workers for account detail retrieval")
+// toolVersion returns the release version, or the module version for a
+// `go install ...@version` build, or "dev".
+func toolVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return version
+}
 
-	quiet := pflag.Bool("quiet", false, "Suppress verbose logs")
-	insecure := pflag.Bool("insecure", false, "Disable SSL verification (insecure)")
-	caBundle := pflag.String("ca-bundle", "", "Path to CA bundle file")
-	debug := pflag.Bool("debug", false, "Enable debug logging")
-	logLevel := pflag.String("log-level", "INFO", "Set logging level: DEBUG, INFO, WARNING, ERROR")
-	requestTimeout := pflag.Duration("request-timeout", 360*time.Second, "HTTP request timeout (e.g. 10m, 600s)")
-	authTimeout := pflag.Duration("auth-timeout", 360*time.Second, "Authentication timeout (e.g. 2m, 120s)")
-	userExtendedDetailsTimeout := pflag.Duration("user-extended-details-timeout", client.UserExtendedDetailsTimeout, "Timeout for optional Users?ExtendedDetails=true before falling back to basic users")
-	safePageLimit := pflag.Int("safe-page-limit", client.SafePageLimit, "Safes page size for /API/safes pagination (lower can help slow or error-prone PVWA)")
-	maxReauthAttempts := pflag.Int("max-reauth-attempts", 5, "Max re-authentication attempts on HTTP 401 before giving up")
-	continueOnError := pflag.Bool("continue-on-error", true, "Export the data collected so far when safe enumeration fails partway through (the export will be incomplete); set false to abort instead")
+// passwordEnvVar is read when --password is not given, so the secret does not
+// have to appear on the command line (where any local user can see it in the
+// process list).
+const passwordEnvVar = "CYBERARK_PASSWORD"
+
+// Exit codes.
+const (
+	exitOK          = 0
+	exitError       = 1
+	exitInterrupted = 130 // conventional for SIGINT
+)
+
+// config holds the parsed command line.
+type config struct {
+	pvwaURL       string
+	pvwaTag       string // explicit node-ID namespace tag; "" derives it from the PVWA URL
+	username      string
+	password      string
+	passwordFlag  bool // password came from --password
+	authMethod    string
+	identityURL   string
+	outputFile    string
+	targetDomains []string
+	parseSAM      bool
+
+	workers                    int
+	insecure                   bool
+	caBundle                   string
+	logLevel                   logrus.Level
+	requestTimeout             time.Duration
+	authTimeout                time.Duration
+	userExtendedDetailsTimeout time.Duration
+	safePageLimit              int
+	maxReauthAttempts          int
+	maxRateLimitRetries        int
+	continueOnError            bool
+
+	includeActivity          bool
+	activityDays             int
+	activityLimit            int
+	includeLinkedAccounts    bool
+	includePlatforms         bool
+	includePSM               bool
+	includeApplications      bool
+	includePredefinedMembers bool
+
+	limitUsers  int
+	limitGroups int
+	limitSafes  int
+	testSafe    string
+
+	findingsOutput string
+	saveRaw        string
+	fromRaw        string
+	resume         string
+
+	// checkpointInterval is how often a collection saves its progress
+	// (zero means defaultCheckpointInterval). Not a flag; tests shorten it.
+	checkpointInterval time.Duration
+	// explicit records which collection-option flags were set on the
+	// command line, so a resumed collection can say which ones it ignores.
+	explicit map[string]bool
+}
+
+// resumeOptionFlags are the flags whose values a resumed collection takes
+// from the original run instead of the command line.
+var resumeOptionFlags = []string{"limit-users", "limit-groups", "limit-safes", "test-safe", "activity-days", "activity-limit", "include-predefined-members"}
+
+// validPVWATag restricts --pvwa-tag to characters that are safe in node IDs.
+var validPVWATag = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$`)
+
+// errVersion asks realMain to print the version and exit.
+var errVersion = errors.New("version requested")
+
+// usageError is a command-line mistake; the caller prints usage after it.
+type usageError struct{ msg string }
+
+func (e *usageError) Error() string { return e.msg }
+
+func newFlagSet(cfg *config) (*pflag.FlagSet, *string, *bool, *bool) {
+	fs := pflag.NewFlagSet("cyberarkhound", pflag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	fs.StringVar(&cfg.pvwaURL, "pvwa", "", "PVWA / Privilege Cloud base URL (required)")
+	fs.StringVar(&cfg.pvwaTag, "pvwa-tag", "", "Tag that namespaces node IDs (default: 4 characters derived from the PVWA host name). Set a distinct tag for each vault when importing several into one BloodHound")
+	fs.StringVar(&cfg.username, "username", "", "API username (or OAuth client_id for --auth-method identity) (required)")
+	fs.StringVar(&cfg.password, "password", "", "API password (or OAuth client_secret for --auth-method identity). Prefer the "+passwordEnvVar+" environment variable or the interactive prompt: a value given here is visible in the process list")
+	fs.StringVar(&cfg.authMethod, "auth-method", "cyberark", "Authentication method: cyberark, ldap, radius, windows (self-hosted PVWA), or identity (Privilege Cloud / ISPSS SaaS)")
+	fs.StringVar(&cfg.identityURL, "identity-url", "", "CyberArk Identity tenant URL for --auth-method identity (e.g. https://<tenant>.id.cyberark.cloud)")
+	fs.StringVar(&cfg.outputFile, "output", "", "Output file (required). A .zip extension writes the JSON inside a zip archive")
+	fs.StringSliceVar(&cfg.targetDomains, "target-domains", []string{}, "Target AD domain(s) for CyberArk_SyncsToADUser edges (required)")
+	fs.BoolVar(&cfg.parseSAM, "parse-samaccountname", false, "Parse sAMAccountName/GID from LDAP distinguishedName CN for CyberArk_SyncsToUser edges (optional)")
+
+	fs.IntVar(&cfg.workers, "workers", 50, "Concurrent workers for account detail retrieval")
+
+	quiet := fs.Bool("quiet", false, "Suppress verbose logs")
+	fs.BoolVar(&cfg.insecure, "insecure", false, "Disable SSL verification (insecure)")
+	fs.StringVar(&cfg.caBundle, "ca-bundle", "", "Path to CA bundle file")
+	debug := fs.Bool("debug", false, "Enable debug logging")
+	logLevel := fs.String("log-level", "INFO", "Set logging level: DEBUG, INFO, WARNING, ERROR (case-insensitive)")
+	fs.DurationVar(&cfg.requestTimeout, "request-timeout", 360*time.Second, "HTTP request timeout (e.g. 10m, 600s)")
+	fs.DurationVar(&cfg.authTimeout, "auth-timeout", 360*time.Second, "Authentication timeout (e.g. 2m, 120s)")
+	fs.DurationVar(&cfg.userExtendedDetailsTimeout, "user-extended-details-timeout", client.UserExtendedDetailsTimeout, "Timeout for optional Users?ExtendedDetails=true before falling back to basic users")
+	fs.IntVar(&cfg.safePageLimit, "safe-page-limit", client.SafePageLimit, "Safes page size for /API/safes pagination (lower can help slow or error-prone PVWA)")
+	fs.IntVar(&cfg.maxReauthAttempts, "max-reauth-attempts", 5, "Max re-authentication attempts on HTTP 401 before giving up")
+	fs.IntVar(&cfg.maxRateLimitRetries, "max-rate-limit-retries", client.MaxRateLimitRetries, "Max HTTP 429 (rate limited) retries per request before giving up; 0 retries indefinitely")
+	fs.BoolVar(&cfg.continueOnError, "continue-on-error", true, "Export the data collected so far when safe enumeration fails partway through (the export will be incomplete); set false to abort instead")
 
 	// Activity tracking flags
-	includeActivity := pflag.Bool("include-activity", true, "Include account activity data (creates CyberArk_UsedAccount edges)")
-	activityDays := pflag.Int("activity-days", 3, "Number of days to look back for activity")
-	activityLimit := pflag.Int("activity-limit", 100, "Max activities per account")
+	fs.BoolVar(&cfg.includeActivity, "include-activity", true, "Include account activity data (creates CyberArk_UsedAccount edges)")
+	fs.IntVar(&cfg.activityDays, "activity-days", 3, "Number of days to look back for activity")
+	fs.IntVar(&cfg.activityLimit, "activity-limit", 100, "Max activities per account")
 
 	// Linked accounts and platforms flags
-	includeLinkedAccounts := pflag.Bool("include-linked-accounts", true, "Include linked account data (creates CyberArk_LinkedTo edges for logon/reconcile/additional account chains)")
-	includePlatforms := pflag.Bool("include-platforms", true, "Include platform data (creates CyberArk_Platform nodes and CyberArk_UsesPlatform edges)")
-	includePSM := pflag.Bool("include-psm", true, "Include PSM server and connection component data (creates CyberArk_PSMServer and CyberArk_ConnectionComponent nodes)")
-	includeApplications := pflag.Bool("include-applications", true, "Include CCP/AIMWebService Application (AppID) data (creates CyberArk_Application nodes and CyberArk_CanRetrieveViaCCP edges)")
+	fs.BoolVar(&cfg.includeLinkedAccounts, "include-linked-accounts", true, "Include linked account data (creates CyberArk_LinkedTo edges for logon/reconcile/additional account chains)")
+	fs.BoolVar(&cfg.includePlatforms, "include-platforms", true, "Include platform data (creates CyberArk_Platform nodes and CyberArk_UsesPlatform edges)")
+	fs.BoolVar(&cfg.includePSM, "include-psm", true, "Include PSM server and connection component data (creates CyberArk_PSMServer and CyberArk_ConnectionComponent nodes)")
+	fs.BoolVar(&cfg.includeApplications, "include-applications", true, "Include CCP/AIMWebService Application (AppID) data (creates CyberArk_Application nodes and CyberArk_CanRetrieveViaCCP edges)")
+	fs.BoolVar(&cfg.includePredefinedMembers, "include-predefined-members", true, "Include built-in safe members such as Master, Vault Admins and Auditors, which the Safe members API omits by default")
 
 	// Testing limits
-	limitUsers := pflag.Int("limit-users", 0, "Limit number of users (0 = no limit)")
-	limitGroups := pflag.Int("limit-groups", 0, "Limit number of groups (0 = no limit)")
-	limitSafes := pflag.Int("limit-safes", 0, "Limit number of safes (0 = no limit)")
-	testSafe := pflag.String("test-safe", "", "Fetch single safe by search term")
+	fs.IntVar(&cfg.limitUsers, "limit-users", 0, "Limit number of users (0 = no limit)")
+	fs.IntVar(&cfg.limitGroups, "limit-groups", 0, "Limit number of groups (0 = no limit)")
+	fs.IntVar(&cfg.limitSafes, "limit-safes", 0, "Limit number of safes (0 = no limit)")
+	fs.StringVar(&cfg.testSafe, "test-safe", "", "Fetch single safe by search term")
 
-	pflag.Parse()
+	// Additional outputs and offline rebuilds
+	fs.StringVar(&cfg.findingsOutput, "findings-output", "", "Also write the security findings, with the objects behind each one, to this JSON file")
+	fs.StringVar(&cfg.saveRaw, "save-raw", "", "Also save the raw collected data to this JSON file, so the graph can be rebuilt later with --from-raw. Progress is saved periodically while collecting, so an interrupted or failed collection can be continued with --resume")
+	fs.StringVar(&cfg.fromRaw, "from-raw", "", "Build the graph from a file written by --save-raw instead of contacting PVWA")
+	fs.Bool("version", false, "Print the version and exit")
+	fs.StringVar(&cfg.resume, "resume", "", "Continue an interrupted or failed collection from its --save-raw file: finished work is not fetched again, failed work is retried, and progress keeps being saved to that file (or to --save-raw)")
 
-	// Handle leftover positional arguments as additional target domains
-	if len(pflag.Args()) > 0 {
-		*targetDomains = append(*targetDomains, pflag.Args()...)
+	return fs, logLevel, debug, quiet
+}
+
+// parseFlags parses and validates the command line. The password is not
+// required here; resolvePassword fills it in afterwards.
+func parseFlags(args []string) (*config, error) {
+	cfg := &config{}
+	fs, logLevel, debug, quiet := newFlagSet(cfg)
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, pflag.ErrHelp) {
+			return nil, err
+		}
+		return nil, &usageError{err.Error()}
+	}
+	if v, _ := fs.GetBool("version"); v {
+		return nil, errVersion
+	}
+	cfg.passwordFlag = fs.Changed("password")
+	cfg.explicit = make(map[string]bool)
+	for _, name := range resumeOptionFlags {
+		cfg.explicit[name] = fs.Changed(name)
 	}
 
-	// Validate required flags
-	if *pvwaURL == "" || *username == "" || *password == "" || *outputFile == "" || len(*targetDomains) == 0 {
-		fmt.Fprintf(os.Stderr, "Error: Missing required flags\n\n")
-		fmt.Fprintf(os.Stderr, "Usage: cyberarkhound [OPTIONS]\n\n")
-		fmt.Fprintf(os.Stderr, "Required flags:\n")
-		fmt.Fprintf(os.Stderr, "  --pvwa string              PVWA base URL\n")
-		fmt.Fprintf(os.Stderr, "  --username string          API username\n")
-		fmt.Fprintf(os.Stderr, "  --password string          API password\n")
-		fmt.Fprintf(os.Stderr, "  --output string            Output JSON file\n")
-		fmt.Fprintf(os.Stderr, "  --target-domains strings   Target AD domains (comma-separated, e.g. domain1.com,domain2.com)\n\n")
-		pflag.PrintDefaults()
-		os.Exit(1)
-	}
+	// Leftover positional arguments are additional target domains.
+	cfg.targetDomains = graph.NormalizeDomains(append(cfg.targetDomains, fs.Args()...))
 
-	// Validate and normalise the authentication method.
-	normalizedAuthMethod, ok := client.NormalizeAuthMethod(*authMethod)
-	if !ok {
-		fmt.Fprintf(os.Stderr, "Error: unsupported --auth-method %q (valid: cyberark, ldap, radius, windows, identity)\n", *authMethod)
-		os.Exit(1)
+	level, err := logrus.ParseLevel(strings.TrimSpace(*logLevel))
+	if err != nil {
+		return nil, &usageError{fmt.Sprintf("invalid --log-level %q (valid: DEBUG, INFO, WARNING, ERROR)", *logLevel)}
 	}
-	if normalizedAuthMethod == client.AuthMethodIdentity && *identityURL == "" {
-		fmt.Fprintf(os.Stderr, "Error: --identity-url is required when --auth-method is identity (e.g. https://<tenant>.id.cyberark.cloud)\n")
-		os.Exit(1)
-	}
-
-	// Setup logger
-	logger := logrus.New()
-	logger.SetFormatter(&logrus.TextFormatter{
-		FullTimestamp: true,
-	})
-
-	// Set log level
-	level := logrus.InfoLevel
-	if *debug {
+	switch {
+	case *debug:
 		level = logrus.DebugLevel
-	} else {
-		switch *logLevel {
-		case "DEBUG":
-			level = logrus.DebugLevel
-		case "INFO":
-			level = logrus.InfoLevel
-		case "WARNING":
-			level = logrus.WarnLevel
-		case "ERROR":
-			level = logrus.ErrorLevel
+	case *quiet && level > logrus.WarnLevel:
+		level = logrus.WarnLevel
+	}
+	cfg.logLevel = level
+
+	var missing []string
+	if cfg.outputFile == "" {
+		missing = append(missing, "--output")
+	}
+	if len(cfg.targetDomains) == 0 {
+		missing = append(missing, "--target-domains")
+	}
+	if cfg.fromRaw == "" {
+		// A resumed collection takes the PVWA URL from its file by default.
+		if cfg.pvwaURL == "" && cfg.resume == "" {
+			missing = append(missing, "--pvwa")
+		}
+		if cfg.username == "" {
+			missing = append(missing, "--username")
 		}
 	}
-	logger.SetLevel(level)
-
-	if *quiet && !*debug {
-		logger.SetLevel(logrus.WarnLevel)
+	if len(missing) > 0 {
+		return nil, &usageError{"missing required flags: " + strings.Join(missing, ", ")}
 	}
 
-	pvwaTag := graph.PVWATagFromArg(*pvwaURL)
-	logger.Infof("PVWA tag: %s", pvwaTag)
-
-	// Reasons the collection could not cover the whole environment, reported
-	// again at the end so a partial export is never mistaken for a full one.
-	var incomplete []string
-
-	// Create CyberArk client
-	apiClient := client.NewClient(*pvwaURL, *username, *password, *insecure, *caBundle, logger)
-	apiClient.AuthMethod = normalizedAuthMethod
-	apiClient.IdentityTenantURL = client.NormalizeBaseURL(*identityURL)
-	apiClient.ReqTimeout = *requestTimeout
-	apiClient.AuthTimeout = *authTimeout
-	apiClient.UserExtendedDetailsTimeout = *userExtendedDetailsTimeout
-	apiClient.UserEnrichmentWorkers = *workers
-	apiClient.SafePageLimit = *safePageLimit
-	apiClient.MaxReauthAttempts = *maxReauthAttempts
-	apiClient.HTTPClient.Timeout = apiClient.ReqTimeout
-
-	// Authenticate
-	if normalizedAuthMethod == client.AuthMethodIdentity {
-		logger.Infof("Authenticating to CyberArk Identity (Privilege Cloud) at %s...", *identityURL)
-	} else {
-		logger.Infof("Authenticating to CyberArk PVWA (method: %s)...", normalizedAuthMethod)
+	if cfg.fromRaw != "" && cfg.saveRaw != "" {
+		return nil, &usageError{"--save-raw cannot be combined with --from-raw"}
 	}
-	if err := apiClient.Authenticate(); err != nil {
-		logger.Fatalf("Authentication failed: %v", err)
+	if cfg.fromRaw != "" && cfg.resume != "" {
+		return nil, &usageError{"--resume cannot be combined with --from-raw"}
 	}
 
-	logger.Infof("Target domains: %s", *targetDomains)
-	if *parseSAMAccountName {
-		logger.Info("Enabled: parse sAMAccountName from distinguishedName CN for CyberArk_SyncsToUser edges")
+	if cfg.pvwaTag != "" {
+		if !validPVWATag.MatchString(cfg.pvwaTag) {
+			return nil, &usageError{fmt.Sprintf("invalid --pvwa-tag %q: use 1-32 letters, digits, '-' or '_', starting with a letter or digit", cfg.pvwaTag)}
+		}
+		cfg.pvwaTag = strings.ToUpper(cfg.pvwaTag)
 	}
 
-	// Fetch users
-	logger.Info("Fetching users...")
-	var limitUsersPtr *int
-	if *limitUsers > 0 {
-		limitUsersPtr = limitUsers
+	method, ok := client.NormalizeAuthMethod(cfg.authMethod)
+	if !ok {
+		return nil, &usageError{fmt.Sprintf("unsupported --auth-method %q (valid: cyberark, ldap, radius, windows, identity)", cfg.authMethod)}
 	}
-	users, err := apiClient.ListUsers(limitUsersPtr)
+	cfg.authMethod = method
+	if cfg.fromRaw == "" && method == client.AuthMethodIdentity && cfg.identityURL == "" {
+		return nil, &usageError{"--identity-url is required when --auth-method is identity (e.g. https://<tenant>.id.cyberark.cloud)"}
+	}
+	return cfg, nil
+}
+
+// resolvePassword fills in cfg.password from, in order: --password, the
+// CYBERARK_PASSWORD environment variable, or an interactive prompt.
+func resolvePassword(cfg *config, getenv func(string) string, prompt func() (string, error)) error {
+	if cfg.passwordFlag {
+		// An explicitly empty value is almost always an unset shell
+		// variable ("--password $PW"); sending it would only fail to log in.
+		if cfg.password == "" {
+			return errors.New("--password is empty")
+		}
+		return nil
+	}
+	if p := getenv(passwordEnvVar); p != "" {
+		cfg.password = p
+		return nil
+	}
+	if prompt == nil {
+		return fmt.Errorf("no password given: set %s, pass --password, or run interactively to be prompted", passwordEnvVar)
+	}
+	p, err := prompt()
 	if err != nil {
-		logger.Fatalf("Failed to fetch users: %v", err)
+		return fmt.Errorf("read password: %w", err)
 	}
-
-	// Fetch groups
-	logger.Info("Fetching groups...")
-	var limitGroupsPtr *int
-	if *limitGroups > 0 {
-		limitGroupsPtr = limitGroups
+	if p == "" {
+		return errors.New("empty password")
 	}
-	groups, err := apiClient.ListGroups(limitGroupsPtr, *workers)
-	if err != nil {
-		logger.Fatalf("Failed to fetch groups: %v", err)
+	cfg.password = p
+	return nil
+}
+
+// terminalPrompt reads a password from the terminal without echoing it, or
+// returns nil when stdin is not a terminal.
+func terminalPrompt() func() (string, error) {
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		return nil
 	}
-
-	// Fetch safes
-	logger.Info("Fetching safes...")
-	var limitSafesPtr *int
-	if *limitSafes > 0 {
-		limitSafesPtr = limitSafes
-	}
-	var testSafePtr *string
-	if *testSafe != "" {
-		testSafePtr = testSafe
-		logger.Infof("Searching for safe: %s", *testSafe)
-	}
-
-	// ListSafes returns whatever it collected before failing, so a run that
-	// dies on a single bad page does not throw away hours of collection.
-	safes, err := apiClient.ListSafes(limitSafesPtr, testSafePtr)
-	if err != nil {
-		if !*continueOnError || len(safes) == 0 {
-			logger.Fatalf("Failed to fetch safes: %v", err)
-		}
-		logger.Errorf("Failed to fetch safes: %v", err)
-		logger.Warnf("Continuing with the %d safes collected before the failure (disable with --continue-on-error=false)", len(safes))
-		incomplete = append(incomplete, fmt.Sprintf("safe enumeration stopped early after %d safes: %v", len(safes), err))
-	}
-
-	if testSafePtr != nil && len(safes) == 0 {
-		logger.Fatalf("No safes found matching '%s'", *testSafe)
-	}
-	if testSafePtr != nil {
-		logger.Infof("Found %d safes matching '%s'", len(safes), *testSafe)
-	}
-
-	// Fetch platforms if requested
-	var platforms []models.Platform
-	var platformConnectors map[string][]string
-	var targetPlatforms []models.TargetPlatform
-	if *includePlatforms {
-		logger.Info("Fetching platforms...")
-		platforms, err = apiClient.ListPlatforms()
-		if err != nil {
-			logger.Warnf("Failed to fetch platforms: %v", err)
-			platforms = []models.Platform{}
-		}
-
-		// Fetch PSM connection components per platform
-		if len(platforms) > 0 {
-			logger.Info("Fetching PSM connection components per platform...")
-			platformIDs := make([]string, 0, len(platforms))
-			for _, p := range platforms {
-				pid := p.General.ID
-				if pid == "" {
-					pid = p.General.Name
-				}
-				if pid != "" {
-					platformIDs = append(platformIDs, pid)
-				}
-			}
-			platformConnectors = apiClient.GetAllPlatformPSMConnectors(platformIDs, *workers)
-			logger.Infof("Fetched PSM connectors for %d platforms", len(platformConnectors))
-		}
-
-		// Fetch target platform data for Master Policy exception flags
-		logger.Info("Fetching platform exception data...")
-		targetPlatforms, err = apiClient.ListTargetPlatforms()
-		if err != nil {
-			logger.Warnf("Failed to fetch target platform data: %v (exception flags will be omitted)", err)
-			targetPlatforms = nil
-		}
-	}
-
-	// Fetch PSM servers and connection components if requested
-	var psmServers []models.PSMServer
-	var connComponents []models.ConnectionComponent
-	if *includePSM {
-		logger.Info("Fetching PSM servers...")
-		psmServers, err = apiClient.ListPSMServers()
-		if err != nil {
-			logger.Warnf("Failed to fetch PSM servers: %v", err)
-			psmServers = nil
-		}
-
-		logger.Info("Fetching connection components...")
-		connComponents, err = apiClient.ListConnectionComponents()
-		if err != nil {
-			logger.Warnf("Failed to fetch connection components: %v", err)
-			connComponents = nil
-		}
-	}
-
-	// Fetch CCP/AIMWebService applications if requested.
-	// Tradecraft reference: Marat Nigmatullin (FalconForce), SO-CON 2026 —
-	// "4 GET requests = 3 Domain admins: CyberArk magic you didn't know about".
-	var applications []models.Application
-	if *includeApplications {
-		logger.Info("Fetching applications (CCP/AIMWebService AppIDs)...")
-		applications, err = apiClient.ListApplicationsWithAuth(*workers)
-		if err != nil {
-			logger.Warnf("Failed to fetch applications: %v (CCP mapping will be omitted — the collector user may lack 'Manage Users' authorization)", err)
-			applications = nil
-		}
-	}
-
-	// --- Phase 1: Discovery (Parallel Safe Processing) ---
-	logger.Infof("Phase 1: Discovering members and accounts for %d safes...", len(safes))
-
-	var safeMembers []models.SafeMember
-	var skeletonAccounts []models.Account
-	var memberMu sync.Mutex
-	var accountMu sync.Mutex
-
-	safeSemaphore := make(chan struct{}, *workers)
-	var safeWg sync.WaitGroup
-
-	for idx, safe := range safes {
-		safeWg.Add(1)
-		go func(idx int, safe models.Safe) {
-			defer safeWg.Done()
-			safeSemaphore <- struct{}{}        // Acquire
-			defer func() { <-safeSemaphore }() // Release
-
-			// Progress logging (roughly every 10 safes or if few safes)
-			if (idx+1)%10 == 0 || idx+1 == len(safes) {
-				logger.Infof("Processing safe %d/%d: '%s'", idx+1, len(safes), safe.SafeName)
-			}
-
-			// Fetch safe members
-			members, err := apiClient.ListSafeMembers(safe.SafeName, safe.SafeUrlId)
-			if err != nil {
-				logger.Warnf("Failed to fetch members for safe '%s': %v", safe.SafeName, err)
-			} else {
-				memberMu.Lock()
-				safeMembers = append(safeMembers, members...)
-				memberMu.Unlock()
-			}
-
-			// Fetch accounts list (skeleton)
-			safeAccounts, err := apiClient.ListAccounts(safe.SafeName, safe.SafeUrlId)
-			if err != nil {
-				logger.Warnf("Failed to fetch accounts for safe '%s': %v", safe.SafeName, err)
-			} else if len(safeAccounts) > 0 {
-				accountMu.Lock()
-				skeletonAccounts = append(skeletonAccounts, safeAccounts...)
-				accountMu.Unlock()
-			}
-		}(idx, safe)
-	}
-
-	safeWg.Wait()
-	logger.Infof("Phase 1 Complete. Found %d safe members and %d accounts (pre-filter).", len(safeMembers), len(skeletonAccounts))
-
-	// --- Phase 2: Enrichment (Parallel Account Details) ---
-	logger.Infof("Phase 2: Fetching details for %d accounts...", len(skeletonAccounts))
-
-	var accounts []models.Account
-	var accountsMu sync.Mutex
-
-	// Reset processed count for logging
-	processedAccounts := 0
-	skippedDisabled := 0
-	skippedArchived := 0
-	failedDetails := 0
-	var processedMu sync.Mutex
-
-	accountSemaphore := make(chan struct{}, *workers)
-	var accountWg sync.WaitGroup
-
-	for _, acc := range skeletonAccounts {
-		accountWg.Add(1)
-		go func(acc models.Account) {
-			defer accountWg.Done()
-			accountSemaphore <- struct{}{}        // Acquire
-			defer func() { <-accountSemaphore }() // Release
-
-			accountID := acc.ID
-			if accountID == "" {
-				return
-			}
-
-			details, err := apiClient.GetAccountDetails(accountID)
-			if err != nil {
-				logger.Warnf("Failed to get details for account %s: %v", accountID, err)
-				processedMu.Lock()
-				failedDetails++
-				processedMu.Unlock()
-				return
-			}
-
-			if details == nil {
-				return
-			}
-
-			// Skip disabled or archived accounts
-			if details.Disabled || details.Status == "Archived" {
-				processedMu.Lock()
-				if details.Disabled {
-					skippedDisabled++
-				}
-				if details.Status == "Archived" {
-					skippedArchived++
-				}
-				processedMu.Unlock()
-				return
-			}
-
-			accountsMu.Lock()
-			accounts = append(accounts, *details)
-			accountsMu.Unlock()
-
-			processedMu.Lock()
-			processedAccounts++
-			if processedAccounts%100 == 0 {
-				logger.Infof("  Fetched details for %d/%d accounts", processedAccounts, len(skeletonAccounts))
-			}
-			processedMu.Unlock()
-
-		}(acc)
-	}
-
-	accountWg.Wait()
-	if skippedDisabled > 0 || skippedArchived > 0 {
-		logger.Warnf("Phase 2: Skipped %d disabled and %d archived accounts out of %d total.", skippedDisabled, skippedArchived, len(skeletonAccounts))
-	}
-	if failedDetails > 0 {
-		logger.Warnf("Phase 2: Failed to retrieve details for %d out of %d accounts (API errors).", failedDetails, len(skeletonAccounts))
-	}
-	logger.Infof("Phase 2 Complete. Collected %d active accounts (discovered: %d, failed: %d, disabled: %d, archived: %d).", len(accounts), len(skeletonAccounts), failedDetails, skippedDisabled, skippedArchived)
-
-	// Fetch account activities if requested
-	var accountActivities map[string][]models.AccountActivity
-	if *includeActivity && len(accounts) > 0 {
-		logger.Infof("Fetching account activities (last %d days)...", *activityDays)
-		accountActivities = make(map[string][]models.AccountActivity)
-
-		activitiesChan := make(chan struct {
-			accountID  string
-			activities []models.AccountActivity
-		}, len(accounts))
-
-		var wg sync.WaitGroup
-		semaphore := make(chan struct{}, *workers)
-		processedCount := 0
-		var mu sync.Mutex
-
-		for _, acc := range accounts {
-			wg.Add(1)
-			go func(acc models.Account) {
-				defer wg.Done()
-				semaphore <- struct{}{}        // Acquire
-				defer func() { <-semaphore }() // Release
-
-				accountID := acc.ID
-				if accountID == "" {
-					return
-				}
-
-				activities, err := apiClient.GetAccountActivities(accountID, *activityLimit, activityDays)
-				if err != nil {
-					logger.Warnf("Failed to get activities for account %s: %v", accountID, err)
-					return
-				}
-
-				if len(activities) > 0 {
-					activitiesChan <- struct {
-						accountID  string
-						activities []models.AccountActivity
-					}{accountID, activities}
-				}
-
-				mu.Lock()
-				processedCount++
-				if processedCount%100 == 0 {
-					logger.Infof("  Fetched activities for %d/%d accounts", processedCount, len(accounts))
-				}
-				mu.Unlock()
-			}(acc)
-		}
-
-		// Wait for all goroutines to complete
-		wg.Wait()
-		close(activitiesChan)
-
-		// Collect results
-		for result := range activitiesChan {
-			accountActivities[result.accountID] = result.activities
-		}
-
-		logger.Infof("Collected activities for %d accounts", len(accountActivities))
-	}
-
-	// Extract linked accounts from account details (populated by GetAccountDetails)
-	var linkedAccounts map[string][]models.LinkedAccount
-	if *includeLinkedAccounts && len(accounts) > 0 {
-		logger.Infof("Extracting linked accounts from %d accounts...", len(accounts))
-		linkedAccounts = make(map[string][]models.LinkedAccount)
-
-		for _, acc := range accounts {
-			if acc.ID != "" && len(acc.LinkedAccounts) > 0 {
-				linkedAccounts[acc.ID] = acc.LinkedAccounts
-			}
-		}
-
-		logger.Infof("Found linked accounts for %d accounts", len(linkedAccounts))
-	}
-
-	// Build OpenGraph
-	logger.Info("Building OpenGraph...")
-	og, err := graph.BuildOpenGraph(graph.BuildInput{
-		Users:                     users,
-		Groups:                    groups,
-		Safes:                     safes,
-		SafeMembers:               safeMembers,
-		Accounts:                  accounts,
-		TargetDomains:             *targetDomains,
-		ParseSAMAccountNameFromDN: *parseSAMAccountName,
-		PVWATag:                   pvwaTag,
-		AccountActivities:         accountActivities,
-		Platforms:                 platforms,
-		PlatformConnectors:        platformConnectors,
-		TargetPlatforms:           targetPlatforms,
-		LinkedAccounts:            linkedAccounts,
-		PSMServers:                psmServers,
-		ConnectionComponents:      connComponents,
-		Applications:              applications,
-		Debug:                     *debug,
-		LogLevel:                  *logLevel,
-	}, logger)
-	if err != nil {
-		logger.Fatalf("Failed to build OpenGraph: %v", err)
-	}
-
-	// Export to BloodHound JSON
-	logger.Info("Exporting to BloodHound JSON...")
-	if err := exporter.ExportToBloodHoundJSON(og, *outputFile, logger, *debug, *logLevel); err != nil {
-		logger.Fatalf("Failed to export: %v", err)
-	}
-
-	// Logoff
-	if err := apiClient.Logoff(); err != nil {
-		logger.Warnf("Logoff failed: %v", err)
-	}
-
-	if len(incomplete) > 0 {
-		logger.Warn("Export completed with INCOMPLETE data:")
-		for _, reason := range incomplete {
-			logger.Warnf("  - %s", reason)
-		}
-		logger.Warn("The exported graph does not represent the full CyberArk environment.")
-	} else {
-		logger.Info("Export completed successfully!")
-	}
-
-	// Print summary statistics
-	summary := og.GetSummary()
-	logger.Info("=== Collection Summary ===")
-	logger.Infof("Total Nodes: %d", summary["total_nodes"])
-
-	if nodeCounts, ok := summary["nodes_by_kind"].(map[string]int); ok {
-		logger.Info("Nodes by Type:")
-		for kind, count := range nodeCounts {
-			logger.Infof("  %s: %d", kind, count)
-		}
-	}
-
-	logger.Infof("Total Internal Edges: %d", summary["total_internal_edges"])
-	if edgeCounts, ok := summary["internal_edges_by_kind"].(map[string]int); ok && len(edgeCounts) > 0 {
-		logger.Info("Internal Edges by Type:")
-		for kind, count := range edgeCounts {
-			logger.Infof("  %s: %d", kind, count)
-		}
-	}
-
-	logger.Infof("Total External Edges: %d", summary["total_external_edges"])
-	if edgeCounts, ok := summary["external_edges_by_kind"].(map[string]int); ok && len(edgeCounts) > 0 {
-		logger.Info("External Edges by Type:")
-		for kind, count := range edgeCounts {
-			logger.Infof("  %s: %d", kind, count)
-		}
-	}
-
-	logger.Infof("Memory stats: Alloc=%dMB Sys=%dMB NumGC=%d",
-		getMemStats().Alloc/1024/1024,
-		getMemStats().Sys/1024/1024,
-		getMemStats().NumGC)
-
-	// Surface computed security findings (highest-value misconfigurations) so
-	// operators see them without writing Cypher. Findings are derived from the
-	// collected data only — no extra API calls.
-	findings := graph.ComputeFindings(og)
-	if len(findings) > 0 {
-		logger.Info("=== Security Findings ===")
-		for _, f := range findings {
-			logger.Warnf("[%s] %s: %d — %s", f.Severity, f.Title, f.Count, f.Detail)
-		}
-		logger.Info("Run with --include-applications and --include-platforms for complete findings coverage.")
-	} else {
-		logger.Info("=== Security Findings === none detected from the collected data")
+	return func() (string, error) {
+		fmt.Fprint(os.Stderr, "Password: ")
+		b, err := term.ReadPassword(fd)
+		fmt.Fprintln(os.Stderr)
+		return string(b), err
 	}
 }
 
-func getMemStats() *runtime.MemStats {
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	return &m
+func main() {
+	os.Exit(realMain(os.Args[1:]))
+}
+
+func printUsage(w io.Writer) {
+	fmt.Fprintf(w, "Usage: cyberarkhound --pvwa URL --username USER --output FILE --target-domains DOMAINS [OPTIONS]\n")
+	fmt.Fprintf(w, "       cyberarkhound --resume FILE --username USER --output FILE --target-domains DOMAINS [OPTIONS]\n")
+	fmt.Fprintf(w, "       cyberarkhound --from-raw FILE --output FILE --target-domains DOMAINS [OPTIONS]\n\n")
+	fmt.Fprintf(w, "The password is read from --password, the %s environment variable, or an interactive prompt.\n\n", passwordEnvVar)
+	fs, _, _, _ := newFlagSet(&config{})
+	fs.SetOutput(w)
+	fs.PrintDefaults()
+}
+
+func realMain(args []string) int {
+	cfg, err := parseFlags(args)
+	if errors.Is(err, errVersion) {
+		fmt.Println("cyberarkhound", toolVersion())
+		return exitOK
+	}
+	if errors.Is(err, pflag.ErrHelp) {
+		printUsage(os.Stdout)
+		return exitOK
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
+		printUsage(os.Stderr)
+		return exitError
+	}
+
+	logger := logrus.New()
+	logger.SetFormatter(&logrus.TextFormatter{FullTimestamp: true})
+	logger.SetLevel(cfg.logLevel)
+	logger.Infof("CyberArkHound %s", toolVersion())
+
+	if cfg.fromRaw == "" {
+		if err := resolvePassword(cfg, os.Getenv, terminalPrompt()); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return exitError
+		}
+		if cfg.passwordFlag {
+			logger.Warnf("--password is visible to other local users in the process list; prefer the %s environment variable or the interactive prompt", passwordEnvVar)
+		}
+	}
+
+	// The first SIGINT/SIGTERM stops the collection gracefully: requests are
+	// abandoned, and what was gathered so far is still built and exported. The
+	// handler is then removed, so a second signal terminates immediately.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		signal.Stop(sigCh)
+		logger.Warnf("Received %s: stopping the collection and exporting what was gathered so far (repeat to abort immediately)", sig)
+		cancel()
+	}()
+
+	return run(ctx, cfg, logger)
 }

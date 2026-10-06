@@ -9,11 +9,10 @@ Export CyberArk PVWA data (users, groups, safes, accounts, platforms and permiss
 # Download or build the binary
 go build -o cyberarkhound.exe ./cmd/cyberarkhound
 
-# Run the tool
+# Run the tool (the password is read from CYBERARK_PASSWORD, or prompted for)
 .\cyberarkhound.exe `
     --pvwa https://pvwa.example.com `
     --username svc-bloodhound `
-    --password $Env:CYBERARK_PASSWORD `
     --output cyberark_export.json `
     --target-domains corp.example.com
 ```
@@ -23,24 +22,25 @@ go build -o cyberarkhound.exe ./cmd/cyberarkhound
 # Build the binary
 go build -o cyberarkhound ./cmd/cyberarkhound
 
-# Run the tool
+# Run the tool (the password is read from CYBERARK_PASSWORD, or prompted for)
 ./cyberarkhound \
     --pvwa https://pvwa.example.com \
     --username svc-bloodhound \
-    --password "$CYBERARK_PASSWORD" \
     --output cyberark_export.json \
     --target-domains corp.example.com
 ```
 
-The resulting `cyberark_export.json` file can be directly imported into BloodHound.
+The resulting `cyberark_export.json` file can be directly imported into BloodHound. Use a `.zip` output name (e.g. `--output cyberark_export.zip`) to get a compressed archive that BloodHound also accepts.
+
+**Password handling.** The password (or OAuth `client_secret`) is taken from, in order: `--password`, the `CYBERARK_PASSWORD` environment variable, or an interactive prompt that does not echo. Avoid `--password`: command-line arguments are visible to other local users in the process list, and CyberArkHound logs a warning when it is used.
 
 #### Privilege Cloud (SaaS / ISPSS)
 
 CyberArkHound also supports **CyberArk Privilege Cloud**, the SaaS-based offering on the Identity Security Platform Shared Services (ISPSS). The data model and the PasswordVault REST API are the same as self-hosted PVWA — only **authentication** differs: Privilege Cloud authenticates through **CyberArk Identity**.
 
 With `--auth-method identity`, CyberArkHound authenticates in two stages:
-1. **OAuth2 `client_credentials`** — tried first, for [OAuth confidential client service users](#service-user-setup-for-privilege-cloud) (recommended). `--username`/`--password` are the `client_id`/`client_secret`.
-2. **Username/password fallback** — if the `client_credentials` grant is rejected, CyberArkHound falls back to the interactive CyberArk Identity flow (`StartAuthentication` → `AdvanceAuthentication`) and stores the returned platform bearer token. `--username`/`--password` are the regular Identity username and password.
+1. **OAuth2 `client_credentials`** — tried first, for [OAuth confidential client service users](#service-user-setup-for-privilege-cloud) (recommended). `--username` and the password are the `client_id`/`client_secret`.
+2. **Username/password fallback** — if the `client_credentials` grant is rejected, CyberArkHound falls back to the interactive CyberArk Identity flow (`StartAuthentication` → `AdvanceAuthentication`) and stores the returned platform bearer token. `--username` and the password are the regular Identity username and password.
 
 If the account requires **multi-factor authentication (MFA)** or uses **federated / SAML sign-in**, the username/password fallback cannot complete non-interactively and CyberArkHound returns a clear error — use an OAuth confidential client service user (excluded from MFA) instead.
 
@@ -50,7 +50,6 @@ If the account requires **multi-factor authentication (MFA)** or uses **federate
     --pvwa https://<subdomain>.privilegecloud.cyberark.cloud \
     --identity-url https://<tenant>.id.cyberark.cloud \
     --username <oauth-service-user> \
-    --password "$CYBERARK_CLIENT_SECRET" \
     --output cyberark_export.json \
     --target-domains corp.example.com
 ```
@@ -58,7 +57,7 @@ If the account requires **multi-factor authentication (MFA)** or uses **federate
 Notes:
 - `--pvwa` is the **Privilege Cloud** URL (`https://<subdomain>.privilegecloud.cyberark.cloud`). CyberArkHound appends the same `/PasswordVault/API/...` paths used for self-hosted.
 - `--identity-url` is the **CyberArk Identity tenant** URL used to obtain the OAuth2 token (`https://<tenant>.id.cyberark.cloud`). The Identity tenant ID is usually **not** the same as the portal subdomain — find it under Identity Administration or in the `oauth2/platformtoken` endpoint your tenant uses.
-- `--username` / `--password` are the **OAuth `client_id` / `client_secret`** of a dedicated [OAuth confidential client service user](#service-user-setup-for-privilege-cloud) created in CyberArk Identity (not an interactive portal user).
+- `--username` / the password (from `CYBERARK_PASSWORD`, the prompt, or `--password`) are the **OAuth `client_id` / `client_secret`** of a dedicated [OAuth confidential client service user](#service-user-setup-for-privilege-cloud) created in CyberArk Identity (not an interactive portal user).
 - The obtained `access_token` is a short-lived bearer token; CyberArkHound automatically re-authenticates when it expires (HTTP 401), reusing the same single-flight refresh logic as self-hosted.
 
 The required vault authorizations (`Audit Users` plus `List`/`View Safe Members` on the safes) are identical to self-hosted — assign them to the service user in Privilege Cloud.
@@ -83,8 +82,15 @@ The required vault authorizations (`Audit Users` plus `List`/`View Safe Members`
 - **Enriched metadata**: Personal details, vault authorizations, safe permissions, account management status
 - **Safe permission tracking**: Per-user/group safe access with permission details
 - **External edges preserved**: AD sync relationships stored separately for cross-domain analysis
-- **Security findings summary**: End-of-run report of the highest-value misconfigurations (unrestricted CCP AppIDs, default AIMWebService, wildcard `AllowedSafes`, safes without CPM) computed from collected data — no extra API calls
-- **Deterministic output**: Nodes and edges are emitted in a stable, sorted order so exports diff cleanly across runs
+- **Security findings summary**: End-of-run report of the highest-value misconfigurations (unrestricted CCP AppIDs, default AIMWebService, wildcard `AllowedSafes`, safes without CPM) computed from collected data — no extra API calls; `--findings-output` also writes them, with the affected objects, to a JSON file
+- **Built-in safe members**: Predefined members such as Master, Vault Admins and Auditors are collected (the Safe members API omits them by default)
+- **Membership-aware access**: Expired safe memberships produce no access edges; group membership is taken from both each user's details and each group's member list
+- **Honest partial exports**: Every lookup that fails (a safe's members, an account's details, a group's member list, ...) is listed in an end-of-run INCOMPLETE report instead of being silently dropped
+- **Interruptible**: Ctrl+C stops the collection, logs off, and still exports what was gathered (exit code 130); a second Ctrl+C aborts immediately
+- **Resumable collections**: with `--save-raw`, progress is saved every minute and whenever the run stops; `--resume` continues an interrupted or failed collection without fetching finished work again, retries what failed, and produces the same export as an uninterrupted run
+- **Offline rebuilds**: `--save-raw` keeps the raw collected data; `--from-raw` rebuilds the graph from it without contacting PVWA
+- **Safe output files**: Exports are written atomically with owner-only (0600) permissions; a `.zip` output name produces a compressed archive
+- **Deterministic output**: Nodes, edges and permission lists are emitted in a stable, sorted order so exports diff cleanly across runs
 - **Debug logging**: Comprehensive diagnostics for troubleshooting data flow
 
 ### CyberArk User Permissions Required
@@ -111,7 +117,7 @@ For **Privilege Cloud (SaaS / ISPSS)**, the collector authenticates through Cybe
 2. **Enable "Is OAuth confidential client"** in the user's Status checklist — this turns the username/password into an OAuth `client_id` / `client_secret`.
 3. **Exclude it from MFA policies** (service users cannot satisfy interactive MFA) and from the User Portal.
 4. **Grant the same vault access** as self-hosted: `Audit Users` plus `List` / `View Safe Members` on all safes (directly or via a group).
-5. **Run CyberArkHound with `--auth-method identity`**, passing the `client_id` as `--username`, the `client_secret` as `--password`, and the Identity tenant URL as `--identity-url`.
+5. **Run CyberArkHound with `--auth-method identity`**, passing the `client_id` as `--username`, the `client_secret` as the password (via `CYBERARK_PASSWORD` or the prompt), and the Identity tenant URL as `--identity-url`.
 
 > A regular (non-OAuth) CyberArk Identity user also works: CyberArkHound automatically falls back to the username/password `StartAuthentication` → `AdvanceAuthentication` flow when the `client_credentials` grant is rejected. That user must **not** be subject to MFA or federated/SAML sign-in, since those require interactive completion. The OAuth confidential client approach is still recommended because it is purpose-built for non-interactive automation.
 
@@ -135,11 +141,10 @@ With 'list' and 'View Safe Members' on each safe, the tool can:
 - `POST /oauth2/platformtoken` on the CyberArk Identity tenant - Authentication (Privilege Cloud / ISPSS, `--auth-method identity`; OAuth2 `client_credentials`, tried first)
 - `POST /Security/StartAuthentication` + `POST /Security/AdvanceAuthentication` on the CyberArk Identity tenant - Username/password fallback when `client_credentials` is rejected (`--auth-method identity`; not usable with MFA/SAML accounts)
 - `GET /API/safes` - List all safes
-- `GET /API/Safes/{safeUrlId}/Members` - List safe members and permissions
+- `GET /API/Safes/{safeUrlId}/Members?filter=includePredefinedUsers eq true` - List safe members and permissions, including built-in members (the safe is addressed by PVWA's `safeUrlId`, falling back to the URL-escaped safe name when it is absent) (the filter is dropped automatically, and the gap reported, if PVWA rejects it; disable with `--include-predefined-members=false`)
 - `GET /API/Accounts` - List accounts (filtered by safe)
-- `GET /API/Accounts/{accountId}` - Get account details
+- `GET /API/Accounts/{accountId}` - Get account details, including linked accounts: logon, reconcile, and platform-defined additional accounts (used when `--include-linked-accounts` is set; no extra request)
 - `GET /API/Accounts/{accountId}/Activities` - Get account activity logs (optional, requires `--include-activity`)
-- `GET /API/Accounts/{accountId}/LinkedAccounts` - Get linked accounts: logon, reconcile, and platform-defined additional accounts (optional, requires `--include-linked-accounts`)
 - `GET /API/Platforms/` - List all platforms with full configuration (optional, requires `--include-platforms`)
 - `GET /API/Platforms/Targets` - List target platforms with exception flags (optional, requires `--include-platforms`; also used as fallback when `/API/Platforms/` fails)
 - `GET /API/Platforms/Targets/{id}/PrivilegedSessionManagement` - Get per-platform PSM connectors (optional, requires `--include-platforms`)
@@ -160,11 +165,27 @@ With 'list' and 'View Safe Members' on each safe, the tool can:
 - Monitor API usage via PVWA audit logs
 - Consider IP restrictions for the service account
 - Adding the user to the 'Auditors' groups is easy to provide required perms but grants too much access
+- Supply the password through `CYBERARK_PASSWORD` or the interactive prompt rather than `--password`, which other local users can see in the process list
+- Treat the export, `--save-raw` and `--findings-output` files as sensitive: they map every privileged account and who can reach it. CyberArkHound creates them readable by the owner only (0600); keep them that way when copying them around
+- The session token is never written to the logs, even at debug level
+
+#### TLS troubleshooting
+CyberArkHound uses Go's current TLS defaults, which reject some legacy server configurations. If connecting to an older PVWA fails during the TLS handshake (errors containing `tls:` or `x509:`), find out which legacy option the server needs and re-enable only that one, for a single run, with the `GODEBUG` environment variable:
+
+| Setting | Re-enables |
+|---------|------------|
+| `tlsrsakex=1` | RSA key-exchange cipher suites (no forward secrecy) |
+| `tls3des=1` | 3DES cipher suites |
+| `tlssha1=1` | SHA-1 signatures in TLS 1.2 handshakes |
+| `x509negativeserial=1` | Certificates with a negative serial number |
+| `tlsmlkem=0,tlssecpmlkem=0` | Leaves out post-quantum key shares, for middleboxes that reject large TLS ClientHello messages |
+
+For example: `GODEBUG=tlsrsakex=1 ./cyberarkhound ...`. These weaken the connection, so fixing the server configuration is the better long-term answer. For a certificate issued by an internal CA, pass it with `--ca-bundle` instead of using `--insecure`.
 
 ### Installation
 
 **Requirements:**
-- Go 1.21 or later
+- Go 1.26 or later (older Go installations download the required toolchain automatically)
 - Git (for cloning the repository)
 
 **Build from source:**
@@ -181,16 +202,27 @@ go install ./cmd/cyberarkhound
 ```
 
 **Pre-built binaries:**
-Download pre-compiled binaries from the [Releases](https://github.com/jazofra/CyberArkHound/releases) page.
+Download pre-compiled binaries from the [Releases](https://github.com/jazofra/CyberArkHound/releases) page. Each release is built by the `Release` workflow when a `v*` tag is pushed, for Linux, macOS and Windows (amd64 and arm64), with the latest stable Go. Before running a downloaded binary, check it:
+
+```bash
+# The checksum must match the release's SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+
+# The binary must have been built by this repository's release workflow
+gh attestation verify cyberarkhound_v1.2.3_linux_amd64 --repo jazofra/CyberArkHound
+```
+
+`cyberarkhound --version` prints the version a binary was built from.
 
 ### Usage
+
+The password is read from the `CYBERARK_PASSWORD` environment variable (or prompted for) in all examples below.
 
 **Basic usage:**
 ```pwsh
 .\cyberarkhound.exe `
     --pvwa https://pvwa.example.com `
     --username api_user `
-    --password $Env:CYBERARK_PASSWORD `
     --output export.json `
     --target-domains corp.example.com,lab.example.com
 ```
@@ -200,7 +232,6 @@ Download pre-compiled binaries from the [Releases](https://github.com/jazofra/Cy
 .\cyberarkhound.exe `
     --pvwa https://pvwa.corp.com `
     --username svc-bloodhound `
-    --password $Env:CYBERARK_PASSWORD `
     --output cyberark_export.json `
     --target-domains corp.example.com,lab.example.com `
     --include-activity `
@@ -213,27 +244,61 @@ Download pre-compiled binaries from the [Releases](https://github.com/jazofra/Cy
 .\cyberarkhound.exe `
     --pvwa https://pvwa.corp.com `
     --username svc-bloodhound `
-    --password $Env:CYBERARK_PASSWORD `
     --output cyberark_export.json `
     --target-domains corp.example.com `
-    --debug `
-    --log-level DEBUG
+    --log-level debug
 ```
+
+**Keep the raw data, write findings, and rebuild later without PVWA:**
+```bash
+# Collect once, keeping the raw data and a machine-readable findings report
+./cyberarkhound --pvwa https://pvwa.example.com --username svc-bloodhound \
+    --output cyberark_export.zip --target-domains corp.example.com \
+    --save-raw cyberark_raw.json --findings-output cyberark_findings.json
+
+# Rebuild the graph (e.g. with other target domains, or after upgrading CyberArkHound)
+./cyberarkhound --from-raw cyberark_raw.json \
+    --output cyberark_export.json --target-domains corp.example.com,lab.example.com
+```
+
+**Resume a long collection that was interrupted or failed:**
+```bash
+# Start with --save-raw: progress is saved every minute and when the run stops
+./cyberarkhound --pvwa https://pvwa.example.com --username svc-bloodhound \
+    --output cyberark_export.json --target-domains corp.example.com \
+    --save-raw cyberark_raw.json
+
+# ...the run is interrupted, crashes, or ends with some safes failing...
+
+# Continue where it stopped (the PVWA URL is taken from the file)
+./cyberarkhound --resume cyberark_raw.json --username svc-bloodhound \
+    --output cyberark_export.json --target-domains corp.example.com
+```
+
+A resumed collection skips the stages (users, groups, safes, platforms, PSM, applications) and the per-safe and per-account work an earlier run finished, and retries everything that failed — so resuming a finished collection that reported INCOMPLETE data retries just the failed parts. It keeps the original run's collection options (`--limit-*`, `--test-safe`, `--activity-*`, `--include-predefined-members`); other flags, such as `--include-*`, `--workers` and `--target-domains`, can differ. The result is the export an uninterrupted collection would have produced, except that data fetched by different runs reflects the vault at different times.
 
 **Performance tips for large environments:**
 - Increase `--workers` to 100-200 for faster parallel processing
 - Use `--log-level WARNING` to reduce logging overhead
-- The tool uses efficient memory management with native goroutines for true parallelism
+- Workers are a fixed pool: only `--workers` goroutines run, however many accounts there are
 - Re-authentication is single-flighted: when multiple workers receive HTTP 401 simultaneously, only one re-authenticates while the others wait and reuse the refreshed token — avoiding thundering-herd token churn
+- HTTP 429 (rate limited) responses honour the server's `Retry-After` header and back off exponentially otherwise, up to `--max-rate-limit-retries` times per request
+- Use a `.zip` output name to keep very large exports small
+- For a sense of scale: a synthetic vault with 5,000 safes and 100,000 accounts (about one million edges) builds and exports from a raw file in about 16 seconds, peaking at about 1.4 GB of memory, with a 380 MB JSON export. Each progress save during a `--save-raw` collection of that size rewrites a roughly 90 MB file in about 2 seconds, once a minute. `go test -run '^$' -bench . ./pkg/graph ./pkg/exporter` measures build and export speed
+
+**Interrupting a collection:** the first Ctrl+C (or SIGTERM) stops the collection, logs off the PVWA session, and builds and exports whatever was collected so far, flagged as INCOMPLETE. With `--save-raw`, the progress is saved too, so the collection can be continued with `--resume`. A second Ctrl+C aborts immediately.
+
+**Exit codes:** `0` success (including an export flagged INCOMPLETE, e.g. with `--continue-on-error`), `1` error, `130` interrupted.
 
 ### Command-Line Arguments
 
 **Required:**
-- `--pvwa` Base PVWA URL (self-hosted, e.g. https://pvwa.example.com) or Privilege Cloud URL (e.g. https://<subdomain>.privilegecloud.cyberark.cloud)
-- `--username` API username (or OAuth `client_id` when `--auth-method identity`)
-- `--password` API password (or OAuth `client_secret` when `--auth-method identity`; consider using environment variable)
-- `--output` Destination JSON file for BloodHound import
-- `--target-domains` One or more AD domain names (comma-separated) used to link accounts to AD users
+- `--pvwa` Base PVWA URL (self-hosted, e.g. https://pvwa.example.com) or Privilege Cloud URL (e.g. https://<subdomain>.privilegecloud.cyberark.cloud). Not needed with `--from-raw` or `--resume`
+- `--username` API username (or OAuth `client_id` when `--auth-method identity`). Not needed with `--from-raw`
+- `--output` Destination file for BloodHound import. A `.zip` extension writes the JSON inside a zip archive
+- `--target-domains` One or more AD domain names (comma-separated) used to link accounts to AD users. Surrounding spaces and trailing dots are ignored
+
+**Password:** read from, in order, `--password`, the `CYBERARK_PASSWORD` environment variable, or an interactive no-echo prompt. It is the OAuth `client_secret` when `--auth-method identity`. Prefer the environment variable or prompt: `--password` is visible to other local users in the process list.
 
 **Authentication:**
 - `--auth-method` Authentication method: `cyberark` (default), `ldap`, `radius`, `windows` for self-hosted PVWA, or `identity` for Privilege Cloud / ISPSS (SaaS) OAuth2
@@ -242,15 +307,19 @@ Download pre-compiled binaries from the [Releases](https://github.com/jazofra/Cy
 **Optional:**
 - `--workers` Concurrency for parallel operations (default: 50, recommended: 100-200 for large environments)
 - `--insecure` Disable SSL verification (NOT recommended for production)
-- `--ca-bundle` Path to custom CA bundle for SSL verification
-- `--auth-timeout` Authentication timeout in seconds (default: 360)
-- `--req-timeout` Request timeout in seconds (default: 360)
-- `--quiet` Suppress info/debug logs
-- `--debug` Enable debug logging with detailed diagnostics
-- `--log-level` Set logging level: DEBUG, INFO (default), WARNING, ERROR
-- `--user-extended-details-timeout` Timeout for optional `Users?ExtendedDetails=true` before falling back to the basic user list (default: 60s)
+- `--ca-bundle` PEM file of CA certificates to trust in addition to the system roots (e.g. an internal CA that issued the PVWA certificate). An unreadable file or one without certificates stops the run before any request is sent
+- `--auth-timeout` Authentication timeout as a duration, e.g. `2m` (default: 6m)
+- `--request-timeout` Request timeout as a duration, e.g. `10m` (default: 6m)
+- `--quiet` Show only warnings and errors
+- `--debug` Enable debug logging with detailed diagnostics (same as `--log-level debug`)
+- `--log-level` Set logging level: DEBUG, INFO (default), WARNING, ERROR (case-insensitive; unknown values are rejected)
+- `--user-extended-details-timeout` Timeout for optional `Users?ExtendedDetails=true` before falling back to the basic user list (default: 1m)
 - `--safe-page-limit` Safes page size for pagination (default: 100; lower can help slow or error-prone PVWA)
 - `--max-reauth-attempts` Max re-authentication attempts on HTTP 401 before giving up (default: 5)
+- `--max-rate-limit-retries` Max HTTP 429 retries per request before giving up (default: 10; 0 retries indefinitely)
+- `--continue-on-error` Export the data collected so far when safe enumeration fails partway through (default: true; the export is flagged INCOMPLETE)
+- `--include-predefined-members` Collect built-in safe members such as Master, Vault Admins and Auditors (default: true)
+- `--pvwa-tag` Tag that namespaces node IDs (1–32 letters, digits, `-` or `_`). Defaults to 4 characters derived from the PVWA host name; set a distinct tag per vault when importing several into one BloodHound (see [Output](#output))
 
 When the bulk `GET /API/Users?ExtendedDetails=true` endpoint times out, CyberArkHound falls back to `GET /API/Users` and enriches each user individually through the user details endpoint. This preserves extended user fields while avoiding a single large PVWA response as a hard dependency. The existing `--workers` value controls this per-user enrichment concurrency.
 
@@ -264,6 +333,14 @@ When the bulk `GET /API/Users?ExtendedDetails=true` endpoint times out, CyberArk
 - `--include-platforms` Include platform data (creates CyberArk_Platform nodes and CyberArk_UsesPlatform edges)
 - `--include-psm` Include PSM server and connection component data (creates CyberArk_PSMServer and CyberArk_ConnectionComponent nodes with linking edges)
 - `--include-applications` Include CCP/AIMWebService application (AppID) data (creates CyberArk_Application nodes and CyberArk_CanRetrieveViaCCP edges). Requires the collector to be able to list Applications (typically the `Manage Users` vault authorization or membership in the relevant application safes)
+
+With `--from-raw`, the `--include-*` flags filter what is built from the raw data.
+
+**Additional outputs and offline rebuilds:**
+- `--findings-output` Also write the [security findings](#security-findings), with the objects behind each one, to this JSON file
+- `--save-raw` Also save the raw collected data (no credentials) to this JSON file. While collecting, progress is saved to it every minute and whenever the run stops, so the collection can be resumed
+- `--resume` Continue an interrupted or failed collection from its `--save-raw` file. Finished work is not fetched again and failed work is retried; progress keeps being saved to the same file (or to `--save-raw`, if given). `--pvwa` defaults to the file's PVWA URL; the password and authentication flags are needed as for any collection
+- `--from-raw` Build the graph from a `--save-raw` file instead of contacting PVWA. Node IDs keep the original PVWA tag. A file from an unfinished collection builds a graph flagged INCOMPLETE
 
 **Testing/Development:**
 - `--limit-users` Limit number of users to process (0 = no limit)
@@ -303,10 +380,10 @@ _Queries: [Privilege escalation](#privilege-escalation-cyberark_cangrantaccessto
 | `CyberArk_CanRetrieveViaCCP` | Application → Account | Application safe member `useAccounts`/`retrieveAccounts` + `GET /WebServices/PIMServices.svc/Applications` | CCP/AIMWebService credential retrieval via a single GET request; `appIsUnrestricted` and `isDefaultCCPApp` flag the highest-risk AppIDs ([Nigmatullin, SO-CON 2026](#tradecraft-reference)) |
 | `CyberArk_CCPAllowedFrom` | Application → AD Computer | Application `machineAddress` authentications (Allowed Machines) | External edge — which hosts may present the AppID to CCP; `machineIsOnlyRestriction` flags when landing on the host is sufficient to wield the AppID |
 | `CyberArk_CanGrantAccessTo` | User/Group → Safe | Safe member `manageSafe`/`manageSafeMembers` | Privilege escalation — can grant themselves account access |
-| `CyberArk_CanHijackViaReconcile` | User/Group → Account | Safe member `addAccounts`/`manageSafe` + reconcile linked account (`GET /API/Accounts/{id}/LinkedAccounts`) | Privilege escalation — can coerce the CPM to reset a target's password using a privileged reconcile account ([Nigmatullin, SO-CON 2026](#tradecraft-reference)) |
+| `CyberArk_CanHijackViaReconcile` | User/Group → Account | Safe member `addAccounts`/`manageSafe` + reconcile linked account (from `GET /API/Accounts/{id}`) | Privilege escalation — can coerce the CPM to reset a target's password using a privileged reconcile account ([Nigmatullin, SO-CON 2026](#tradecraft-reference)) |
 | `CyberArk_CanApprove` | User/Group → Safe | Safe member `requestsAuthorizationLevel1`/`Level2` | Can approve dual-controlled access requests (L1/L2) |
 | `CyberArk_UsedAccount` | User → Account | `GET /API/Accounts/{id}/Activities` | Actual usage audit trail — who really accessed what |
-| `CyberArk_LinkedTo` | Account → Account | `GET /API/Accounts/{id}/LinkedAccounts` | Logon/reconcile/additional credential chains — compromising one propagates to all dependents |
+| `CyberArk_LinkedTo` | Account → Account | Linked accounts in `GET /API/Accounts/{id}` | Logon/reconcile/additional credential chains — compromising one propagates to all dependents |
 | `CyberArk_Created` | User → Safe | Existing `Safe.Creator` field | Shows who created each safe (implicit ownership/access) |
 | `CyberArk_ManagedBy` | CPM User → Safe | Existing `Safe.ManagingCPM` field | CPM accounts have privileged password management access |
 | `CyberArk_UsesPlatform` | Account → Platform | `GET /API/Platforms/Targets` | Shared platform config = shared attack surface |
@@ -317,10 +394,16 @@ _Queries: [Privilege escalation](#privilege-escalation-cyberark_cangrantaccessto
 | `CyberArk_MemberOf` | User/Group → Group | Group membership data | Group-based permission inheritance |
 | `CyberArk_Contains` | Safe → Account | Account's `safeName` field | Safe-account containment relationship |
 | `CyberArk_InstanceContains` | Instance → Safe/Platform/PSM Server/Connection Component | Derived (one root per PVWA tag) | Environment root containment — scopes bounded configuration objects to their PVWA instance. Users and groups are excluded to avoid a multi-million-edge fan-out in LDAP-synced vaults |
-| `CyberArk_SyncsToUser` | AD User → CyberArk_User | LDAP DN with `DC=` | External edge — AD-to-CyberArk identity mapping |
+| `CyberArk_SyncsToUser` | AD User → CyberArk_User | LDAP user's DN (`DC=` components give the domain) and user name | External edge — AD-to-CyberArk identity mapping |
 | `CyberArk_SyncsToGroup` | AD Group → CyberArk_Group | LDAP DN with `DC=` | External edge — AD-to-CyberArk group mapping |
-| `CyberArk_SyncsToADUser` | CyberArk_Account → AD User | Account address matches target domain | External edge — credential-to-AD-user mapping |
-| `CyberArk_CanConnect` | CyberArk_Account → AD Computer | Account address matches address subdomain of the target domain (Local accounts) | External edge — credential-to-AD-computer mapping |
+| `CyberArk_SyncsToADUser` | CyberArk_Account → AD User | Account address equals a target domain (domain accounts) | External edge — credential-to-AD-user mapping |
+| `CyberArk_CanConnect` | CyberArk_Account → AD Computer | Account address is a host FQDN within a target domain (local accounts) | External edge — credential-to-AD-computer mapping |
+
+**How CyberArk objects are matched to AD.** These external edges are inferred from names, so they only connect when the names line up:
+- User names are reduced to the bare account name first: `CORP\jdoe` and `jdoe@corp.local` both become `JDOE@<DOMAIN>`. With `--parse-samaccountname`, the last word of an LDAP user's CN is used instead (for directories whose CNs end in the account ID).
+- The domain of an LDAP user or group comes from the `DC=` components of its DN.
+- An account address that *equals* a target domain is a domain account (`CyberArk_SyncsToADUser`). An address that is a host inside a target domain, at any depth, is a computer matched by its full FQDN (`CyberArk_CanConnect`); when several target domains match, the most specific one is recorded.
+- IP addresses, short (NetBIOS) host names, and hosts outside the target domains produce no edge, since they cannot be matched to an AD object by name. List every AD domain you have loaded into BloodHound in `--target-domains`.
 
 **Note**: Permissions like `listAccounts`, `viewAuditLog`, `addAccounts`, `updateAccountContent` do **not** create access edges as they don't allow password retrieval or account usage.
 
@@ -409,7 +492,7 @@ _Queries: [Dual control (approval) analysis](#dual-control-approval-analysis) an
 #### CyberArk_LinkedTo (Account → Account) - Optional
 **Linked account dependencies** - Maps credential chains where one account depends on another for logon, reconciliation, or a platform-defined additional role:
 - Created when `--include-linked-accounts` flag is used
-- Based on CyberArk linked accounts via `/API/Accounts/{accountId}/LinkedAccounts`
+- Based on the linked accounts returned with the account details (`/API/Accounts/{accountId}`)
 - Link types: `logon` (ExtraPass1) and `reconcile` (ExtraPass3) are fixed roles. Every other slot (ExtraPass2, ExtraPass4, …) is a platform-defined **additional** account whose real type name is resolved positionally from the platform's `linkedAccounts` metadata — e.g. a Unix `JumpAccount` or a Cisco `EnablePassword`. When platform metadata isn't collected, additional slots fall back to the generic label `additional`.
 - Critical for attack path analysis: compromising a logon account gives access to all accounts that depend on it
 
@@ -832,7 +915,28 @@ At the end of each run, CyberArkHound logs a **Security Findings** summary deriv
 | PSM-routed accounts without session isolation/recording | Medium | `CyberArk_Account.managedByPSM` + `sessionMonitoringEnabled`/`sessionRecordingEnabled` |
 | Safes without CPM management | Medium | `CyberArk_Safe.managingCPM` empty |
 
-Only findings with a non-zero count are shown. For full coverage, run with `--include-applications` and `--include-platforms` (both default-on). The CCP-related findings map the tradecraft documented by [Marat Nigmatullin (SO-CON 2026)](#tradecraft-reference).
+Only findings with a non-zero count are shown. For full coverage, run with `--include-applications` and `--include-platforms` (both default-on). An application whose authentication restrictions could not be read is marked `authenticationsUnknown` and is never counted as unrestricted.
+
+With `--findings-output findings.json`, the same findings are also written as JSON, each listing the objects behind it (node `id` and `name`; for relationship-based findings also the `target` and `targetName`), together with the collection's `incomplete` reasons:
+
+```json
+{
+  "generatedAt": "2026-10-05T09:00:00Z",
+  "collectedAt": "2026-10-05T08:12:44Z",
+  "pvwaUrl": "https://pvwa.example.com",
+  "pvwaTag": "PVEX",
+  "findings": [
+    {
+      "id": "SAFE_NO_CPM",
+      "title": "Safes without CPM management",
+      "severity": "Medium",
+      "count": 1,
+      "detail": "Safes with no managing CPM do not have automated password rotation; stored credentials may be stale or unrotated.",
+      "objects": [{ "id": "CASAFE-LEGACY-PVEX", "name": "Legacy" }]
+    }
+  ]
+}
+``` The CCP-related findings map the tradecraft documented by [Marat Nigmatullin (SO-CON 2026)](#tradecraft-reference).
 
 **Equivalent hunting queries (BloodHound):** these are collected in the [Cypher Query Library → Security-finding hunting queries](#security-finding-hunting-queries), alongside the full path-form query catalogue for every edge type.
 
@@ -959,7 +1063,7 @@ The three CCP findings (`CCP_UNRESTRICTED_APP`, `CCP_UNRESTRICTED_RETRIEVAL`, `C
 
 ### Deterministic Output
 
-Exports are **deterministic**: nodes are written sorted by `id` and edges by a stable `(kind, start, end, properties)` key. Two collections of the same unchanged environment produce byte-identical node/edge ordering, so exports can be diffed across runs to spot real changes.
+Exports are **deterministic**: nodes are written sorted by `id`, edges by `(kind, start, end, properties)`, and list-valued properties such as `permissions` are sorted. Two collections of the same unchanged environment produce byte-identical exports, so they can be diffed across runs to spot real changes. A graph rebuilt with `--from-raw` is byte-identical to the export of the original run.
 
 ### Node Properties
 
@@ -974,14 +1078,16 @@ Exports are **deterministic**: nodes are written sorted by `id` and edges by a s
 - **Directory**: `distinguishedName`, `location`, `authorizedInterfaces`
 - **Personal Details**: `firstName`, `lastName`, `email`, `businessEmail`, `businessPhone`, `mobilePhone`, `title`, `organization`, `department`, `profession`, `address` (street, city, state, zip, country)
 - **Memberships**: `groupsMembership` (list of group names)
-- **Permissions**: `safePermissions` (JSON array with safeName, permissions, hasDirectAccess, canGrantAccess)
+- **Permissions**: `safePermissions` (JSON array with safeName, permissions, hasDirectAccess, canGrantAccess; time-limited memberships also carry `membershipExpirationDate`, and expired ones `membershipExpired: true` — expired memberships create no edges)
 
 #### CyberArk_Group Properties
 - **Identity**: `groupId`, `name`, `groupType`, `isDirectorySynced`
 - **Directory**: `directory`, `distinguishedName`, `location`
 - **Metadata**: `description`, `memberCount`
 - **Members**: `members` (list of usernames)
-- **Permissions**: `safePermissions` (JSON array with safe access details)
+- **Permissions**: `safePermissions` (JSON array with safe access details, including `membershipExpirationDate` / `membershipExpired` as for users)
+
+`CyberArk_MemberOf` edges come from both each user's `groupsMembership` (edge property `source: "userDetails"`) and each group's member list (`source: "groupMembers"`); a membership reported by both produces one edge.
 
 #### CyberArk_Safe Properties
 - **Identity**: `safeName`, `safeUrlId`, `safeNumber`
@@ -1033,13 +1139,16 @@ Exports are **deterministic**: nodes are written sorted by `id` and edges by a s
 - **Risk flags**:
   - `isUnrestricted` — `true` when the AppID has **no** authentication restriction of any kind; possession of the AppID alone is sufficient to retrieve its credentials via CCP
   - `isDefaultCCPApp` — `true` for the default `AIMWebService` AppID, which usually has access to all safes
+  - `authenticationsUnknown` — present (`true`) when the AppID's authentication restrictions could not be read; such an AppID is not assessed as restricted or unrestricted
 
 > **Note on Platform risk flag:** `--include-platforms` also adds `allowedSafesIsWildcard` to `CyberArk_Platform` nodes — `true` when the platform's `AllowedSafes` is `.*` (or otherwise matches any safe), the over-permissive setting called out in [Nigmatullin's SO-CON 2026 talk](#tradecraft-reference).
 
 ### Output
 The resulting JSON structure follows BloodHound OpenGraph schema:
 
-Note: CyberArk node `id` values are namespaced with a 4-character PVWA tag derived from `--pvwa` (e.g., `causer-jdoe-APVA`) to avoid collisions when ingesting multiple PVWA instances.
+Note: CyberArk node `id` values are namespaced with a PVWA tag (e.g., `causer-jdoe-APVA`) so that several PVWA instances can be ingested into one BloodHound. By default the tag is 4 characters derived from the first two labels of the `--pvwa` host name, so different vaults can end up with the same tag — for example `pvwa-eu.corp.com` and `pvwa-us.corp.com` (both `PVCO`), or any two PVWAs addressed by IP. Vaults sharing a tag would have their nodes merged in BloodHound. When importing more than one vault, give each a distinct `--pvwa-tag` (e.g. `--pvwa-tag PROD-EU`). The tag also applies with `--from-raw`, so an existing raw collection can be re-tagged without collecting again; changing a vault's tag changes all of its node IDs, so re-import it rather than mixing old and new tags.
+
+**Placeholder nodes.** Some edges point at objects the collection references but never receives itself: a safe member or safe creator missing from the user list, a group named in a user's memberships, a linked account in a safe the collector cannot list, a user who appears only in activity logs. For each of these CyberArkHound emits a node of the right kind with the referenced name and `placeholder: true`, so the object is named, typed and found by kind-based queries. Without it, BloodHound would create an anonymous node with no kind for the edge's endpoint. Placeholders carry no other properties and are ignored by the security findings; `MATCH (n:CyberArkBase {placeholder: true}) RETURN n` lists them.
 ```json
 {
   "metadata": {

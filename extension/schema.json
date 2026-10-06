@@ -32,7 +32,7 @@
           "title": "Overview",
           "position": 1,
           "markdown": {
-            "content": "A CyberArk PVWA/Vault instance — the top-level container for everything CyberArkHound collected from a single PVWA: users, groups, safes, accounts, platforms, PSM infrastructure, and applications (AppIDs). Each instance is namespaced by the 4-character PVWA tag derived from the `--pvwa` URL, so multiple vaults can coexist in one BloodHound database without colliding. The instance is the environment node for the CyberArk source and the anchor for scoping queries to a single deployment."
+            "content": "A CyberArk PVWA/Vault instance — the top-level container for everything CyberArkHound collected from a single PVWA: users, groups, safes, accounts, platforms, PSM infrastructure, and applications (AppIDs). Each instance is namespaced by its PVWA tag — by default 4 characters derived from the `--pvwa` host name, or the value of `--pvwa-tag` — so multiple vaults can coexist in one BloodHound database as long as their tags differ. The instance is the environment node for the CyberArk source and the anchor for scoping queries to a single deployment."
           }
         },
         "references": {
@@ -70,7 +70,7 @@
           "title": "Overview",
           "position": 1,
           "markdown": {
-            "content": "A CyberArk Vault user. May be a local EPV user, a component/service account (CPM, PSM, PVWA), or an LDAP/directory-synced user. Users hold safe permissions directly or inherit them through `CyberArk_MemberOf` group membership, and directory-synced users are bridged to Active Directory via `CyberArk_SyncsToUser`. Key properties include whether the user is enabled/suspended, a component user, and its authentication source."
+            "content": "A CyberArk Vault user. May be a local EPV user, a component/service account (CPM, PSM, PVWA), or an LDAP/directory-synced user. Users hold safe permissions directly or inherit them through `CyberArk_MemberOf` group membership, and directory-synced users are bridged to Active Directory via `CyberArk_SyncsToUser`. Key properties include whether the user is enabled/suspended, a component user, and its authentication source. A user with `placeholder: true` was referenced — as a safe member, safe creator, CPM or in activity logs — but not returned by the collection, so it carries no other properties."
           }
         },
         "references": {
@@ -108,7 +108,7 @@
           "title": "Overview",
           "position": 1,
           "markdown": {
-            "content": "A CyberArk Vault group. Members — users or nested groups — inherit all safe permissions and vault authorizations granted to the group cumulatively. A group may be local to the vault or synchronized from a directory, in which case `CyberArk_SyncsToGroup` bridges it to an Active Directory group and AD membership changes propagate on the next LDAP sync."
+            "content": "A CyberArk Vault group. Members — users or nested groups — inherit all safe permissions and vault authorizations granted to the group cumulatively. A group may be local to the vault or synchronized from a directory, in which case `CyberArk_SyncsToGroup` bridges it to an Active Directory group and AD membership changes propagate on the next LDAP sync. A group with `placeholder: true` was referenced (for example in a user's memberships or as a safe member) but not returned by the collection."
           }
         },
         "references": {
@@ -146,7 +146,7 @@
           "title": "Overview",
           "position": 1,
           "markdown": {
-            "content": "A CyberArk safe — a logical container holding privileged accounts and their credentials. Safe members hold permissions (use, retrieve, list, manage members, approve) that govern credential access and privilege escalation. The `managingCPM` property names the CPM that rotates the safe's credentials; a blank value (surfaced as the `SAFE_NO_CPM` finding) means the safe's passwords are not being automatically managed."
+            "content": "A CyberArk safe — a logical container holding privileged accounts and their credentials. Safe members hold permissions (use, retrieve, list, manage members, approve) that govern credential access and privilege escalation. The `managingCPM` property names the CPM that rotates the safe's credentials; a blank value (surfaced as the `SAFE_NO_CPM` finding) means the safe's passwords are not being automatically managed. A safe with `placeholder: true` was referenced by an account but not returned by the collection; it is not counted by the findings."
           }
         },
         "references": {
@@ -184,7 +184,7 @@
           "title": "Overview",
           "position": 1,
           "markdown": {
-            "content": "A privileged account stored in a CyberArk safe — a managed credential for a target system, domain user, or local machine account. Principals with retrieveAccounts can obtain the plaintext password; principals with useAccounts can launch a PSM-brokered session without ever seeing it. Inferred edges link the account outward: `CyberArk_SyncsToADUser` (the credential belongs to an AD user), `CyberArk_CanConnect` (it authenticates to an AD computer, often as local admin), and `CyberArk_LinkedTo` (logon/reconcile/additional dependencies). Session properties such as `managedByPSM`, `sessionMonitoringEnabled`, and `sessionRecordingEnabled` describe how tightly the account's use is brokered."
+            "content": "A privileged account stored in a CyberArk safe — a managed credential for a target system, domain user, or local machine account. Principals with retrieveAccounts can obtain the plaintext password; principals with useAccounts can launch a PSM-brokered session without ever seeing it. Inferred edges link the account outward: `CyberArk_SyncsToADUser` (the credential belongs to an AD user), `CyberArk_CanConnect` (it authenticates to an AD computer, often as local admin), and `CyberArk_LinkedTo` (logon/reconcile/additional dependencies). Session properties such as `managedByPSM`, `sessionMonitoringEnabled`, and `sessionRecordingEnabled` describe how tightly the account's use is brokered. An account with `placeholder: true` was referenced — typically as a linked account in a safe the collector cannot list — but its details were not collected."
           }
         },
         "references": {
@@ -336,7 +336,7 @@
           "title": "Overview",
           "position": 1,
           "markdown": {
-            "content": "A CyberArk Application (AppID) used with the Central Credential Provider (CCP / AIMWebService) or Credential Provider (CP) to retrieve credentials from the Vault at runtime via REST. The `isUnrestricted` property flags an AppID with no authentication binding (no Allowed Machines, OS user, path, hash, or certificate) — knowledge of the AppID alone is enough to pull its credentials. `isDefaultCCPApp` flags the out-of-the-box AIMWebService application, which usually has access to every safe. Tradecraft: Marat Nigmatullin (@_mnigma_, FalconForce), \"4 GET requests = 3 Domain admins: CyberArk magic you didn't know about\", SO-CON 2026."
+            "content": "A CyberArk Application (AppID) used with the Central Credential Provider (CCP / AIMWebService) or Credential Provider (CP) to retrieve credentials from the Vault at runtime via REST. The `isUnrestricted` property flags an AppID with no authentication binding (no Allowed Machines, OS user, path, hash, or certificate) — knowledge of the AppID alone is enough to pull its credentials. `isDefaultCCPApp` flags the out-of-the-box AIMWebService application, which usually has access to every safe. `authenticationsUnknown` marks an AppID whose restrictions could not be read; it is not assessed either way. Tradecraft: Marat Nigmatullin (@_mnigma_, FalconForce), \"4 GET requests = 3 Domain admins: CyberArk magic you didn't know about\", SO-CON 2026."
           }
         },
         "references": {
@@ -373,7 +373,7 @@
           "title": "Overview",
           "position": 1,
           "markdown": {
-            "content": "The source principal is a member of the safe containing the target account with one or more account access permissions (useAccounts and/or retrieveAccounts). This is the primary credential access edge in CyberArk. The edge properties provide critical context: requiresApproval indicates whether dual-control enforcement is active (access requires an approval workflow before credentials can be retrieved); requiresSessionMonitoring and recordsSessionActivity indicate whether privileged sessions must be routed through PSM and whether session content is recorded."
+            "content": "The source principal is a member of the safe containing the target account with one or more account access permissions (useAccounts and/or retrieveAccounts). This is the primary credential access edge in CyberArk. The edge properties provide critical context: requiresApproval indicates whether dual-control enforcement is active (access requires an approval workflow before credentials can be retrieved); requiresSessionMonitoring and recordsSessionActivity indicate whether privileged sessions must be routed through PSM and whether session content is recorded. Expired safe memberships create no edge."
           }
         },
         "references": {
@@ -415,7 +415,7 @@
           "title": "Overview",
           "position": 1,
           "markdown": {
-            "content": "The source principal has manageSafe or manageSafeMembers permission on the target safe. This is a privilege escalation edge: the principal can add new safe members, modify existing member permissions, or remove members. By adding themselves (or a controlled account) to the safe with retrieveAccounts permission, the attacker gains access to all accounts stored in that safe."
+            "content": "The source principal has manageSafe or manageSafeMembers permission on the target safe. This is a privilege escalation edge: the principal can add new safe members, modify existing member permissions, or remove members. By adding themselves (or a controlled account) to the safe with retrieveAccounts permission, the attacker gains access to all accounts stored in that safe. Expired safe memberships create no edge."
           }
         },
         "references": {
@@ -457,7 +457,7 @@
           "title": "Overview",
           "position": 1,
           "markdown": {
-            "content": "The source CyberArk Application (AppID) is a member of the safe containing the target account with useAccounts and/or retrieveAccounts permission, and can therefore retrieve that account's credential through the Central Credential Provider (CCP / AIMWebService) REST API — typically with a single GET request and without any interactive PVWA login. The edge properties carry the application's authentication posture: appIsUnrestricted=true means the AppID has no Allowed Machines and no OS user / path / hash / certificate binding, so knowledge of the AppID alone is enough to pull the credential from anywhere that can reach the CCP endpoint. allowedMachines lists the IPs/hosts permitted to use the AppID (if any), and isDefaultCCPApp=true flags the out-of-the-box AIMWebService application, which usually has access to every safe. Tradecraft credit: Marat Nigmatullin (@_mnigma_, FalconForce) — \"4 GET requests = 3 Domain admins: CyberArk magic you didn't know about\", SO-CON 2026."
+            "content": "The source CyberArk Application (AppID) is a member of the safe containing the target account with useAccounts and/or retrieveAccounts permission, and can therefore retrieve that account's credential through the Central Credential Provider (CCP / AIMWebService) REST API — typically with a single GET request and without any interactive PVWA login. The edge properties carry the application's authentication posture: appIsUnrestricted=true means the AppID has no Allowed Machines and no OS user / path / hash / certificate binding, so knowledge of the AppID alone is enough to pull the credential from anywhere that can reach the CCP endpoint; if the application's restrictions could not be read, appIsUnrestricted is false and the application is marked authenticationsUnknown. allowedMachines lists the IPs/hosts permitted to use the AppID (if any), and isDefaultCCPApp=true flags the out-of-the-box AIMWebService application, which usually has access to every safe. Tradecraft credit: Marat Nigmatullin (@_mnigma_, FalconForce) — \"4 GET requests = 3 Domain admins: CyberArk magic you didn't know about\", SO-CON 2026."
           }
         },
         "references": {
@@ -583,7 +583,7 @@
           "title": "Overview",
           "position": 1,
           "markdown": {
-            "content": "The source principal has dual-control approval authority over access requests for accounts within the target safe. The approvalLevel property specifies the tier: 1 for first-level approval, 2 for second-level approval. A principal with accessWithoutConfirmation permission bypasses the dual-control workflow entirely. This edge enables dual-control bypass attacks: if the same principal also has CyberArk_HasAccessTo on an account in this safe where requiresApproval=true, they can approve their own access requests. Two colluding principals can mutually authorize each other's requests."
+            "content": "The source principal has dual-control approval authority over access requests for accounts within the target safe. The approvalLevel property specifies the tier: 1 for first-level approval, 2 for second-level approval. A principal with accessWithoutConfirmation permission bypasses the dual-control workflow entirely. This edge enables dual-control bypass attacks: if the same principal also has CyberArk_HasAccessTo on an account in this safe where requiresApproval=true, they can approve their own access requests. Two colluding principals can mutually authorize each other's requests. Expired safe memberships create no edge."
           }
         },
         "references": {
@@ -625,7 +625,7 @@
           "title": "Overview",
           "position": 1,
           "markdown": {
-            "content": "The source CyberArk user or group is a member of the target CyberArk group. Group membership is cumulative: a user inherits all permissions granted to every group they belong to across all safes. Group edges to safes flow transitively through this membership edge, enabling credential access without direct safe membership."
+            "content": "The source CyberArk user or group is a member of the target CyberArk group. Group membership is cumulative: a user inherits all permissions granted to every group they belong to across all safes. Group edges to safes flow transitively through this membership edge, enabling credential access without direct safe membership. The edge comes from each user's group memberships (source=userDetails) and from each group's member list (source=groupMembers); a membership reported by both yields one edge."
           }
         },
         "references": {
@@ -1073,7 +1073,7 @@
           "title": "Overview",
           "position": 1,
           "markdown": {
-            "content": "The source CyberArk PSM server runs on the target Active Directory computer, inferred by matching the PSM server's configured address to a computer in a target domain. This cross-domain correlation edge bridges CyberArk session infrastructure to its underlying host, so the computer's Active Directory attack surface and the PSM server's session exposure can be reasoned about together."
+            "content": "The source CyberArk PSM server runs on the target Active Directory computer, inferred by matching the PSM server's configured address to the computer of that name (an IP address will not match). This cross-domain correlation edge bridges CyberArk session infrastructure to its underlying host, so the computer's Active Directory attack surface and the PSM server's session exposure can be reasoned about together."
           }
         },
         "references": {
@@ -1199,7 +1199,7 @@
           "title": "Overview",
           "position": 1,
           "markdown": {
-            "content": "The source CyberArk account stores credentials for the target Active Directory user account. This relationship is inferred: the account's stored username matches an AD sAMAccountName or UPN in a target domain. Retrieving this credential from CyberArk yields the plaintext password for the AD user, enabling direct AD authentication and lateral movement across the domain. This is a cross-domain bridge edge from the CyberArk attack surface into Active Directory."
+            "content": "The source CyberArk account stores credentials for the target Active Directory user account. This relationship is inferred: the account's address is one of the target domains, and its user name — reduced to the bare account name if stored as DOMAIN\\user or user@domain — gives the AD user USER@DOMAIN. Retrieving this credential from CyberArk yields the plaintext password for the AD user, enabling direct AD authentication and lateral movement across the domain. This is a cross-domain bridge edge from the CyberArk attack surface into Active Directory."
           }
         },
         "references": {
@@ -1241,7 +1241,7 @@
           "title": "Overview",
           "position": 1,
           "markdown": {
-            "content": "The source CyberArk account stores credentials valid for authenticating to the target Active Directory computer. This relationship is inferred: the account's address field matches a hostname or IP that is part of the target domain. If localUser is true in the edge properties, the account stores a local (non-domain) credential for that specific machine, potentially including local administrator access. Retrieving this credential enables direct lateral movement to the target computer."
+            "content": "The source CyberArk account stores credentials valid for authenticating to the target Active Directory computer. This relationship is inferred: the account's address is the fully qualified name of a host inside one of the target domains, matched to the computer of that name (IP addresses and short host names are not matched). The localUser property holds the account's name on that machine: the account stores a local (non-domain) credential for it, potentially including local administrator access. Retrieving this credential enables direct lateral movement to the target computer."
           }
         },
         "references": {
