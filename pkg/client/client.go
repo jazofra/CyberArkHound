@@ -1192,14 +1192,18 @@ func (c *Client) ListSafes(limitCount *int, search *string) ([]models.Safe, erro
 // is set they are requested with filter=includePredefinedUsers eq true. If
 // PVWA rejects that filter (HTTP 400) but accepts the plain request, the
 // filter is dropped for the rest of the run and the gap is recorded.
-func (c *Client) ListSafeMembers(safeName string) ([]models.SafeMember, error) {
+//
+// The safe is addressed by its safeUrlId when PVWA supplied a usable one; see
+// safePathSegment.
+func (c *Client) ListSafeMembers(safeName, safeURLID string) ([]models.SafeMember, error) {
+	segment := safePathSegment(safeName, safeURLID)
 	includePredefined := c.IncludePredefinedSafeMembers && !c.predefinedFilterRejected.Load()
-	members, err := c.listSafeMembers(safeName, includePredefined)
+	members, err := c.listSafeMembers(segment, includePredefined)
 	if err == nil || !includePredefined || httpStatus(err) != http.StatusBadRequest {
 		return members, err
 	}
 
-	plain, plainErr := c.listSafeMembers(safeName, false)
+	plain, plainErr := c.listSafeMembers(segment, false)
 	if plainErr != nil {
 		// The safe itself is the problem, not the filter.
 		return nil, err
@@ -1211,15 +1215,43 @@ func (c *Client) ListSafeMembers(safeName string) ([]models.SafeMember, error) {
 	return plain, nil
 }
 
-func (c *Client) listSafeMembers(safeName string, includePredefined bool) ([]models.SafeMember, error) {
+// safePathSegment returns the path segment that addresses a safe in
+// /API/Safes/{segment}/... PVWA's safeUrlId is the safe's ready-made URL
+// identifier — CyberArk's own SDK inserts it into the path verbatim — so it is
+// used as is whenever it is a valid escaped path segment. That matters for
+// names with characters such as '&', which the server encodes differently
+// from url.PathEscape. Without a usable safeUrlId (older PVWA versions, or a
+// value that is not URL-safe) the safe name is escaped instead.
+func safePathSegment(safeName, safeURLID string) string {
+	if safeURLID != "" && isEscapedPathSegment(safeURLID) {
+		return safeURLID
+	}
+	return url.PathEscape(safeName)
+}
+
+// isEscapedPathSegment reports whether s can be placed in a URL path as a
+// single, already-escaped segment.
+func isEscapedPathSegment(s string) bool {
+	if strings.Contains(s, "/") {
+		return false
+	}
+	unescaped, err := url.PathUnescape(s)
+	if err != nil {
+		return false
+	}
+	// EscapedPath returns RawPath only when it is a valid escaping of Path.
+	u := url.URL{Path: "/" + unescaped, RawPath: "/" + s}
+	return u.EscapedPath() == "/"+s
+}
+
+func (c *Client) listSafeMembers(segment string, includePredefined bool) ([]models.SafeMember, error) {
 	members := make([]models.SafeMember, 0)
 	limit := 1000
 	offset := 0
-	safeNameEncoded := url.PathEscape(safeName)
 
 	for {
 		memberURL := fmt.Sprintf("%s/PasswordVault/API/Safes/%s/Members?limit=%d&offset=%d",
-			c.BaseURL, safeNameEncoded, limit, offset)
+			c.BaseURL, segment, limit, offset)
 		if includePredefined {
 			memberURL += "&filter=" + url.QueryEscape("includePredefinedUsers eq true")
 		}

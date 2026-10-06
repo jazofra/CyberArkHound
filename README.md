@@ -140,7 +140,7 @@ With 'list' and 'View Safe Members' on each safe, the tool can:
 - `POST /oauth2/platformtoken` on the CyberArk Identity tenant - Authentication (Privilege Cloud / ISPSS, `--auth-method identity`; OAuth2 `client_credentials`, tried first)
 - `POST /Security/StartAuthentication` + `POST /Security/AdvanceAuthentication` on the CyberArk Identity tenant - Username/password fallback when `client_credentials` is rejected (`--auth-method identity`; not usable with MFA/SAML accounts)
 - `GET /API/safes` - List all safes
-- `GET /API/Safes/{safeName}/Members?filter=includePredefinedUsers eq true` - List safe members and permissions, including built-in members (the filter is dropped automatically, and the gap reported, if PVWA rejects it; disable with `--include-predefined-members=false`)
+- `GET /API/Safes/{safeUrlId}/Members?filter=includePredefinedUsers eq true` - List safe members and permissions, including built-in members (the safe is addressed by PVWA's `safeUrlId`, falling back to the URL-escaped safe name when it is absent) (the filter is dropped automatically, and the gap reported, if PVWA rejects it; disable with `--include-predefined-members=false`)
 - `GET /API/Accounts` - List accounts (filtered by safe)
 - `GET /API/Accounts/{accountId}` - Get account details, including linked accounts: logon, reconcile, and platform-defined additional accounts (used when `--include-linked-accounts` is set; no extra request)
 - `GET /API/Accounts/{accountId}/Activities` - Get account activity logs (optional, requires `--include-activity`)

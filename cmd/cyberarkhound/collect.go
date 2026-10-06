@@ -207,7 +207,7 @@ func collect(ctx context.Context, cfg *config, api *client.Client, logger *logru
 			logger.Infof("Processing safe %d/%d: '%s'", n, len(safes), safe.SafeName)
 		}
 
-		members, err := api.ListSafeMembers(safe.SafeName)
+		members, err := api.ListSafeMembers(safe.SafeName, safe.SafeUrlId)
 		if err != nil {
 			if !interrupted() {
 				memberFailures.Add(1)

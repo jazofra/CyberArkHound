@@ -215,7 +215,7 @@ func TestListSafeMembersRequestsPredefinedMembers(t *testing.T) {
 	defer server.Close()
 
 	client := testClient(server.URL)
-	members, err := client.ListSafeMembers("S1")
+	members, err := client.ListSafeMembers("S1", "S1")
 	if err != nil {
 		t.Fatalf("ListSafeMembers: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestListSafeMembersFallsBackWhenFilterRejected(t *testing.T) {
 
 	client := testClient(server.URL)
 	for _, safe := range []string{"S1", "S2", "S3"} {
-		members, err := client.ListSafeMembers(safe)
+		members, err := client.ListSafeMembers(safe, "")
 		if err != nil {
 			t.Fatalf("ListSafeMembers(%s): %v", safe, err)
 		}
@@ -274,7 +274,7 @@ func TestListSafeMembersKeepsFilterWhenSafeItselfFails(t *testing.T) {
 	defer server.Close()
 
 	client := testClient(server.URL)
-	if _, err := client.ListSafeMembers("Broken"); err == nil {
+	if _, err := client.ListSafeMembers("Broken", ""); err == nil {
 		t.Fatal("expected an error")
 	}
 	if client.predefinedFilterRejected.Load() {
@@ -331,5 +331,47 @@ func TestListApplicationsWithAuthMarksUnreadableAuthentications(t *testing.T) {
 	}
 	if len(client.IncompleteReasons()) != 1 {
 		t.Fatalf("expected one recorded gap, got %v", client.IncompleteReasons())
+	}
+}
+
+func TestSafePathSegment(t *testing.T) {
+	tests := []struct {
+		name, urlID, want string
+	}{
+		{"Prod", "Prod", "Prod"},
+		{"My Safe", "My%20Safe", "My%20Safe"},
+		// PVWA's own encoding of '&' is kept; url.PathEscape would leave it raw.
+		{"R&D", "R%26D", "R%26D"},
+		// No safeUrlId (older PVWA): escape the name.
+		{"My Safe", "", "My%20Safe"},
+		{"R&D", "", "R&D"},
+		// Not a valid escaped segment: fall back to escaping the name.
+		{"My Safe", "My Safe", "My%20Safe"},
+		{"Bad", "100%", "Bad"},
+		{"Bad", "a/b", "Bad"},
+	}
+	for _, tt := range tests {
+		if got := safePathSegment(tt.name, tt.urlID); got != tt.want {
+			t.Errorf("safePathSegment(%q, %q) = %q, want %q", tt.name, tt.urlID, got, tt.want)
+		}
+	}
+}
+
+func TestListSafeMembersUsesSafeURLIDVerbatim(t *testing.T) {
+	var gotURI string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURI = r.RequestURI
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"value":[]}`)
+	}))
+	defer server.Close()
+
+	client := testClient(server.URL)
+	client.IncludePredefinedSafeMembers = false
+	if _, err := client.ListSafeMembers("R&D", "R%26D"); err != nil {
+		t.Fatalf("ListSafeMembers: %v", err)
+	}
+	if !strings.HasPrefix(gotURI, "/PasswordVault/API/Safes/R%26D/Members?") {
+		t.Fatalf("request URI = %q, want the safeUrlId sent verbatim", gotURI)
 	}
 }
