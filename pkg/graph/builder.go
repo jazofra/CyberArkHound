@@ -92,6 +92,22 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			len(users), len(groups), len(safes), len(accounts), len(platforms))
 	}
 
+	// referenced records the kind and display name behind node IDs built for
+	// objects that may never be collected themselves — a safe member missing
+	// from the user list, a linked account in a safe the collector cannot see —
+	// so typed placeholder nodes can be created for them at the end.
+	referenced := make(map[string]nodeRef)
+	ref := func(kind, prefix, key, name string) string {
+		id := strings.ToUpper(fmt.Sprintf("%s-%s-%s", prefix, key, pvwaTag))
+		if _, seen := referenced[id]; !seen {
+			if name == "" {
+				name = key
+			}
+			referenced[id] = nodeRef{kind: kind, name: name}
+		}
+		return id
+	}
+
 	// Track users and groups for lookups
 	usersByUsername := make(map[string]string)
 	groupsByName := make(map[string]string)
@@ -196,7 +212,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		// Add MemberOf edges
 		for _, gm := range u.GroupsMembership {
 			if gm.GroupName != "" {
-				addMemberOf(caNodeID, strings.ToUpper(fmt.Sprintf("cagroup-%s-%s", gm.GroupName, pvwaTag)), "userDetails")
+				addMemberOf(caNodeID, ref("CyberArk_Group", "cagroup", gm.GroupName, ""), "userDetails")
 			}
 		}
 
@@ -291,11 +307,11 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			}
 			var memberNodeID string
 			if strings.EqualFold(m.MemberType, "group") {
-				memberNodeID = strings.ToUpper(fmt.Sprintf("cagroup-%s-%s", memberName, pvwaTag))
+				memberNodeID = ref("CyberArk_Group", "cagroup", memberName, "")
 			} else if id := usersByUsername[memberName]; id != "" {
 				memberNodeID = id
 			} else {
-				memberNodeID = strings.ToUpper(fmt.Sprintf("causer-%s-%s", memberName, pvwaTag))
+				memberNodeID = ref("CyberArk_User", "causer", memberName, "")
 			}
 			addMemberOf(memberNodeID, caGroupID, "groupMembers")
 		}
@@ -360,7 +376,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		if s.Creator.Name != "" {
 			creatorNodeID := usersByUsername[s.Creator.Name]
 			if creatorNodeID == "" {
-				creatorNodeID = strings.ToUpper(fmt.Sprintf("causer-%s-%s", s.Creator.Name, pvwaTag))
+				creatorNodeID = ref("CyberArk_User", "causer", s.Creator.Name, "")
 			}
 			og.AddEdge("CyberArk_Created", creatorNodeID, safeNodeID,
 				"id", "id", map[string]interface{}{
@@ -372,7 +388,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		if s.ManagingCPM != "" {
 			cpmNodeID := usersByUsername[s.ManagingCPM]
 			if cpmNodeID == "" {
-				cpmNodeID = strings.ToUpper(fmt.Sprintf("causer-%s-%s", s.ManagingCPM, pvwaTag))
+				cpmNodeID = ref("CyberArk_User", "causer", s.ManagingCPM, "")
 			}
 			og.AddEdge("CyberArk_ManagedBy", cpmNodeID, safeNodeID,
 				"id", "id", nil, false)
@@ -718,7 +734,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			// Add CyberArk_Contains edge (Safe -> Account)
 			safeNodeID := safesByName[a.SafeName]
 			if safeNodeID == "" {
-				safeNodeID = strings.ToUpper(fmt.Sprintf("casafe-%s-%s", a.SafeName, pvwaTag))
+				safeNodeID = ref("CyberArk_Safe", "casafe", a.SafeName, "")
 			}
 			og.AddEdge("CyberArk_Contains", safeNodeID, accountNodeID,
 				"id", "id", nil, false)
@@ -1048,15 +1064,15 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		if memberNodeID == "" {
 			// Member not found, create placeholder
 			if isMemberGroup {
-				memberNodeID = strings.ToUpper(fmt.Sprintf("cagroup-%s-%s", sm.MemberName, pvwaTag))
+				memberNodeID = ref("CyberArk_Group", "cagroup", sm.MemberName, "")
 			} else {
-				memberNodeID = strings.ToUpper(fmt.Sprintf("causer-%s-%s", sm.MemberName, pvwaTag))
+				memberNodeID = ref("CyberArk_User", "causer", sm.MemberName, "")
 			}
 		}
 
 		safeNodeID := safesByName[sm.SafeName]
 		if safeNodeID == "" {
-			safeNodeID = strings.ToUpper(fmt.Sprintf("casafe-%s-%s", sm.SafeName, pvwaTag))
+			safeNodeID = ref("CyberArk_Safe", "casafe", sm.SafeName, "")
 		}
 
 		// Normalize permission names
@@ -1270,7 +1286,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		for accountID, activities := range accountActivities {
 			accountNodeID := accountsByID[accountID]
 			if accountNodeID == "" {
-				accountNodeID = strings.ToUpper(fmt.Sprintf("caaccount-%s-%s", accountID, pvwaTag))
+				accountNodeID = ref("CyberArk_Account", "caaccount", accountID, "")
 			}
 
 			if debug {
@@ -1348,7 +1364,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			for username, usageData := range userActivity {
 				userNodeID := usersByUsername[username]
 				if userNodeID == "" {
-					userNodeID = strings.ToUpper(fmt.Sprintf("causer-%s-%s", username, pvwaTag))
+					userNodeID = ref("CyberArk_User", "causer", username, "")
 				}
 
 				if debug {
@@ -1382,13 +1398,13 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		for accountID, links := range linkedAccounts {
 			sourceNodeID := accountsByID[accountID]
 			if sourceNodeID == "" {
-				sourceNodeID = strings.ToUpper(fmt.Sprintf("caaccount-%s-%s", accountID, pvwaTag))
+				sourceNodeID = ref("CyberArk_Account", "caaccount", accountID, "")
 			}
 
 			for _, link := range links {
 				targetNodeID := accountsByID[link.AccountID]
 				if targetNodeID == "" && link.AccountID != "" {
-					targetNodeID = strings.ToUpper(fmt.Sprintf("caaccount-%s-%s", link.AccountID, pvwaTag))
+					targetNodeID = ref("CyberArk_Account", "caaccount", link.AccountID, link.Name)
 				}
 				if targetNodeID == "" {
 					continue
@@ -1443,7 +1459,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 				}
 				reconcileNodeID := accountsByID[link.AccountID]
 				if reconcileNodeID == "" && link.AccountID != "" {
-					reconcileNodeID = strings.ToUpper(fmt.Sprintf("caaccount-%s-%s", link.AccountID, pvwaTag))
+					reconcileNodeID = ref("CyberArk_Account", "caaccount", link.AccountID, link.Name)
 				}
 				if reconcileNodeID == "" {
 					continue
@@ -1606,6 +1622,44 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		}
 	}
 
+	// Create typed placeholder nodes for objects that edges reference but the
+	// collection did not return. BloodHound would otherwise create kind-less
+	// "?" nodes for them on ingest, which kind-based queries never match.
+	placeholders := 0
+	for _, edges := range [][]*Edge{og.InternalEdges, og.ExternalEdges} {
+		for _, e := range edges {
+			for _, end := range []EdgeRef{e.Start, e.End} {
+				if end.MatchBy != "id" {
+					continue
+				}
+				if _, exists := og.Nodes[end.Value]; exists {
+					continue
+				}
+				r, ok := referenced[end.Value]
+				if !ok {
+					r = nodeRefFromID(end.Value, pvwaTag)
+				}
+				kinds := []string{r.kind, "CyberArkBase"}
+				if r.kind == "CyberArkBase" {
+					kinds = kinds[1:]
+				}
+				og.MergeNode(&Node{
+					ID:    end.Value,
+					Kinds: kinds,
+					Properties: map[string]interface{}{
+						"id":          end.Value,
+						"name":        r.name,
+						"placeholder": true,
+					},
+				})
+				placeholders++
+			}
+		}
+	}
+	if placeholders > 0 {
+		logger.Infof("Created %d placeholder nodes for objects referenced but not collected (placeholder=true)", placeholders)
+	}
+
 	// Create the CyberArk_Instance environment root node and connect it to the
 	// bounded set of top-level configuration objects via CyberArk_InstanceContains.
 	//
@@ -1690,6 +1744,37 @@ func matchTargetDomain(address string, domains []string) (domain string, isDomai
 		}
 	}
 	return domain, false
+}
+
+// nodeRef is the kind and display name of a referenced node.
+type nodeRef struct {
+	kind, name string
+}
+
+// nodeIDPrefixes maps node-ID prefixes to node kinds.
+var nodeIDPrefixes = []struct {
+	prefix, kind string
+}{
+	{"CAUSER-", "CyberArk_User"},
+	{"CAGROUP-", "CyberArk_Group"},
+	{"CASAFE-", "CyberArk_Safe"},
+	{"CAACCOUNT-", "CyberArk_Account"},
+	{"CAPLATFORM-", "CyberArk_Platform"},
+	{"CAPSMSERVER-", "CyberArk_PSMServer"},
+	{"CACONNCOMP-", "CyberArk_ConnectionComponent"},
+	{"CAAPP-", "CyberArk_Application"},
+}
+
+// nodeRefFromID recovers the kind and (upper-cased) name from a node ID, for
+// references the builder did not record.
+func nodeRefFromID(id, pvwaTag string) nodeRef {
+	name := strings.TrimSuffix(id, "-"+strings.ToUpper(pvwaTag))
+	for _, p := range nodeIDPrefixes {
+		if strings.HasPrefix(name, p.prefix) {
+			return nodeRef{kind: p.kind, name: strings.TrimPrefix(name, p.prefix)}
+		}
+	}
+	return nodeRef{kind: "CyberArkBase", name: name}
 }
 
 // normalizeDomains trims whitespace and trailing dots from the target domains

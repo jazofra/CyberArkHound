@@ -1136,6 +1136,8 @@ Exports are **deterministic**: nodes are written sorted by `id`, edges by `(kind
 The resulting JSON structure follows BloodHound OpenGraph schema:
 
 Note: CyberArk node `id` values are namespaced with a PVWA tag (e.g., `causer-jdoe-APVA`) so that several PVWA instances can be ingested into one BloodHound. By default the tag is 4 characters derived from the first two labels of the `--pvwa` host name, so different vaults can end up with the same tag — for example `pvwa-eu.corp.com` and `pvwa-us.corp.com` (both `PVCO`), or any two PVWAs addressed by IP. Vaults sharing a tag would have their nodes merged in BloodHound. When importing more than one vault, give each a distinct `--pvwa-tag` (e.g. `--pvwa-tag PROD-EU`). The tag also applies with `--from-raw`, so an existing raw collection can be re-tagged without collecting again; changing a vault's tag changes all of its node IDs, so re-import it rather than mixing old and new tags.
+
+**Placeholder nodes.** Some edges point at objects the collection references but never receives itself: a safe member or safe creator missing from the user list, a group named in a user's memberships, a linked account in a safe the collector cannot list, a user who appears only in activity logs. For each of these CyberArkHound emits a node of the right kind with the referenced name and `placeholder: true`, so the object is named, typed and found by kind-based queries. Without it, BloodHound would create an anonymous node with no kind for the edge's endpoint. Placeholders carry no other properties and are ignored by the security findings; `MATCH (n:CyberArkBase {placeholder: true}) RETURN n` lists them.
 ```json
 {
   "metadata": {

@@ -94,6 +94,11 @@ func ComputeFindings(og *OpenGraph) []Finding {
 	}
 
 	for _, n := range og.Nodes {
+		// Placeholders stand for objects that were referenced but never
+		// collected, so their (absent) settings say nothing.
+		if boolProp(n.Properties, "placeholder") {
+			continue
+		}
 		switch {
 		case nodeHasKind(n, "CyberArk_Application"):
 			if boolProp(n.Properties, "isUnrestricted") {
