@@ -382,10 +382,16 @@ _Queries: [Privilege escalation](#privilege-escalation-cyberark_cangrantaccessto
 | `CyberArk_MemberOf` | User/Group → Group | Group membership data | Group-based permission inheritance |
 | `CyberArk_Contains` | Safe → Account | Account's `safeName` field | Safe-account containment relationship |
 | `CyberArk_InstanceContains` | Instance → Safe/Platform/PSM Server/Connection Component | Derived (one root per PVWA tag) | Environment root containment — scopes bounded configuration objects to their PVWA instance. Users and groups are excluded to avoid a multi-million-edge fan-out in LDAP-synced vaults |
-| `CyberArk_SyncsToUser` | AD User → CyberArk_User | LDAP DN with `DC=` | External edge — AD-to-CyberArk identity mapping |
+| `CyberArk_SyncsToUser` | AD User → CyberArk_User | LDAP user's DN (`DC=` components give the domain) and user name | External edge — AD-to-CyberArk identity mapping |
 | `CyberArk_SyncsToGroup` | AD Group → CyberArk_Group | LDAP DN with `DC=` | External edge — AD-to-CyberArk group mapping |
-| `CyberArk_SyncsToADUser` | CyberArk_Account → AD User | Account address matches target domain | External edge — credential-to-AD-user mapping |
-| `CyberArk_CanConnect` | CyberArk_Account → AD Computer | Account address matches address subdomain of the target domain (Local accounts) | External edge — credential-to-AD-computer mapping |
+| `CyberArk_SyncsToADUser` | CyberArk_Account → AD User | Account address equals a target domain (domain accounts) | External edge — credential-to-AD-user mapping |
+| `CyberArk_CanConnect` | CyberArk_Account → AD Computer | Account address is a host FQDN within a target domain (local accounts) | External edge — credential-to-AD-computer mapping |
+
+**How CyberArk objects are matched to AD.** These external edges are inferred from names, so they only connect when the names line up:
+- User names are reduced to the bare account name first: `CORP\jdoe` and `jdoe@corp.local` both become `JDOE@<DOMAIN>`. With `--parse-samaccountname`, the last word of an LDAP user's CN is used instead (for directories whose CNs end in the account ID).
+- The domain of an LDAP user or group comes from the `DC=` components of its DN.
+- An account address that *equals* a target domain is a domain account (`CyberArk_SyncsToADUser`). An address that is a host inside a target domain, at any depth, is a computer matched by its full FQDN (`CyberArk_CanConnect`); when several target domains match, the most specific one is recorded.
+- IP addresses, short (NetBIOS) host names, and hosts outside the target domains produce no edge, since they cannot be matched to an AD object by name. List every AD domain you have loaded into BloodHound in `--target-domains`.
 
 **Note**: Permissions like `listAccounts`, `viewAuditLog`, `addAccounts`, `updateAccountContent` do **not** create access edges as they don't allow password retrieval or account usage.
 

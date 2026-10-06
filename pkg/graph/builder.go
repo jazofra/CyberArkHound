@@ -204,7 +204,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		if isLDAP && u.UserDN != "" {
 			domain := ParseDomainFromDN(u.UserDN)
 			if domain != "" {
-				adKey := u.Username
+				adKey := adAccountName(u.Username)
 				if parseSAMAccountNameFromDN {
 					if sam := ParseSAMAccountNameFromDN(u.UserDN); sam != "" {
 						adKey = sam
@@ -724,61 +724,46 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 				"id", "id", nil, false)
 		}
 
-		// Add CyberArk_SyncsToADUser and CyberArk_CanConnect edges if applicable
+		// Add CyberArk_SyncsToADUser and CyberArk_CanConnect edges if applicable:
+		// an account whose address is a target domain is a domain account; one
+		// whose address is a host in a target domain is a local account on that
+		// computer, matched by its FQDN (the name BloodHound gives computers).
 		if a.UserName != "" && a.Address != "" {
-			adKey := StripAfterAt(a.UserName)
+			adKey := adAccountName(a.UserName)
 			if adKey == "" {
 				if debug {
-					logger.Debugf("CyberArk_SyncsToADUser: skipping account %s — empty username after stripping '@' from '%s'", a.ID, a.UserName)
+					logger.Debugf("CyberArk_SyncsToADUser: skipping account %s — no account name in '%s'", a.ID, a.UserName)
 				}
 				continue
 			}
-			addressLower := strings.TrimRight(strings.ToLower(strings.TrimSpace(a.Address)), ".")
-			matched := false
-			for _, domain := range targetDomains {
-				domainLower := strings.ToLower(domain)
-
-				if addressLower == domainLower {
-					adUserName := fmt.Sprintf("%s@%s", strings.ToUpper(adKey), strings.ToUpper(domain))
-					og.AddEdge("CyberArk_SyncsToADUser", accountNodeID, adUserName,
-						"id", "name", map[string]interface{}{
-							"inferred": true,
-							"source":   "CyberArk",
-							"domain":   domain,
-						}, true)
-					matched = true
-					if debug {
-						logger.Debugf("CyberArk_SyncsToADUser: account %s (user=%s, address=%s) -> %s", a.ID, a.UserName, a.Address, adUserName)
-					}
-					break
-					// Create CyberArk_CanConnect edge from CyberArk_User to AD Computer if address is a subdomain of the target domain
-				} else if strings.HasSuffix(addressLower, "."+domainLower) {
-					adHostname := StripAfterDot(a.Address)
-					adComputerName := fmt.Sprintf("%s.%s", strings.ToUpper(adHostname), strings.ToUpper(domain))
-
-					// Check if computer name matches the address (prevents the computer.sub.domain.com case)
-					if strings.ToLower(adComputerName) == addressLower {
-						og.AddEdge("CyberArk_CanConnect", accountNodeID, adComputerName,
-							"id", "name", map[string]interface{}{
-								"inferred":  true,
-								"source":    "CyberArk",
-								"domain":    domain,
-								"localUser": adKey,
-							}, true)
-						break
-					}
+			address := strings.TrimRight(strings.ToLower(strings.TrimSpace(a.Address)), ".")
+			domain, isDomain := matchTargetDomain(address, targetDomains)
+			switch {
+			case domain == "":
+				if debug {
+					logger.Debugf("CyberArk_SyncsToADUser: account %s (user=%s, address=%q) — no target domain match (domains: %q)", a.ID, a.UserName, a.Address, targetDomains)
 				}
+			case isDomain:
+				adUserName := fmt.Sprintf("%s@%s", strings.ToUpper(adKey), strings.ToUpper(domain))
+				og.AddEdge("CyberArk_SyncsToADUser", accountNodeID, adUserName,
+					"id", "name", map[string]interface{}{
+						"inferred": true,
+						"source":   "CyberArk",
+						"domain":   domain,
+					}, true)
+				if debug {
+					logger.Debugf("CyberArk_SyncsToADUser: account %s (user=%s, address=%s) -> %s", a.ID, a.UserName, a.Address, adUserName)
+				}
+			default:
+				og.AddEdge("CyberArk_CanConnect", accountNodeID, strings.ToUpper(address),
+					"id", "name", map[string]interface{}{
+						"inferred":  true,
+						"source":    "CyberArk",
+						"domain":    domain,
+						"localUser": adKey,
+					}, true)
 			}
-			if !matched && debug {
-				logger.Debugf("CyberArk_SyncsToADUser: account %s (user=%s, address=%q [%x]) — no target domain match (domains: %q [%x])", a.ID, a.UserName, a.Address, []byte(a.Address), targetDomains, func() [][]byte {
-					var bs [][]byte
-					for _, d := range targetDomains {
-						bs = append(bs, []byte(d))
-					}
-					return bs
-				}())
-			}
-		} else if debug && (a.UserName == "" || a.Address == "") {
+		} else if debug {
 			logger.Debugf("CyberArk_SyncsToADUser: skipping account %s — missing userName=%q or address=%q", a.ID, a.UserName, a.Address)
 		}
 	}
@@ -1675,6 +1660,36 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 	}
 
 	return og, nil
+}
+
+// adAccountName reduces a user name as CyberArk stores it to the bare
+// account name BloodHound uses in AD principal names: the down-level form
+// "CORP\jdoe" and the UPN form "jdoe@corp.local" both become "jdoe".
+func adAccountName(name string) string {
+	name = strings.TrimSpace(name)
+	if i := strings.LastIndexByte(name, '\\'); i >= 0 {
+		name = name[i+1:]
+	}
+	return StripAfterAt(name)
+}
+
+// matchTargetDomain finds the target domain an (already lower-cased) address
+// belongs to. An address equal to a target domain is that domain itself
+// (isDomain); otherwise the most specific target domain the address is a host
+// in wins, so "srv.emea.corp.local" belongs to "emea.corp.local" rather than
+// "corp.local" when both are targets. It returns "" when nothing matches.
+func matchTargetDomain(address string, domains []string) (domain string, isDomain bool) {
+	for _, d := range domains {
+		if strings.ToLower(d) == address {
+			return d, true
+		}
+	}
+	for _, d := range domains {
+		if strings.HasSuffix(address, "."+strings.ToLower(d)) && len(d) > len(domain) {
+			domain = d
+		}
+	}
+	return domain, false
 }
 
 // normalizeDomains trims whitespace and trailing dots from the target domains

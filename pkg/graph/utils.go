@@ -131,7 +131,7 @@ func (og *OpenGraph) AddEdge(kind, startID, endID, startMatchBy, endMatchBy stri
 // DN-parsing patterns, compiled once: they run for every user and group, and
 // directory-synced vaults can hold very many of those.
 var (
-	dnDomainComponentRe = regexp.MustCompile(`(?i)DC=([^,]+)`)
+	dnDomainComponentRe = regexp.MustCompile(`(?i)(?:^|,)\s*DC=([^,]+)`)
 	dnCommonNameRe      = regexp.MustCompile(`(?i)(?:^|,)\s*CN=([^,]+)`)
 	samAccountNameRe    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 )
