@@ -202,7 +202,17 @@ go install ./cmd/cyberarkhound
 ```
 
 **Pre-built binaries:**
-Download pre-compiled binaries from the [Releases](https://github.com/jazofra/CyberArkHound/releases) page.
+Download pre-compiled binaries from the [Releases](https://github.com/jazofra/CyberArkHound/releases) page. Each release is built by the `Release` workflow when a `v*` tag is pushed, for Linux, macOS and Windows (amd64 and arm64), with the latest stable Go. Before running a downloaded binary, check it:
+
+```bash
+# The checksum must match the release's SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+
+# The binary must have been built by this repository's release workflow
+gh attestation verify cyberarkhound_v1.2.3_linux_amd64 --repo jazofra/CyberArkHound
+```
+
+`cyberarkhound --version` prints the version a binary was built from.
 
 ### Usage
 

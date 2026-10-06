@@ -124,6 +124,7 @@ func newCollector(ctx context.Context, cfg *config, api *client.Client, logger *
 	} else {
 		snap.Progress.ResumedAt = append(snap.Progress.ResumedAt, now)
 	}
+	snap.CollectorVersion = toolVersion()
 
 	interval := cfg.checkpointInterval
 	if interval == 0 {

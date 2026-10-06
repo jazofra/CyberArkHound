@@ -394,3 +394,12 @@ func TestFromRawCanRetag(t *testing.T) {
 		}
 	}
 }
+
+func TestVersionFlag(t *testing.T) {
+	if _, err := parseFlags([]string{"--version"}); !errors.Is(err, errVersion) {
+		t.Fatalf("--version should return errVersion, got %v", err)
+	}
+	if toolVersion() == "" {
+		t.Fatal("toolVersion is empty")
+	}
+}

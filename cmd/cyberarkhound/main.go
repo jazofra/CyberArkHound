@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +18,21 @@ import (
 	"github.com/spf13/pflag"
 	"golang.org/x/term"
 )
+
+// version is set at release build time with -ldflags "-X main.version=...".
+var version = "dev"
+
+// toolVersion returns the release version, or the module version for a
+// `go install ...@version` build, or "dev".
+func toolVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return version
+}
 
 // passwordEnvVar is read when --password is not given, so the secret does not
 // have to appear on the command line (where any local user can see it in the
@@ -89,6 +105,9 @@ var resumeOptionFlags = []string{"limit-users", "limit-groups", "limit-safes", "
 // validPVWATag restricts --pvwa-tag to characters that are safe in node IDs.
 var validPVWATag = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$`)
 
+// errVersion asks realMain to print the version and exit.
+var errVersion = errors.New("version requested")
+
 // usageError is a command-line mistake; the caller prints usage after it.
 type usageError struct{ msg string }
 
@@ -145,6 +164,7 @@ func newFlagSet(cfg *config) (*pflag.FlagSet, *string, *bool, *bool) {
 	fs.StringVar(&cfg.findingsOutput, "findings-output", "", "Also write the security findings, with the objects behind each one, to this JSON file")
 	fs.StringVar(&cfg.saveRaw, "save-raw", "", "Also save the raw collected data to this JSON file, so the graph can be rebuilt later with --from-raw. Progress is saved periodically while collecting, so an interrupted or failed collection can be continued with --resume")
 	fs.StringVar(&cfg.fromRaw, "from-raw", "", "Build the graph from a file written by --save-raw instead of contacting PVWA")
+	fs.Bool("version", false, "Print the version and exit")
 	fs.StringVar(&cfg.resume, "resume", "", "Continue an interrupted or failed collection from its --save-raw file: finished work is not fetched again, failed work is retried, and progress keeps being saved to that file (or to --save-raw)")
 
 	return fs, logLevel, debug, quiet
@@ -160,6 +180,9 @@ func parseFlags(args []string) (*config, error) {
 			return nil, err
 		}
 		return nil, &usageError{err.Error()}
+	}
+	if v, _ := fs.GetBool("version"); v {
+		return nil, errVersion
 	}
 	cfg.passwordFlag = fs.Changed("password")
 	cfg.explicit = make(map[string]bool)
@@ -294,6 +317,10 @@ func printUsage(w io.Writer) {
 
 func realMain(args []string) int {
 	cfg, err := parseFlags(args)
+	if errors.Is(err, errVersion) {
+		fmt.Println("cyberarkhound", toolVersion())
+		return exitOK
+	}
 	if errors.Is(err, pflag.ErrHelp) {
 		printUsage(os.Stdout)
 		return exitOK
@@ -307,6 +334,7 @@ func realMain(args []string) int {
 	logger := logrus.New()
 	logger.SetFormatter(&logrus.TextFormatter{FullTimestamp: true})
 	logger.SetLevel(cfg.logLevel)
+	logger.Infof("CyberArkHound %s", toolVersion())
 
 	if cfg.fromRaw == "" {
 		if err := resolvePassword(cfg, os.Getenv, terminalPrompt()); err != nil {

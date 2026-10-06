@@ -26,6 +26,9 @@ type Snapshot struct {
 	CollectedAt   time.Time `json:"collectedAt"`
 	PVWAURL       string    `json:"pvwaUrl"`
 	PVWATag       string    `json:"pvwaTag"`
+	// CollectorVersion is the CyberArkHound version that collected the data
+	// (the latest one, for a resumed collection).
+	CollectorVersion string `json:"collectorVersion,omitempty"`
 	// Incomplete lists why the collection did not cover the whole environment.
 	Incomplete []string `json:"incomplete,omitempty"`
 
