@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -163,6 +165,11 @@ type Client struct {
 
 	issuesMu sync.Mutex
 	issues   []string
+
+	// setupErr records a configuration problem found by NewClient (such as
+	// an unreadable CA bundle). Authenticate returns it before sending any
+	// request, so the client never runs with an unintended trust setup.
+	setupErr error
 }
 
 type cancelOnCloseReadCloser struct {
@@ -194,6 +201,8 @@ func NormalizeBaseURL(raw string) string {
 
 // NewClient creates a new CyberArk API client. baseURL is normalised with
 // NormalizeBaseURL, so a bare hostname such as "pvwa.example.com" is accepted.
+// caBundle, when set, is a PEM file of CA certificates trusted in addition to
+// the system roots; if it cannot be used, Authenticate reports why.
 func NewClient(baseURL, username, password string, insecure bool, caBundle string, logger *logrus.Logger) *Client {
 	baseURL = NormalizeBaseURL(baseURL)
 	if strings.HasPrefix(baseURL, "http://") && logger != nil {
@@ -213,7 +222,7 @@ func NewClient(baseURL, username, password string, insecure bool, caBundle strin
 		logger.Warnf("Failed to create HTTP cookie jar; PVWA affinity cookies will not be persisted: %v", err)
 	}
 
-	return &Client{
+	c := &Client{
 		BaseURL:    baseURL,
 		Username:   username,
 		Password:   password,
@@ -237,6 +246,31 @@ func NewClient(baseURL, username, password string, insecure bool, caBundle strin
 		MaxRateLimitRetries:          MaxRateLimitRetries,
 		IncludePredefinedSafeMembers: true,
 	}
+	if caBundle != "" {
+		pool, err := loadCABundle(caBundle)
+		if err != nil {
+			c.setupErr = err
+		} else {
+			transport.TLSClientConfig.RootCAs = pool
+		}
+	}
+	return c
+}
+
+// loadCABundle returns the system roots plus the PEM certificates in path.
+func loadCABundle(path string) (*x509.CertPool, error) {
+	pem, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read CA bundle: %w", err)
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("CA bundle %s contains no PEM certificates", path)
+	}
+	return pool, nil
 }
 
 // SetContext sets the context that bounds every request the client makes.
@@ -672,6 +706,9 @@ func (c *Client) authorizationHeaderValue(token string) string {
 // uses the /API/Auth/{method}/Logon endpoint; for Privilege Cloud (SaaS) it uses
 // the CyberArk Identity (ISPSS) OAuth2 client-credentials flow.
 func (c *Client) Authenticate() error {
+	if c.setupErr != nil {
+		return c.setupErr
+	}
 	if c.isIdentityAuth() {
 		return c.authenticateIdentity()
 	}
