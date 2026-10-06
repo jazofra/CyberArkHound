@@ -17,7 +17,7 @@ var EdgeInfoMap = map[string]EdgeInfo{
 	"CyberArk_HasAccessTo": {
 		Description: "The source principal is a member of the safe containing the target account with one or more account access permissions (useAccounts and/or retrieveAccounts). This is the primary credential access edge in CyberArk. " +
 			"The edge properties provide critical context: requiresApproval indicates whether dual-control enforcement is active (access requires an approval workflow before credentials can be retrieved); " +
-			"requiresSessionMonitoring and recordsSessionActivity indicate whether privileged sessions must be routed through PSM and whether session content is recorded.",
+			"requiresSessionMonitoring and recordsSessionActivity indicate whether privileged sessions must be routed through PSM and whether session content is recorded. Expired safe memberships create no edge.",
 		WindowsAbuse: "To retrieve the account password directly (requires retrieveAccounts permission):\n\n" +
 			"$pvwaURL = 'https://<pvwa>'\n" +
 			"$headers = @{Authorization = \"Bearer $token\"}\n" +
@@ -54,7 +54,7 @@ var EdgeInfoMap = map[string]EdgeInfo{
 	"CyberArk_CanGrantAccessTo": {
 		Description: "The source principal has manageSafe or manageSafeMembers permission on the target safe. " +
 			"This is a privilege escalation edge: the principal can add new safe members, modify existing member permissions, or remove members. " +
-			"By adding themselves (or a controlled account) to the safe with retrieveAccounts permission, the attacker gains access to all accounts stored in that safe.",
+			"By adding themselves (or a controlled account) to the safe with retrieveAccounts permission, the attacker gains access to all accounts stored in that safe. Expired safe memberships create no edge.",
 		WindowsAbuse: "Add yourself (or a controlled user) to the safe with full account access permissions:\n\n" +
 			"$pvwaURL = 'https://<pvwa>'\n" +
 			"$headers = @{Authorization = \"Bearer $token\"}\n" +
@@ -101,7 +101,7 @@ var EdgeInfoMap = map[string]EdgeInfo{
 			"The approvalLevel property specifies the tier: 1 for first-level approval, 2 for second-level approval. " +
 			"A principal with accessWithoutConfirmation permission bypasses the dual-control workflow entirely. " +
 			"This edge enables dual-control bypass attacks: if the same principal also has CyberArk_HasAccessTo on an account in this safe where requiresApproval=true, " +
-			"they can approve their own access requests. Two colluding principals can mutually authorize each other's requests.",
+			"they can approve their own access requests. Two colluding principals can mutually authorize each other's requests. Expired safe memberships create no edge.",
 		WindowsAbuse: "List pending incoming access requests (as approver):\n\n" +
 			"$pvwaURL = 'https://<pvwa>'\n" +
 			"$headers = @{Authorization = \"Bearer $token\"}\n" +
@@ -133,7 +133,7 @@ var EdgeInfoMap = map[string]EdgeInfo{
 		Description: "The source CyberArk Application (AppID) is a member of the safe containing the target account with useAccounts and/or retrieveAccounts permission, " +
 			"and can therefore retrieve that account's credential through the Central Credential Provider (CCP / AIMWebService) REST API — typically with a single GET request and without any interactive PVWA login. " +
 			"The edge properties carry the application's authentication posture: appIsUnrestricted=true means the AppID has no Allowed Machines and no OS user / path / hash / certificate binding, " +
-			"so knowledge of the AppID alone is enough to pull the credential from anywhere that can reach the CCP endpoint. allowedMachines lists the IPs/hosts permitted to use the AppID (if any), " +
+			"so knowledge of the AppID alone is enough to pull the credential from anywhere that can reach the CCP endpoint; if the application's restrictions could not be read, appIsUnrestricted is false and the application is marked authenticationsUnknown. allowedMachines lists the IPs/hosts permitted to use the AppID (if any), " +
 			"and isDefaultCCPApp=true flags the out-of-the-box AIMWebService application, which usually has access to every safe. " +
 			"Tradecraft credit: Marat Nigmatullin (@_mnigma_, FalconForce) — \"4 GET requests = 3 Domain admins: CyberArk magic you didn't know about\", SO-CON 2026.",
 		WindowsAbuse: "Retrieve the credential directly from the CCP endpoint using the application's AppID. No PVWA token is required — only network access to the CCP server " +
@@ -232,7 +232,8 @@ var EdgeInfoMap = map[string]EdgeInfo{
 	"CyberArk_MemberOf": {
 		Description: "The source CyberArk user or group is a member of the target CyberArk group. " +
 			"Group membership is cumulative: a user inherits all permissions granted to every group they belong to across all safes. " +
-			"Group edges to safes flow transitively through this membership edge, enabling credential access without direct safe membership.",
+			"Group edges to safes flow transitively through this membership edge, enabling credential access without direct safe membership. " +
+			"The edge comes from each user's group memberships (source=userDetails) and from each group's member list (source=groupMembers); a membership reported by both yields one edge.",
 		WindowsAbuse: "Group membership itself does not directly grant credential access — follow the group's outgoing edges (CyberArk_HasAccessTo, CyberArk_CanGrantAccessTo) " +
 			"to identify which accounts and safes are reachable. Enumerate effective group safe memberships:\n\n" +
 			"$pvwaURL = 'https://<pvwa>'\n" +
@@ -566,7 +567,7 @@ var EdgeInfoMap = map[string]EdgeInfo{
 	},
 	"CyberArk_SyncsToADUser": {
 		Description: "The source CyberArk account stores credentials for the target Active Directory user account. " +
-			"This relationship is inferred: the account's stored username matches an AD sAMAccountName or UPN in a target domain. " +
+			"This relationship is inferred: the account's address is one of the target domains, and its user name — reduced to the bare account name if stored as DOMAIN\\user or user@domain — gives the AD user USER@DOMAIN. " +
 			"Retrieving this credential from CyberArk yields the plaintext password for the AD user, enabling direct AD authentication and lateral movement across the domain. " +
 			"This is a cross-domain bridge edge from the CyberArk attack surface into Active Directory.",
 		WindowsAbuse: "Retrieve the AD user's plaintext password from CyberArk, then use it for AD lateral movement:\n\n" +
@@ -607,8 +608,8 @@ var EdgeInfoMap = map[string]EdgeInfo{
 
 	"CyberArk_CanConnect": {
 		Description: "The source CyberArk account stores credentials valid for authenticating to the target Active Directory computer. " +
-			"This relationship is inferred: the account's address field matches a hostname or IP that is part of the target domain. " +
-			"If localUser is true in the edge properties, the account stores a local (non-domain) credential for that specific machine, potentially including local administrator access. " +
+			"This relationship is inferred: the account's address is the fully qualified name of a host inside one of the target domains, matched to the computer of that name (IP addresses and short host names are not matched). " +
+			"The localUser property holds the account's name on that machine: the account stores a local (non-domain) credential for it, potentially including local administrator access. " +
 			"Retrieving this credential enables direct lateral movement to the target computer.",
 		WindowsAbuse: "Retrieve the local or machine account credential from CyberArk, then connect to the target computer:\n\n" +
 			"$pvwaURL = 'https://<pvwa>'\n" +
@@ -657,7 +658,7 @@ var EdgeInfoMap = map[string]EdgeInfo{
 		},
 	},
 	"CyberArk_PSMServerHostedOn": {
-		Description: "The source CyberArk PSM server runs on the target Active Directory computer, inferred by matching the PSM server's configured address to a computer in a target domain. " +
+		Description: "The source CyberArk PSM server runs on the target Active Directory computer, inferred by matching the PSM server's configured address to the computer of that name (an IP address will not match). " +
 			"This cross-domain correlation edge bridges CyberArk session infrastructure to its underlying host, so the computer's Active Directory attack surface and the PSM server's session exposure can be reasoned about together.",
 		WindowsAbuse: "Compromising the underlying computer is equivalent to compromising the PSM server it hosts: every session the PSM brokers, and every recording it stages locally, becomes reachable.\n\n" +
 			"# From the host, PSM for Windows stages recordings before transfer:\n" +

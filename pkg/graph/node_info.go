@@ -22,7 +22,7 @@ type NodeInfo struct {
 var NodeInfoMap = map[string]NodeInfo{
 	"CyberArk_Instance": {
 		Overview: "A CyberArk PVWA/Vault instance — the top-level container for everything CyberArkHound collected from a single PVWA: users, groups, safes, accounts, platforms, PSM infrastructure, and applications (AppIDs). " +
-			"Each instance is namespaced by the 4-character PVWA tag derived from the `--pvwa` URL, so multiple vaults can coexist in one BloodHound database without colliding. " +
+			"Each instance is namespaced by its PVWA tag — by default 4 characters derived from the `--pvwa` host name, or the value of `--pvwa-tag` — so multiple vaults can coexist in one BloodHound database as long as their tags differ. " +
 			"The instance is the environment node for the CyberArk source and the anchor for scoping queries to a single deployment.",
 		Abuse: "The instance node is structural and is not itself an attack target. Use it to scope traversals to one vault and to pivot into the high-value objects it contains:\n\n" +
 			"- Follow `CyberArk_InstanceContains` to enumerate the safes, platforms, PSM servers, and connection components of this deployment.\n" +
@@ -37,7 +37,8 @@ var NodeInfoMap = map[string]NodeInfo{
 	"CyberArk_User": {
 		Overview: "A CyberArk Vault user. May be a local EPV user, a component/service account (CPM, PSM, PVWA), or an LDAP/directory-synced user. " +
 			"Users hold safe permissions directly or inherit them through `CyberArk_MemberOf` group membership, and directory-synced users are bridged to Active Directory via `CyberArk_SyncsToUser`. " +
-			"Key properties include whether the user is enabled/suspended, a component user, and its authentication source.",
+			"Key properties include whether the user is enabled/suspended, a component user, and its authentication source. " +
+			"A user with `placeholder: true` was referenced — as a safe member, safe creator, CPM or in activity logs — but not returned by the collection, so it carries no other properties.",
 		Abuse: "A user is a principal: its reachable credentials are the union of its own and its groups' outgoing edges.\n\n" +
 			"- Follow `CyberArk_HasAccessTo` for accounts whose passwords the user can retrieve, and `CyberArk_CanGrantAccessTo` for safes where the user can add itself (or a controlled account) with retrieve permission.\n" +
 			"- `CyberArk_CanApprove` marks dual-control approval authority — combined with `CyberArk_HasAccessTo` on the same safe it enables self-approval.\n" +
@@ -52,7 +53,8 @@ var NodeInfoMap = map[string]NodeInfo{
 	},
 	"CyberArk_Group": {
 		Overview: "A CyberArk Vault group. Members — users or nested groups — inherit all safe permissions and vault authorizations granted to the group cumulatively. " +
-			"A group may be local to the vault or synchronized from a directory, in which case `CyberArk_SyncsToGroup` bridges it to an Active Directory group and AD membership changes propagate on the next LDAP sync.",
+			"A group may be local to the vault or synchronized from a directory, in which case `CyberArk_SyncsToGroup` bridges it to an Active Directory group and AD membership changes propagate on the next LDAP sync. " +
+			"A group with `placeholder: true` was referenced (for example in a user's memberships or as a safe member) but not returned by the collection.",
 		Abuse: "Groups concentrate access: a single membership can confer credential access across many safes.\n\n" +
 			"- Enumerate the group's outgoing `CyberArk_HasAccessTo` / `CyberArk_CanGrantAccessTo` / `CyberArk_CanApprove` edges to see the effective blast radius of membership.\n" +
 			"- Adding a controlled principal via `CyberArk_MemberOf` (or, for a synced group, into the mapped AD group) inherits all of that access — often a stealthier path than modifying safe membership directly.\n" +
@@ -66,7 +68,8 @@ var NodeInfoMap = map[string]NodeInfo{
 	},
 	"CyberArk_Safe": {
 		Overview: "A CyberArk safe — a logical container holding privileged accounts and their credentials. Safe members hold permissions (use, retrieve, list, manage members, approve) that govern credential access and privilege escalation. " +
-			"The `managingCPM` property names the CPM that rotates the safe's credentials; a blank value (surfaced as the `SAFE_NO_CPM` finding) means the safe's passwords are not being automatically managed.",
+			"The `managingCPM` property names the CPM that rotates the safe's credentials; a blank value (surfaced as the `SAFE_NO_CPM` finding) means the safe's passwords are not being automatically managed. " +
+			"A safe with `placeholder: true` was referenced by an account but not returned by the collection; it is not counted by the findings.",
 		Abuse: "The safe is the unit of access control — most CyberArk attack paths pass through one.\n\n" +
 			"- `CyberArk_Contains` links the safe to its accounts; combine with the principals' `CyberArk_HasAccessTo` edges to map who can reach which credentials.\n" +
 			"- `CyberArk_CanGrantAccessTo` into the safe is a privilege-escalation primitive: a member with manageSafe/manageSafeMembers can add itself with retrieveAccounts and read every account inside.\n" +
@@ -83,7 +86,8 @@ var NodeInfoMap = map[string]NodeInfo{
 		Overview: "A privileged account stored in a CyberArk safe — a managed credential for a target system, domain user, or local machine account. " +
 			"Principals with retrieveAccounts can obtain the plaintext password; principals with useAccounts can launch a PSM-brokered session without ever seeing it. " +
 			"Inferred edges link the account outward: `CyberArk_SyncsToADUser` (the credential belongs to an AD user), `CyberArk_CanConnect` (it authenticates to an AD computer, often as local admin), and `CyberArk_LinkedTo` (logon/reconcile/additional dependencies). " +
-			"Session properties such as `managedByPSM`, `sessionMonitoringEnabled`, and `sessionRecordingEnabled` describe how tightly the account's use is brokered.",
+			"Session properties such as `managedByPSM`, `sessionMonitoringEnabled`, and `sessionRecordingEnabled` describe how tightly the account's use is brokered. " +
+			"An account with `placeholder: true` was referenced — typically as a linked account in a safe the collector cannot list — but its details were not collected.",
 		Abuse: "The account is the credential — retrieving it is usually the objective.\n\n" +
 			"```powershell\n" +
 			"# Requires retrieveAccounts on the containing safe:\n" +
@@ -154,6 +158,7 @@ var NodeInfoMap = map[string]NodeInfo{
 		Overview: "A CyberArk Application (AppID) used with the Central Credential Provider (CCP / AIMWebService) or Credential Provider (CP) to retrieve credentials from the Vault at runtime via REST. " +
 			"The `isUnrestricted` property flags an AppID with no authentication binding (no Allowed Machines, OS user, path, hash, or certificate) — knowledge of the AppID alone is enough to pull its credentials. " +
 			"`isDefaultCCPApp` flags the out-of-the-box AIMWebService application, which usually has access to every safe. " +
+			"`authenticationsUnknown` marks an AppID whose restrictions could not be read; it is not assessed either way. " +
 			"Tradecraft: Marat Nigmatullin (@_mnigma_, FalconForce), \"4 GET requests = 3 Domain admins: CyberArk magic you didn't know about\", SO-CON 2026.",
 		Abuse: "An unrestricted AppID is a credential-retrieval oracle reachable by anyone who can hit the CCP endpoint.\n\n" +
 			"```bash\n" +
