@@ -1,7 +1,8 @@
 // Command gen-schema regenerates extension/schema.json, injecting the curated
 // Entity Panel "info" sections from the Go source of truth (graph.NodeInfoMap
-// and graph.EdgeInfoMap) into every node and relationship kind. All other
-// fields in schema.json are preserved verbatim.
+// and graph.EdgeInfoMap) into every node and relationship kind, and setting
+// every relationship kind's is_traversable flag from graph.EdgeTraversability.
+// All other fields in schema.json are preserved verbatim.
 //
 // Run it from the repository root:
 //
@@ -9,7 +10,8 @@
 //
 // or via `go generate ./...` (see the directive in pkg/graph). The drift-guard
 // test in pkg/graph fails if the committed schema.json is out of sync with the
-// Go maps, so run this whenever NodeInfoMap or EdgeInfoMap changes.
+// Go maps, so run this whenever NodeInfoMap, EdgeInfoMap or EdgeTraversability
+// changes.
 package main
 
 import (

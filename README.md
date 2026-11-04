@@ -71,7 +71,7 @@ The required vault authorizations (`Audit Users` plus `List`/`View Safe Members`
 - **LDAP/Directory sync tracking**: Identify synced vs local users and groups
 - **External AD entity inference**: Automatic detection of relationships to Active Directory
 - **Account activity tracking**: Optional CyberArk_UsedAccount edges showing actual usage patterns
-- **Linked account chain analysis**: Optional CyberArk_LinkedTo edges mapping logon/reconcile/additional account dependencies for credential chain traversal
+- **Linked account chain analysis**: Optional CyberArk_LinkedTo edges mapping logon/reconcile/additional account dependencies, queryable with Cypher to find each linked account's blast radius
 - **Safe creator and CPM tracking**: CyberArk_Created and CyberArk_ManagedBy edges showing who created and manages each safe
 - **Platform-based grouping**: Optional CyberArk_Platform nodes and CyberArk_UsesPlatform edges for shared attack surface analysis
 - **PSM infrastructure mapping**: Optional CyberArk_PSMServer and CyberArk_ConnectionComponent nodes with edges showing which PSM servers and connection protocols (RDP, SSH, etc.) each platform and account uses; CyberArk_PSMServerHostedOn external edges link PSM servers to their AD Computer objects
@@ -297,32 +297,34 @@ _Queries: [Privilege escalation](#privilege-escalation-cyberark_cangrantaccessto
 
 #### Edge Types Summary
 
-| Edge | Direction | Source | Security Value |
-|------|-----------|--------|----------------|
-| `CyberArk_HasAccessTo` | User/Group → Account | Safe member `useAccounts`/`retrieveAccounts` | Direct credential access; `requiresApproval` shows if dual control blocks retrieval |
-| `CyberArk_CanRetrieveViaCCP` | Application → Account | Application safe member `useAccounts`/`retrieveAccounts` + `GET /WebServices/PIMServices.svc/Applications` | CCP/AIMWebService credential retrieval via a single GET request; `appIsUnrestricted` and `isDefaultCCPApp` flag the highest-risk AppIDs ([Nigmatullin, SO-CON 2026](#tradecraft-reference)) |
-| `CyberArk_CCPAllowedFrom` | Application → AD Computer | Application `machineAddress` authentications (Allowed Machines) | External edge — which hosts may present the AppID to CCP; `machineIsOnlyRestriction` flags when landing on the host is sufficient to wield the AppID |
-| `CyberArk_CanGrantAccessTo` | User/Group → Safe | Safe member `manageSafe`/`manageSafeMembers` | Privilege escalation — can grant themselves account access |
-| `CyberArk_CanHijackViaReconcile` | User/Group → Account | Safe member `addAccounts`/`manageSafe` + reconcile linked account (`GET /API/Accounts/{id}/LinkedAccounts`) | Privilege escalation — can coerce the CPM to reset a target's password using a privileged reconcile account ([Nigmatullin, SO-CON 2026](#tradecraft-reference)) |
-| `CyberArk_CanApprove` | User/Group → Safe | Safe member `requestsAuthorizationLevel1`/`Level2` | Can approve dual-controlled access requests (L1/L2) |
-| `CyberArk_UsedAccount` | User → Account | `GET /API/Accounts/{id}/Activities` | Actual usage audit trail — who really accessed what |
-| `CyberArk_LinkedTo` | Account → Account | `GET /API/Accounts/{id}/LinkedAccounts` | Logon/reconcile/additional credential chains — compromising one propagates to all dependents |
-| `CyberArk_Created` | User → Safe | Existing `Safe.Creator` field | Shows who created each safe (implicit ownership/access) |
-| `CyberArk_ManagedBy` | CPM User → Safe | Existing `Safe.ManagingCPM` field | CPM accounts have privileged password management access |
-| `CyberArk_UsesPlatform` | Account → Platform | `GET /API/Platforms/Targets` | Shared platform config = shared attack surface |
-| `CyberArk_UsesPSMServer` | Platform → PSM Server | Platform `PSMServerID` field | Which PSM server handles sessions for each platform |
-| `CyberArk_ManagedByPSM` | Account → PSM Server | Derived via account's platform | Direct link for querying which PSM server manages an account's sessions |
-| `CyberArk_HasConnectionComponent` | Platform → Connection Component | `GET /API/Platforms/Targets/{id}/PrivilegedSessionManagement` | Which connection protocols (RDP, SSH, etc.) are enabled per platform |
-| `CyberArk_PSMServerHostedOn` | PSM Server → AD Computer | PSM Server `Address` field (uppercased) | External edge — maps PSM server to its AD Computer object |
-| `CyberArk_MemberOf` | User/Group → Group | Group membership data | Group-based permission inheritance |
-| `CyberArk_Contains` | Safe → Account | Account's `safeName` field | Safe-account containment relationship |
-| `CyberArk_InstanceContains` | Instance → Safe/Platform/PSM Server/Connection Component | Derived (one root per PVWA tag) | Environment root containment — scopes bounded configuration objects to their PVWA instance. Users and groups are excluded to avoid a multi-million-edge fan-out in LDAP-synced vaults |
-| `CyberArk_SyncsToUser` | AD User → CyberArk_User | LDAP DN with `DC=` | External edge — AD-to-CyberArk identity mapping |
-| `CyberArk_SyncsToGroup` | AD Group → CyberArk_Group | LDAP DN with `DC=` | External edge — AD-to-CyberArk group mapping |
-| `CyberArk_SyncsToADUser` | CyberArk_Account → AD User | Account address matches target domain | External edge — credential-to-AD-user mapping |
-| `CyberArk_CanConnect` | CyberArk_Account → AD Computer | Account address matches address subdomain of the target domain (Local accounts) | External edge — credential-to-AD-computer mapping |
+| Edge | Direction | Pathfinding | Source | Security Value |
+|------|-----------|-------------|--------|----------------|
+| `CyberArk_HasAccessTo` | User/Group → Account | Traversable (solid) | Safe member `useAccounts`/`retrieveAccounts` | Direct credential access; `requiresApproval` shows if dual control blocks retrieval |
+| `CyberArk_CanRetrieveViaCCP` | Application → Account | Traversable (solid) | Application safe member `useAccounts`/`retrieveAccounts` + `GET /WebServices/PIMServices.svc/Applications` | CCP/AIMWebService credential retrieval via a single GET request; `appIsUnrestricted` and `isDefaultCCPApp` flag the highest-risk AppIDs ([Nigmatullin, SO-CON 2026](#tradecraft-reference)) |
+| `CyberArk_CCPAllowedFrom` | Application → AD Computer | Non-traversable (dashed) | Application `machineAddress` authentications (Allowed Machines) | External edge — which hosts may present the AppID to CCP; `machineIsOnlyRestriction` flags when landing on the host is sufficient to wield the AppID |
+| `CyberArk_CanGrantAccessTo` | User/Group → Safe | Traversable (solid) | Safe member `manageSafe`/`manageSafeMembers` | Privilege escalation — can grant themselves account access |
+| `CyberArk_CanHijackViaReconcile` | User/Group → Account | Traversable (solid) | Safe member `addAccounts`/`manageSafe` + reconcile linked account (`GET /API/Accounts/{id}/LinkedAccounts`) | Privilege escalation — can coerce the CPM to reset a target's password using a privileged reconcile account ([Nigmatullin, SO-CON 2026](#tradecraft-reference)) |
+| `CyberArk_CanApprove` | User/Group → Safe | Non-traversable (dashed) | Safe member `requestsAuthorizationLevel1`/`Level2` | Can approve dual-controlled access requests (L1/L2) |
+| `CyberArk_UsedAccount` | User → Account | Non-traversable (dashed) | `GET /API/Accounts/{id}/Activities` | Actual usage audit trail — who really accessed what |
+| `CyberArk_LinkedTo` | Account → Account | Non-traversable (dashed) | `GET /API/Accounts/{id}/LinkedAccounts` | Logon/reconcile/additional credential chains — compromising the linked account propagates to all its dependents, against the edge direction (hence non-traversable) |
+| `CyberArk_Created` | User → Safe | Non-traversable (dashed) | Existing `Safe.Creator` field | Shows who created each safe (implicit ownership/access) |
+| `CyberArk_ManagedBy` | CPM User → Safe | Traversable (solid) | Existing `Safe.ManagingCPM` field | CPM accounts have privileged password management access |
+| `CyberArk_UsesPlatform` | Account → Platform | Non-traversable (dashed) | `GET /API/Platforms/Targets` | Shared platform config = shared attack surface |
+| `CyberArk_UsesPSMServer` | Platform → PSM Server | Non-traversable (dashed) | Platform `PSMServerID` field | Which PSM server handles sessions for each platform |
+| `CyberArk_ManagedByPSM` | Account → PSM Server | Non-traversable (dashed) | Derived via account's platform | Direct link for querying which PSM server manages an account's sessions |
+| `CyberArk_HasConnectionComponent` | Platform → Connection Component | Non-traversable (dashed) | `GET /API/Platforms/Targets/{id}/PrivilegedSessionManagement` | Which connection protocols (RDP, SSH, etc.) are enabled per platform |
+| `CyberArk_PSMServerHostedOn` | PSM Server → AD Computer | Non-traversable (dashed) | PSM Server `Address` field (uppercased) | External edge — maps PSM server to its AD Computer object |
+| `CyberArk_MemberOf` | User/Group → Group | Traversable (solid) | Group membership data | Group-based permission inheritance |
+| `CyberArk_Contains` | Safe → Account | Traversable (solid) | Account's `safeName` field | Safe-account containment relationship |
+| `CyberArk_InstanceContains` | Instance → Safe/Platform/PSM Server/Connection Component | Non-traversable (dashed) | Derived (one root per PVWA tag) | Environment root containment — scopes bounded configuration objects to their PVWA instance. Users and groups are excluded to avoid a multi-million-edge fan-out in LDAP-synced vaults |
+| `CyberArk_SyncsToUser` | AD User → CyberArk_User | Traversable (solid) | LDAP DN with `DC=` | External edge — AD-to-CyberArk identity mapping |
+| `CyberArk_SyncsToGroup` | AD Group → CyberArk_Group | Traversable (solid) | LDAP DN with `DC=` | External edge — AD-to-CyberArk group mapping |
+| `CyberArk_SyncsToADUser` | CyberArk_Account → AD User | Traversable (solid) | Account address matches target domain | External edge — credential-to-AD-user mapping |
+| `CyberArk_CanConnect` | CyberArk_Account → AD Computer | Traversable (solid) | Account address matches address subdomain of the target domain (Local accounts) | External edge — credential-to-AD-computer mapping |
 
 **Note**: Permissions like `listAccounts`, `viewAuditLog`, `addAccounts`, `updateAccountContent` do **not** create access edges as they don't allow password retrieval or account usage.
+
+**Pathfinding column**: BloodHound only follows **traversable** edges when it computes paths and Attack Path findings, and its Explore graph draws them as solid lines. **Non-traversable** edges are drawn dashed and never appear in a computed path. They are still in the graph, so explicit Cypher queries (like everything in the [query library](#bloodhound-cypher-query-library)) still return them. An edge is traversable only when controlling its source gives the attacker its target. See [Traversable vs non-traversable edges](#traversable-vs-non-traversable-edges-solid-vs-dashed) for the reasoning behind each decision.
 
 #### CyberArk_UsedAccount (User → Account) - Optional
 **Actual account usage** - Tracks when users have actually retrieved or used accounts (not just permission):
@@ -411,7 +413,8 @@ _Queries: [Dual control (approval) analysis](#dual-control-approval-analysis) an
 - Created when `--include-linked-accounts` flag is used
 - Based on CyberArk linked accounts via `/API/Accounts/{accountId}/LinkedAccounts`
 - Link types: `logon` (ExtraPass1) and `reconcile` (ExtraPass3) are fixed roles. Every other slot (ExtraPass2, ExtraPass4, …) is a platform-defined **additional** account whose real type name is resolved positionally from the platform's `linkedAccounts` metadata — e.g. a Unix `JumpAccount` or a Cisco `EnablePassword`. When platform metadata isn't collected, additional slots fall back to the generic label `additional`.
-- Critical for attack path analysis: compromising a logon account gives access to all accounts that depend on it
+- Critical for attack path analysis: compromising a logon account gives access to all accounts that depend on it, and a reconcile account can reset every account that names it
+- **Non-traversable (dashed in BloodHound)**: the edge points from the dependent account to the account it depends on, but control runs the other way. Holding the dependent account's password does not reveal its logon or reconcile account. If the edge were traversable, pathfinding would report false paths like "access to any account leads to its Domain Admin reconcile account". To find a linked account's real blast radius, start from the linked account, as the [linked-account queries](#linked-account--credential-chains-cyberark_linkedto) do.
 
 **Edge Properties**:
 - `linkType`: Resolved type of link — `logon`, `reconcile`, the platform-defined type name (e.g. `JumpAccount`, `EnablePassword`), or `additional` when platform metadata is unavailable
@@ -638,7 +641,9 @@ RETURN p ORDER BY r.usageCount DESC
 MATCH p=(logon:CyberArk_Account {name: "svc-logon"})<-[:CyberArk_LinkedTo {linkType: "logon"}]-(a:CyberArk_Account)
 RETURN p
 
-// Multi-hop credential chains — compromise one, reach the rest
+// Multi-hop dependency chains. Control runs against the arrows: compromising the
+// account at the end of a chain reaches every account before it. (LinkedTo is
+// non-traversable, so BloodHound pathfinding won't build these paths for you.)
 MATCH p=(a:CyberArk_Account)-[:CyberArk_LinkedTo*1..3]->(target:CyberArk_Account)
 RETURN p
 
@@ -1108,31 +1113,31 @@ config:
  layout: elk
 ---
 flowchart TD
- User["fa:fa-user User"] -. CyberArk_SyncsToUser<br>(LDAP) .-> CyberArk_User["fa:fa-user CyberArk_User"]
- Group["fa:fa-user-group Group"] -. CyberArk_SyncsToGroup<br>(Directory) .-> CyberArk_Group["fa:fa-user-group CyberArk_Group"]
- CyberArk_Account["fa:fa-user-secret CyberArk_Account"] -. CyberArk_SyncsToADUser<br>(Domain Match) .-> User
- CyberArk_Account -. CyberArk_CanConnect<br>(Domain Match) .-> Computer["fa:fa-computer Computer"]
+ User["fa:fa-user User"] -- CyberArk_SyncsToUser<br>(LDAP) --> CyberArk_User["fa:fa-user CyberArk_User"]
+ Group["fa:fa-user-group Group"] -- CyberArk_SyncsToGroup<br>(Directory) --> CyberArk_Group["fa:fa-user-group CyberArk_Group"]
+ CyberArk_Account["fa:fa-user-secret CyberArk_Account"] -- CyberArk_SyncsToADUser<br>(Domain Match) --> User
+ CyberArk_Account -- CyberArk_CanConnect<br>(Domain Match) --> Computer["fa:fa-computer Computer"]
  CyberArk_User -- CyberArk_MemberOf --> CyberArk_Group
  CyberArk_Group -- CyberArk_MemberOf --> CyberArk_Group
- CyberArk_User == CyberArk_HasAccessTo<br>(useAccounts/retrieveAccounts) ==> CyberArk_Account
- CyberArk_Group == CyberArk_HasAccessTo<br>(useAccounts/retrieveAccounts) ==> CyberArk_Account
- CyberArk_Application["fa:fa-robot CyberArk_Application"] == CyberArk_CanRetrieveViaCCP<br>(CCP/AIMWebService) ==> CyberArk_Account
+ CyberArk_User -- CyberArk_HasAccessTo<br>(useAccounts/retrieveAccounts) --> CyberArk_Account
+ CyberArk_Group -- CyberArk_HasAccessTo<br>(useAccounts/retrieveAccounts) --> CyberArk_Account
+ CyberArk_Application["fa:fa-robot CyberArk_Application"] -- CyberArk_CanRetrieveViaCCP<br>(CCP/AIMWebService) --> CyberArk_Account
  CyberArk_Application -. CyberArk_CCPAllowedFrom<br>(Allowed Machines) .-> Computer
- CyberArk_User == CyberArk_UsedAccount<br>(actual usage) ==> CyberArk_Account
- CyberArk_User -. CyberArk_CanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArk_Safe["fa:fa-vault CyberArk_Safe"]
- CyberArk_Group -. CyberArk_CanGrantAccessTo<br>(manageSafe/manageSafeMembers) .-> CyberArk_Safe
- CyberArk_User -. CyberArk_CanHijackViaReconcile<br>(addAccounts/manageSafe) .-> CyberArk_Account
- CyberArk_Group -. CyberArk_CanHijackViaReconcile<br>(addAccounts/manageSafe) .-> CyberArk_Account
+ CyberArk_User -. CyberArk_UsedAccount<br>(actual usage) .-> CyberArk_Account
+ CyberArk_User -- CyberArk_CanGrantAccessTo<br>(manageSafe/manageSafeMembers) --> CyberArk_Safe["fa:fa-vault CyberArk_Safe"]
+ CyberArk_Group -- CyberArk_CanGrantAccessTo<br>(manageSafe/manageSafeMembers) --> CyberArk_Safe
+ CyberArk_User -- CyberArk_CanHijackViaReconcile<br>(addAccounts/manageSafe) --> CyberArk_Account
+ CyberArk_Group -- CyberArk_CanHijackViaReconcile<br>(addAccounts/manageSafe) --> CyberArk_Account
  CyberArk_User -. CyberArk_CanApprove<br>(dual control) .-> CyberArk_Safe
  CyberArk_Group -. CyberArk_CanApprove<br>(dual control) .-> CyberArk_Safe
  CyberArk_Safe -- CyberArk_Contains --> CyberArk_Account
  CyberArk_User -. CyberArk_Created .-> CyberArk_Safe
- CyberArk_User -. CyberArk_ManagedBy<br>(CPM) .-> CyberArk_Safe
+ CyberArk_User -- CyberArk_ManagedBy<br>(CPM) --> CyberArk_Safe
  CyberArk_Account -. CyberArk_LinkedTo<br>(logon/reconcile/additional) .-> CyberArk_Account
- CyberArk_Account -- CyberArk_UsesPlatform --> CyberArk_Platform["fa:fa-server CyberArk_Platform"]
- CyberArk_Account -- CyberArk_ManagedByPSM --> CyberArk_PSMServer["fa:fa-desktop CyberArk_PSMServer"]
- CyberArk_Platform -- CyberArk_UsesPSMServer --> CyberArk_PSMServer
- CyberArk_Platform -- CyberArk_HasConnectionComponent --> CyberArk_ConnectionComponent["fa:fa-plug CyberArk_ConnectionComponent"]
+ CyberArk_Account -. CyberArk_UsesPlatform .-> CyberArk_Platform["fa:fa-server CyberArk_Platform"]
+ CyberArk_Account -. CyberArk_ManagedByPSM .-> CyberArk_PSMServer["fa:fa-desktop CyberArk_PSMServer"]
+ CyberArk_Platform -. CyberArk_UsesPSMServer .-> CyberArk_PSMServer
+ CyberArk_Platform -. CyberArk_HasConnectionComponent .-> CyberArk_ConnectionComponent["fa:fa-plug CyberArk_ConnectionComponent"]
  CyberArk_PSMServer -. CyberArk_PSMServerHostedOn .-> Computer
  style User fill:#17E625,stroke:#0B8A14,stroke-width:2px
  style Computer fill:#FCAEA3,stroke:DF7E71,stroke-widthg:2px
@@ -1147,10 +1152,9 @@ flowchart TD
  style CyberArk_Application fill:#F2C879,stroke:#C99A3F,stroke-width:2px
 ```
 
-**Legend:**
-- **Solid Lines** (→): Internal CyberArk relationships (membership, containment, platform, PSM server, connection components)
-- **Thick Lines** (⇒): Direct account access edges (permission-based or actual usage)
-- **Dashed Lines** (⇢): External sync relationships, privilege escalation, dual control approval, linked accounts, creator/CPM management
+**Legend** (matches how BloodHound draws these edges in Explore):
+- **Solid lines** (→): **traversable** edges, which BloodHound uses for pathfinding and Attack Path analysis. These are membership, credential access, safe escalation, CPM management, safe containment, and the AD sync and credential bridges.
+- **Dashed lines** (⇢): **non-traversable** edges. They are context only and never part of a computed path: dual-control approval, historical usage, linked-account dependencies, safe creator, platform and PSM configuration, and the CCP allowed-machine and PSM host mappings.
 
 ### BloodHound Custom Node Definitions
 The file `cyberark_model.json` defines custom node types (icons & colors) for BloodHound via the API Explorer `custom-nodes` endpoint:
@@ -1209,12 +1213,30 @@ Because this context now lives once per kind in the schema, CyberArkHound **no l
 
 To load the panels, upload `extension/schema.json` as the CyberArk extension definition (alongside applying `cyberark_model.json` icons/colors) before ingesting the exported graph.
 
+#### Traversable vs non-traversable edges (solid vs dashed)
+
+BloodHound reads each relationship kind's `is_traversable` flag from the uploaded extension schema. It uses traversable edges for pathfinding and Attack Path analysis and draws them as solid lines in Explore. It draws non-traversable edges as dashed lines and never puts them in a computed path. The flag is set per kind, not per edge, so it takes effect when you upload `extension/schema.json`. Until then BloodHound doesn't know the CyberArk kinds and draws every CyberArk edge dashed. If you're upgrading, re-upload the schema so the new flags apply.
+
+CyberArkHound marks an edge traversable only when controlling its source gives the attacker its target, which is BloodHound's definition. The decisions, each with its reason, live in `graph.EdgeTraversability` (`pkg/graph/kinds.go`). Every edge's **Overview** panel ends with a line saying whether it's traversable, and the [Edge Types Summary](#edge-types-summary) lists all of them. A few decisions are worth calling out:
+
+- **`CyberArk_LinkedTo` is non-traversable** (changed in schema v2.2.0). The edge points from a dependent account to its logon or reconcile account, but control runs the other way. When it was traversable, pathfinding reported false paths such as "access to any account leads to its Domain Admin reconcile account". The [linked-account queries](#linked-account--credential-chains-cyberark_linkedto) start from the linked account to follow the attack direction.
+- **`CyberArk_CCPAllowedFrom` and `CyberArk_PSMServerHostedOn` are non-traversable.** They point from CyberArk to an AD computer, but the attack runs from the computer into CyberArk (for example, land on an allowed host, then present the AppID). As traversable edges they would claim that an AppID controls its host.
+- **`CyberArk_CanApprove`, `CyberArk_UsedAccount` and `CyberArk_Created` are non-traversable.** Approval authority, past usage and having created a safe don't grant credential access on their own. Whatever access these principals still hold shows up as their own `CyberArk_HasAccessTo` / `CyberArk_CanGrantAccessTo` edges.
+- **`CyberArk_Contains` and `CyberArk_ManagedBy` are traversable** so that safe-level control (`CyberArk_CanGrantAccessTo`, the CPM user) carries on to the accounts inside the safe.
+
+#### Can OpenGraph nodes get Members / Inbound Object Control sections?
+
+Not the built-in ones. The **Members**, **Member Of**, and **Inbound/Outbound Object Control** sections (with counts and expandable lists) are hard-coded in the BloodHound UI for the built-in Active Directory and Azure kinds. For any OpenGraph kind, the Entity Panel shows **Object Information** followed only by the extension's `info` sections. The `expandedPanelSections` URL parameter only records which of those accordion sections are open; it doesn't add any.
+
+From BloodHound v9.7.0 (2026-09-08), `info` markdown can be a Go template rendered for the selected entity. A section can then hold Explore links that run a Cypher query scoped to the selected node, which is how SpecterOps' Okta extension builds its "Inbound Object Control" section. Templates can't query the graph, so these sections can't show counts or inline result lists. CyberArkHound's panels are static markdown for now, so they also render correctly on BloodHound v9.5 and v9.6.
+
 #### Maintaining the entity info
 
 The panel content is generated from a single Go source of truth:
 
 - Node content lives in `graph.NodeInfoMap` (`pkg/graph/node_info.go`).
 - Edge content lives in `graph.EdgeInfoMap` (`pkg/graph/edge_info.go`).
+- Edge traversability lives in `graph.EdgeTraversability` (`pkg/graph/kinds.go`) and is written to each relationship kind's `is_traversable`. `cmd/gen-schema` refuses to run if a relationship kind has no entry, so every new edge gets an explicit decision.
 - `extension/schema.json` is generated from those maps by `cmd/gen-schema`.
 
 After editing either map, regenerate the schema:
@@ -1223,7 +1245,7 @@ After editing either map, regenerate the schema:
 go generate ./...        # or: go run ./cmd/gen-schema
 ```
 
-A drift-guard test (`pkg/graph/schema_test.go`) fails the build if `extension/schema.json` is out of sync with the Go maps, and asserts every canonical kind ships a well-formed `info` block.
+A drift-guard test (`pkg/graph/schema_test.go`) fails the build if `extension/schema.json` is out of sync with the Go maps, asserts every canonical kind ships a well-formed `info` block, and pins the traversability decisions that attack-path correctness depends on.
 
 ### Logging and Verbosity Control
 
@@ -1330,7 +1352,7 @@ pkg/
         models.go      # Data structures for API responses
     graph/
         builder.go     # OpenGraph construction
-        kinds.go       # Canonical node/edge kind lists (+ go:generate)
+        kinds.go       # Canonical node/edge kind lists, edge traversability (+ go:generate)
         edge_info.go   # EdgeInfoMap — per-edge-kind Entity Panel docs
         node_info.go   # NodeInfoMap — per-node-kind Entity Panel docs
         entity_info.go # EdgeInfo/NodeInfo -> schema "info" accordion sections
@@ -1346,7 +1368,7 @@ extension/
 ### Extending
 Add new edge types or property mappings inside `pkg/graph/builder.go`. Keep transformations pure and avoid network calls there. For additional export formats create a new package (e.g. `pkg/neo4j/exporter.go`) and reuse the existing OpenGraph object.
 
-When you add a node or edge kind, register it in `pkg/graph/kinds.go`, add its Entity Panel documentation to `NodeInfoMap`/`EdgeInfoMap`, and run `go generate ./...` to refresh `extension/schema.json`. The drift-guard tests in `pkg/graph/schema_test.go` enforce that the canonical kinds, the model/schema files, and the info maps all stay in sync.
+When you add a node or edge kind, register it in `pkg/graph/kinds.go` (edge kinds also need an `EdgeTraversability` entry), add its Entity Panel documentation to `NodeInfoMap`/`EdgeInfoMap`, and run `go generate ./...` to refresh `extension/schema.json`. The drift-guard tests in `pkg/graph/schema_test.go` enforce that the canonical kinds, the model/schema files, and the info maps all stay in sync.
 
 ### Security Notes
 - Prefer supplying credentials via environment variables or a secure secret store.

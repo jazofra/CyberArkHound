@@ -61,9 +61,13 @@ type SchemaEnv struct {
 
 // BuildSchemaJSON parses the committed schema.json, overwrites the "info" block
 // on every node and relationship kind from the curated NodeInfoMap / EdgeInfoMap,
+// sets every relationship kind's is_traversable flag from EdgeTraversability,
 // and re-marshals it. All other fields are preserved verbatim. The output is
 // indent-formatted with a trailing newline and HTML escaping disabled so URLs
 // and angle-bracket placeholders (e.g. <pvwa>) render literally.
+//
+// A relationship kind with no EdgeTraversability entry is an error rather than
+// a silent default, so every new edge kind gets an explicit pathfinding decision.
 func BuildSchemaJSON(existing []byte) ([]byte, error) {
 	var sf SchemaFile
 	if err := json.Unmarshal(existing, &sf); err != nil {
@@ -74,7 +78,13 @@ func BuildSchemaJSON(existing []byte) ([]byte, error) {
 		sf.NodeKinds[i].Info = NodeInfoSections(sf.NodeKinds[i].Name)
 	}
 	for i := range sf.RelationshipKinds {
-		sf.RelationshipKinds[i].Info = EdgeInfoSections(sf.RelationshipKinds[i].Name)
+		name := sf.RelationshipKinds[i].Name
+		traversable, ok := EdgeTraversability[name]
+		if !ok {
+			return nil, fmt.Errorf("relationship kind %q has no entry in graph.EdgeTraversability", name)
+		}
+		sf.RelationshipKinds[i].IsTraversable = traversable
+		sf.RelationshipKinds[i].Info = EdgeInfoSections(name)
 	}
 
 	var buf bytes.Buffer
