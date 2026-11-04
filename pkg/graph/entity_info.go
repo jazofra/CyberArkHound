@@ -63,6 +63,28 @@ func referencesMarkdown(refs []string) string {
 	return b.String()
 }
 
+// Pathfinding notes appended to every edge Overview, so the Entity Panel says
+// why BloodHound draws the selected edge solid or dashed.
+const (
+	traversableNote    = "**Pathfinding:** traversable. BloodHound uses this edge in pathfinding and Attack Path analysis and draws it as a solid line."
+	nonTraversableNote = "**Pathfinding:** non-traversable. BloodHound draws this edge as a dashed line and leaves it out of pathfinding and Attack Path analysis. " +
+		"It is still in the graph, so you can query it with explicit Cypher."
+)
+
+// pathfindingNote returns the traversability note for an edge kind, or "" when
+// the kind has no EdgeTraversability entry.
+func pathfindingNote(kind string) string {
+	traversable, ok := EdgeTraversability[kind]
+	switch {
+	case !ok:
+		return ""
+	case traversable:
+		return traversableNote
+	default:
+		return nonTraversableNote
+	}
+}
+
 // EdgeInfoSections converts the curated EdgeInfo documentation for the given
 // relationship kind into ordered Entity Panel accordion sections. Only sections
 // with content are returned; a kind with no documentation returns nil so the
@@ -75,10 +97,14 @@ func EdgeInfoSections(kind string) map[string]InfoSection {
 
 	sections := map[string]InfoSection{}
 	if info.Description != "" {
+		overview := info.Description
+		if note := pathfindingNote(kind); note != "" {
+			overview += "\n\n" + note
+		}
 		sections[infoOverview] = InfoSection{
 			Title:    "Overview",
 			Position: 1,
-			Markdown: InfoMarkdown{Content: info.Description},
+			Markdown: InfoMarkdown{Content: overview},
 		}
 	}
 	if body := fencedCode("powershell", info.WindowsAbuse); body != "" {
@@ -117,8 +143,10 @@ func EdgeInfoSections(kind string) map[string]InfoSection {
 }
 
 // NodeInfoSections converts the curated NodeInfo documentation for the given
-// node kind into ordered Entity Panel accordion sections. Only sections with
-// content are returned; a kind with no documentation returns nil.
+// node kind into ordered Entity Panel accordion sections: Overview, then the
+// kind's link-based NodeExploreSections, then Abuse & Escalation, OPSEC, and
+// References. Positions are assigned in that order. Only sections with content
+// are returned; a kind with no documentation returns nil.
 func NodeInfoSections(kind string) map[string]InfoSection {
 	info, ok := NodeInfoMap[kind]
 	if !ok {
@@ -126,34 +154,26 @@ func NodeInfoSections(kind string) map[string]InfoSection {
 	}
 
 	sections := map[string]InfoSection{}
-	if info.Overview != "" {
-		sections[infoOverview] = InfoSection{
-			Title:    "Overview",
-			Position: 1,
-			Markdown: InfoMarkdown{Content: info.Overview},
+	position := 1
+	add := func(id, title, content string) {
+		if content == "" {
+			return
 		}
-	}
-	if info.Abuse != "" {
-		sections[infoAbuse] = InfoSection{
-			Title:    "Abuse & Escalation",
-			Position: 2,
-			Markdown: InfoMarkdown{Content: info.Abuse},
+		sections[id] = InfoSection{
+			Title:    title,
+			Position: position,
+			Markdown: InfoMarkdown{Content: content},
 		}
+		position++
 	}
-	if info.OpsecNotes != "" {
-		sections[infoOpsec] = InfoSection{
-			Title:    "OPSEC Considerations",
-			Position: 3,
-			Markdown: InfoMarkdown{Content: info.OpsecNotes},
-		}
+
+	add(infoOverview, "Overview", info.Overview)
+	for _, s := range NodeExploreSections[kind] {
+		add(s.ID, s.Title, s.Markdown())
 	}
-	if body := referencesMarkdown(info.References); body != "" {
-		sections[infoReferences] = InfoSection{
-			Title:    "References",
-			Position: 4,
-			Markdown: InfoMarkdown{Content: body},
-		}
-	}
+	add(infoAbuse, "Abuse & Escalation", info.Abuse)
+	add(infoOpsec, "OPSEC Considerations", info.OpsecNotes)
+	add(infoReferences, "References", referencesMarkdown(info.References))
 
 	if len(sections) == 0 {
 		return nil

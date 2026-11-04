@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
@@ -175,6 +176,101 @@ func TestSchemaInfoSectionsAreWellFormed(t *testing.T) {
 	}
 	for _, kind := range EdgeKinds {
 		check(kind, EdgeInfoSections(kind))
+	}
+}
+
+// TestEdgeTraversabilityCoversCanonicalKinds ensures every canonical edge kind
+// has an explicit pathfinding decision, and that no stale or misspelled kind
+// lingers in the map.
+func TestEdgeTraversabilityCoversCanonicalKinds(t *testing.T) {
+	want := toSet(EdgeKinds)
+	for _, kind := range EdgeKinds {
+		if _, ok := EdgeTraversability[kind]; !ok {
+			t.Errorf("edge kind %q has no entry in EdgeTraversability", kind)
+		}
+	}
+	for kind := range EdgeTraversability {
+		if !want[kind] {
+			t.Errorf("EdgeTraversability has %q which is not in graph.EdgeKinds (typo or removed edge?)", kind)
+		}
+	}
+}
+
+// TestSchemaTraversabilityMatchesGo reports, per kind, any is_traversable flag
+// in the committed schema.json that disagrees with EdgeTraversability. The full
+// drift guard (TestSchemaJSONInfoInSync) also catches this, but this test names
+// the offending kind.
+func TestSchemaTraversabilityMatchesGo(t *testing.T) {
+	schema := loadSchema(t)
+	raw, _ := schema["relationship_kinds"].([]interface{})
+	for _, item := range raw {
+		m, _ := item.(map[string]interface{})
+		name, _ := m["name"].(string)
+		got, ok := m["is_traversable"].(bool)
+		if !ok {
+			t.Errorf("schema.json relationship kind %q has no boolean is_traversable", name)
+			continue
+		}
+		if want := EdgeTraversability[name]; got != want {
+			t.Errorf("schema.json %q is_traversable=%v, EdgeTraversability says %v; run `go generate ./...`", name, got, want)
+		}
+	}
+}
+
+// TestPathfindingInvariants pins the decisions that attack-path correctness
+// depends on. The core credential chain must stay traversable or BloodHound
+// stops finding real paths; LinkedTo points against the direction of control
+// and must stay non-traversable or BloodHound reports false paths.
+func TestPathfindingInvariants(t *testing.T) {
+	mustTraverse := []string{
+		"CyberArk_MemberOf",
+		"CyberArk_HasAccessTo",
+		"CyberArk_CanGrantAccessTo",
+		"CyberArk_Contains",
+		"CyberArk_CanRetrieveViaCCP",
+		"CyberArk_SyncsToUser",
+		"CyberArk_SyncsToGroup",
+		"CyberArk_SyncsToADUser",
+	}
+	for _, kind := range mustTraverse {
+		if !EdgeTraversability[kind] {
+			t.Errorf("%s must be traversable: it is a link in the core credential-access chain", kind)
+		}
+	}
+	mustNotTraverse := []string{
+		"CyberArk_LinkedTo",
+		"CyberArk_UsedAccount",
+		"CyberArk_CanApprove",
+		"CyberArk_InstanceContains",
+	}
+	for _, kind := range mustNotTraverse {
+		if EdgeTraversability[kind] {
+			t.Errorf("%s must not be traversable: control of the source does not grant the target", kind)
+		}
+	}
+}
+
+// TestEdgeOverviewStatesTraversability checks that each edge's Overview section
+// tells the analyst why BloodHound draws the edge solid or dashed.
+func TestEdgeOverviewStatesTraversability(t *testing.T) {
+	for _, kind := range EdgeKinds {
+		overview := EdgeInfoSections(kind)[infoOverview].Markdown.Content
+		want := nonTraversableNote
+		if EdgeTraversability[kind] {
+			want = traversableNote
+		}
+		if !strings.HasSuffix(overview, "\n\n"+want) {
+			t.Errorf("%s overview does not end with its pathfinding note %q", kind, want)
+		}
+	}
+}
+
+// TestBuildSchemaJSONRejectsUndecidedTraversability ensures the generator refuses
+// a relationship kind with no traversability decision instead of defaulting it.
+func TestBuildSchemaJSONRejectsUndecidedTraversability(t *testing.T) {
+	in := []byte(`{"schema":{},"node_kinds":[],"relationship_kinds":[{"name":"CyberArk_NotARealEdge","description":"x","is_traversable":true}],"environments":[],"relationship_findings":[]}`)
+	if _, err := BuildSchemaJSON(in); err == nil {
+		t.Fatal("expected an error for a relationship kind missing from EdgeTraversability")
 	}
 }
 

@@ -378,7 +378,9 @@ var EdgeInfoMap = map[string]EdgeInfo{
 			"'reconcile' (ExtraPass3) means the target account is used to reset the source account's password when rotation fails; " +
 			"any other value is a platform-defined additional account (ExtraPass2, ExtraPass4, …) whose real type name comes from the platform's linkedAccounts metadata — for example a Unix 'JumpAccount' or a Cisco 'EnablePassword' used to elevate during password rotation. " +
 			"The raw slot is preserved in the extraPassID property and the platform's display name in linkTypeDisplayName. " +
-			"Compromising a logon account gives implicit access to all accounts that depend on it, since CyberArk uses the logon account to manage those accounts on the target system.",
+			"Compromising a logon account gives implicit access to all accounts that depend on it, since CyberArk uses the logon account to manage those accounts on the target system, and a reconcile account can reset the password of every account that names it. " +
+			"That attack runs from the target of this edge back to its source, against the edge direction. Holding the source account's password does not reveal the linked account, so the edge is non-traversable: BloodHound pathfinding would otherwise report false paths such as \"access to any account leads to its Domain Admin reconcile account\". " +
+			"To find a linked account's real blast radius, anchor the query on the linked account, for example `MATCH p=(dependent:CyberArk_Account)-[:CyberArk_LinkedTo]->(linked:CyberArk_Account {name: '<name>'}) RETURN p`.",
 		WindowsAbuse: "For linkType=logon — the logon account's password is used by CyberArk to connect to the target system. " +
 			"Retrieving the logon account's password gives credentials valid on the target system, " +
 			"and since the logon account authenticates to manage all dependent accounts, its credentials provide access to the same systems:\n\n" +
