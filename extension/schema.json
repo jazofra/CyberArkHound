@@ -54,14 +54,28 @@
       "info": {
         "abuse": {
           "title": "Abuse & Escalation",
-          "position": 2,
+          "position": 5,
           "markdown": {
             "content": "A user is a principal: its reachable credentials are the union of its own and its groups' outgoing edges.\n\n- Follow `CyberArk_HasAccessTo` for accounts whose passwords the user can retrieve, and `CyberArk_CanGrantAccessTo` for safes where the user can add itself (or a controlled account) with retrieve permission.\n- `CyberArk_CanApprove` marks dual-control approval authority — combined with `CyberArk_HasAccessTo` on the same safe it enables self-approval.\n- Directory-synced users (`CyberArk_SyncsToUser`) are reachable from the AD side: compromising the mapped AD principal grants the Vault user's access via LDAP logon.\n- Component users (CPM/PSM/PVWA) are among the most privileged identities in the deployment; treat them as high-value."
           }
         },
+        "inbound_control": {
+          "title": "Inbound Control",
+          "position": 3,
+          "markdown": {
+            "content": "Who can take over this Vault user. A directory-synced user logs on with its AD credentials, so control of the synced AD user is control of this user. Local (non-LDAP) users have no inbound edges, so these links return nothing for them.\n\n{{ with .Properties.objectid }}{{ $id := printf \"%v\" . | replace \"\\\\\" \"\" | replace \"\\\"\" \"\" -}}\n- [Synced AD user](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(ad:User)-[:CyberArk_SyncsToUser]->(n:CyberArk_User {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n- [AD principals with control of the synced AD user](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(x)-[:AllExtendedRights|ForceChangePassword|GenericAll|GenericWrite|Owns|OwnsLimitedRights|WriteDacl|WriteOwner|WriteOwnerLimitedRights|AddKeyCredentialLink|WriteSPN|WriteAltSecurityIdentities]->(:User)-[:CyberArk_SyncsToUser]->(n:CyberArk_User {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n- [Group-inherited control of the synced AD user](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(m)-[:MemberOf*1..]->(:Group)-[:AllExtendedRights|ForceChangePassword|GenericAll|GenericWrite|Owns|OwnsLimitedRights|WriteDacl|WriteOwner|WriteOwnerLimitedRights|AddKeyCredentialLink|WriteSPN|WriteAltSecurityIdentities]->(:User)-[:CyberArk_SyncsToUser]->(n:CyberArk_User {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n{{ else -}}\n_This node has no `objectid`, so the Explore links can't be built._\n{{ end }}"
+          }
+        },
+        "member_of": {
+          "title": "Member Of",
+          "position": 2,
+          "markdown": {
+            "content": "Vault groups this user belongs to. Most safe permissions are granted to groups, so membership is usually where a user's access comes from.\n\n{{ with .Properties.objectid }}{{ $id := printf \"%v\" . | replace \"\\\\\" \"\" | replace \"\\\"\" \"\" -}}\n- [Vault groups](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(n:CyberArk_User {objectid: \\\"%[1]s\\\"})-[:CyberArk_MemberOf]->(g:CyberArk_Group)\\nRETURN p\" $id | b64enc | urlquery }})\n- [Vault groups granted through AD group sync](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(n:CyberArk_User {objectid: \\\"%[1]s\\\"})<-[:CyberArk_SyncsToUser]-(:User)-[:MemberOf*1..]->(:Group)-[:CyberArk_SyncsToGroup]->(g:CyberArk_Group)\\nRETURN p\" $id | b64enc | urlquery }})\n{{ else -}}\n_This node has no `objectid`, so the Explore links can't be built._\n{{ end }}"
+          }
+        },
         "opsec": {
           "title": "OPSEC Considerations",
-          "position": 3,
+          "position": 6,
           "markdown": {
             "content": "Interactive and API logons under a user are recorded in the Vault audit trail; LDAP-backed logons also generate Active Directory authentication events. Repeated failed logons may trip account-lockout policy. Component-user activity that deviates from its normal automated pattern is a strong detection opportunity."
           }
@@ -73,9 +87,16 @@
             "content": "A CyberArk Vault user. May be a local EPV user, a component/service account (CPM, PSM, PVWA), or an LDAP/directory-synced user. Users hold safe permissions directly or inherit them through `CyberArk_MemberOf` group membership, and directory-synced users are bridged to Active Directory via `CyberArk_SyncsToUser`. Key properties include whether the user is enabled/suspended, a component user, and its authentication source."
           }
         },
+        "reachable_credentials": {
+          "title": "Reachable Credentials",
+          "position": 4,
+          "markdown": {
+            "content": "Accounts whose credentials this user can obtain, directly or by escalating. The paths follow only traversable CyberArk edges.\n\n{{ with .Properties.objectid }}{{ $id := printf \"%v\" . | replace \"\\\\\" \"\" | replace \"\\\"\" \"\" -}}\n- [All reachable accounts](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(n:CyberArk_User {objectid: \\\"%[1]s\\\"})-[:CyberArk_MemberOf|CyberArk_HasAccessTo|CyberArk_CanRetrieveViaCCP|CyberArk_CanGrantAccessTo|CyberArk_ManagedBy|CyberArk_Contains|CyberArk_CanHijackViaReconcile*1..]->(a:CyberArk_Account)\\nRETURN p\" $id | b64enc | urlquery }})\n- [Direct safe access](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(n:CyberArk_User {objectid: \\\"%[1]s\\\"})-[:CyberArk_HasAccessTo]->(a:CyberArk_Account)\\nRETURN p\" $id | b64enc | urlquery }})\n- [Inherited through group membership](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(n:CyberArk_User {objectid: \\\"%[1]s\\\"})-[:CyberArk_MemberOf*1..]->(:CyberArk_Group)-[:CyberArk_HasAccessTo]->(a:CyberArk_Account)\\nRETURN p\" $id | b64enc | urlquery }})\n- [Through escalation (safe management, CPM, reconcile hijack)](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(n:CyberArk_User {objectid: \\\"%[1]s\\\"})-[:CyberArk_MemberOf|CyberArk_CanGrantAccessTo|CyberArk_ManagedBy|CyberArk_Contains|CyberArk_CanHijackViaReconcile*1..]->(a:CyberArk_Account)\\nRETURN p\" $id | b64enc | urlquery }})\n- [AD users and computers these credentials unlock](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(n:CyberArk_User {objectid: \\\"%[1]s\\\"})-[:CyberArk_MemberOf|CyberArk_HasAccessTo|CyberArk_CanRetrieveViaCCP|CyberArk_CanGrantAccessTo|CyberArk_ManagedBy|CyberArk_Contains|CyberArk_CanHijackViaReconcile*1..]->(:CyberArk_Account)-[:CyberArk_SyncsToADUser|CyberArk_CanConnect]->(t)\\nRETURN p\" $id | b64enc | urlquery }})\n{{ else -}}\n_This node has no `objectid`, so the Explore links can't be built._\n{{ end }}"
+          }
+        },
         "references": {
           "title": "References",
-          "position": 4,
+          "position": 7,
           "markdown": {
             "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/managing-users.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/ldap-integration.htm>"
           }
@@ -92,14 +113,28 @@
       "info": {
         "abuse": {
           "title": "Abuse & Escalation",
-          "position": 2,
+          "position": 5,
           "markdown": {
             "content": "Groups concentrate access: a single membership can confer credential access across many safes.\n\n- Enumerate the group's outgoing `CyberArk_HasAccessTo` / `CyberArk_CanGrantAccessTo` / `CyberArk_CanApprove` edges to see the effective blast radius of membership.\n- Adding a controlled principal via `CyberArk_MemberOf` (or, for a synced group, into the mapped AD group) inherits all of that access — often a stealthier path than modifying safe membership directly.\n- Directory-synced groups are a cross-surface escalation: an AD group edit lands as CyberArk access after the sync interval, with no direct change inside the vault."
           }
         },
+        "inbound_control": {
+          "title": "Inbound Control",
+          "position": 3,
+          "markdown": {
+            "content": "Who can add members to this group. For a directory-mapped group, anyone who can change the membership of the mapped AD group, or of a group nested in it, gets this group's access after the next LDAP sync. Adding members to a Vault-local group takes Vault user-management rights, which CyberArkHound does not model.\n\n{{ with .Properties.objectid }}{{ $id := printf \"%v\" . | replace \"\\\\\" \"\" | replace \"\\\"\" \"\" -}}\n- [AD principals that can change the mapped AD group's membership](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(x)-[:AddMember|AddSelf|GenericAll|GenericWrite|Owns|OwnsLimitedRights|WriteDacl|WriteOwner|WriteOwnerLimitedRights]->(:Group)-[:MemberOf|CyberArk_SyncsToGroup*1..]->(n:CyberArk_Group {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n- [Group-inherited control of the mapped AD group](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(m)-[:MemberOf*1..]->(:Group)-[:AddMember|AddSelf|GenericAll|GenericWrite|Owns|OwnsLimitedRights|WriteDacl|WriteOwner|WriteOwnerLimitedRights]->(:Group)-[:CyberArk_SyncsToGroup]->(n:CyberArk_Group {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n{{ else -}}\n_This node has no `objectid`, so the Explore links can't be built._\n{{ end }}"
+          }
+        },
+        "members": {
+          "title": "Members",
+          "position": 2,
+          "markdown": {
+            "content": "Who belongs to this Vault group and inherits every permission granted to it. For a directory-mapped group, membership comes from the mapped AD group.\n\n{{ with .Properties.objectid }}{{ $id := printf \"%v\" . | replace \"\\\\\" \"\" | replace \"\\\"\" \"\" -}}\n- [Vault members](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(m)-[:CyberArk_MemberOf]->(n:CyberArk_Group {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n- [Mapped AD group](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(ad:Group)-[:CyberArk_SyncsToGroup]->(n:CyberArk_Group {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n- [AD members through directory sync](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(m)-[:MemberOf*1..]->(:Group)-[:CyberArk_SyncsToGroup]->(n:CyberArk_Group {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n{{ else -}}\n_This node has no `objectid`, so the Explore links can't be built._\n{{ end }}"
+          }
+        },
         "opsec": {
           "title": "OPSEC Considerations",
-          "position": 3,
+          "position": 6,
           "markdown": {
             "content": "Vault group-membership reads via the REST API are generally not audited. Effective access through a group may not appear in safe-membership reports that list the group rather than its members. AD group edits on synced groups generate Windows events (4728/4732/4756) and take effect only after CyberArk's LDAP sync cycle, creating a detectable delay window."
           }
@@ -111,9 +146,16 @@
             "content": "A CyberArk Vault group. Members — users or nested groups — inherit all safe permissions and vault authorizations granted to the group cumulatively. A group may be local to the vault or synchronized from a directory, in which case `CyberArk_SyncsToGroup` bridges it to an Active Directory group and AD membership changes propagate on the next LDAP sync."
           }
         },
+        "reachable_credentials": {
+          "title": "Reachable Credentials",
+          "position": 4,
+          "markdown": {
+            "content": "Accounts whose credentials this group can obtain, directly or by escalating. The paths follow only traversable CyberArk edges.\n\n{{ with .Properties.objectid }}{{ $id := printf \"%v\" . | replace \"\\\\\" \"\" | replace \"\\\"\" \"\" -}}\n- [All reachable accounts](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(n:CyberArk_Group {objectid: \\\"%[1]s\\\"})-[:CyberArk_MemberOf|CyberArk_HasAccessTo|CyberArk_CanRetrieveViaCCP|CyberArk_CanGrantAccessTo|CyberArk_ManagedBy|CyberArk_Contains|CyberArk_CanHijackViaReconcile*1..]->(a:CyberArk_Account)\\nRETURN p\" $id | b64enc | urlquery }})\n- [Direct safe access](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(n:CyberArk_Group {objectid: \\\"%[1]s\\\"})-[:CyberArk_HasAccessTo]->(a:CyberArk_Account)\\nRETURN p\" $id | b64enc | urlquery }})\n- [Through escalation (safe management, CPM, reconcile hijack)](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(n:CyberArk_Group {objectid: \\\"%[1]s\\\"})-[:CyberArk_MemberOf|CyberArk_CanGrantAccessTo|CyberArk_ManagedBy|CyberArk_Contains|CyberArk_CanHijackViaReconcile*1..]->(a:CyberArk_Account)\\nRETURN p\" $id | b64enc | urlquery }})\n- [AD users and computers these credentials unlock](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(n:CyberArk_Group {objectid: \\\"%[1]s\\\"})-[:CyberArk_MemberOf|CyberArk_HasAccessTo|CyberArk_CanRetrieveViaCCP|CyberArk_CanGrantAccessTo|CyberArk_ManagedBy|CyberArk_Contains|CyberArk_CanHijackViaReconcile*1..]->(:CyberArk_Account)-[:CyberArk_SyncsToADUser|CyberArk_CanConnect]->(t)\\nRETURN p\" $id | b64enc | urlquery }})\n{{ else -}}\n_This node has no `objectid`, so the Explore links can't be built._\n{{ end }}"
+          }
+        },
         "references": {
           "title": "References",
-          "position": 4,
+          "position": 7,
           "markdown": {
             "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/managing-vault-groups.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/configuring-directory-mappings.htm>"
           }
@@ -130,14 +172,28 @@
       "info": {
         "abuse": {
           "title": "Abuse & Escalation",
-          "position": 2,
+          "position": 5,
           "markdown": {
             "content": "The safe is the unit of access control — most CyberArk attack paths pass through one.\n\n- `CyberArk_Contains` links the safe to its accounts; combine with the principals' `CyberArk_HasAccessTo` edges to map who can reach which credentials.\n- `CyberArk_CanGrantAccessTo` into the safe is a privilege-escalation primitive: a member with manageSafe/manageSafeMembers can add itself with retrieveAccounts and read every account inside.\n- `CyberArk_CanApprove` on the safe governs dual-control; watch for principals that can both request and approve access to the same safe.\n- A safe without a managing CPM often holds stale, unrotated, or manually-managed credentials that may already be known or reused."
           }
         },
+        "inbound_control": {
+          "title": "Inbound Control",
+          "position": 3,
+          "markdown": {
+            "content": "Principals that control this safe. Each one can grant itself retrieve access and read every account in it.\n\n{{ with .Properties.objectid }}{{ $id := printf \"%v\" . | replace \"\\\\\" \"\" | replace \"\\\"\" \"\" -}}\n- [Vault principals, including through groups](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(x)-[:CyberArk_MemberOf|CyberArk_CanGrantAccessTo|CyberArk_ManagedBy*1..]->(n:CyberArk_Safe {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n- [Including AD principals through directory sync](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(x)-[:MemberOf|CyberArk_SyncsToUser|CyberArk_SyncsToGroup|CyberArk_MemberOf|CyberArk_CanGrantAccessTo|CyberArk_ManagedBy*1..]->(n:CyberArk_Safe {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n{{ else -}}\n_This node has no `objectid`, so the Explore links can't be built._\n{{ end }}"
+          }
+        },
+        "members": {
+          "title": "Safe Members",
+          "position": 2,
+          "markdown": {
+            "content": "Safe members, grouped by what their permissions let them do. CyberArkHound stores safe membership as permission edges, so each link shows one kind of access.\n\n{{ with .Properties.objectid }}{{ $id := printf \"%v\" . | replace \"\\\\\" \"\" | replace \"\\\"\" \"\" -}}\n- [Can use or retrieve accounts](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(m)-[:CyberArk_HasAccessTo]->(:CyberArk_Account)<-[:CyberArk_Contains]-(n:CyberArk_Safe {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n- [Can manage the safe or its members](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(m)-[:CyberArk_CanGrantAccessTo]->(n:CyberArk_Safe {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n- [Can approve access requests](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(m)-[:CyberArk_CanApprove]->(n:CyberArk_Safe {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n- [CCP applications](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(app:CyberArk_Application)-[:CyberArk_CanRetrieveViaCCP]->(:CyberArk_Account)<-[:CyberArk_Contains]-(n:CyberArk_Safe {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n- [Managing CPM and creator](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(m:CyberArk_User)-[:CyberArk_ManagedBy|CyberArk_Created]->(n:CyberArk_Safe {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n{{ else -}}\n_This node has no `objectid`, so the Explore links can't be built._\n{{ end }}"
+          }
+        },
         "opsec": {
           "title": "OPSEC Considerations",
-          "position": 3,
+          "position": 6,
           "markdown": {
             "content": "Safe membership additions and permission changes are logged in the Vault audit trail and appear immediately in PVWA safe management; SIEM integrations may alert in real time. Reusing an already-present compromised member is quieter than adding a new one. Account enumeration within a safe requires ListAccounts and is audited."
           }
@@ -149,9 +205,16 @@
             "content": "A CyberArk safe — a logical container holding privileged accounts and their credentials. Safe members hold permissions (use, retrieve, list, manage members, approve) that govern credential access and privilege escalation. The `managingCPM` property names the CPM that rotates the safe's credentials; a blank value (surfaced as the `SAFE_NO_CPM` finding) means the safe's passwords are not being automatically managed."
           }
         },
+        "reachable_credentials": {
+          "title": "Reachable Credentials",
+          "position": 4,
+          "markdown": {
+            "content": "The credentials in this safe: what any principal that controls it can obtain.\n\n{{ with .Properties.objectid }}{{ $id := printf \"%v\" . | replace \"\\\\\" \"\" | replace \"\\\"\" \"\" -}}\n- [Accounts in this safe](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(n:CyberArk_Safe {objectid: \\\"%[1]s\\\"})-[:CyberArk_Contains]->(a:CyberArk_Account)\\nRETURN p\" $id | b64enc | urlquery }})\n- [AD users and computers they unlock](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(n:CyberArk_Safe {objectid: \\\"%[1]s\\\"})-[:CyberArk_Contains]->(:CyberArk_Account)-[:CyberArk_SyncsToADUser|CyberArk_CanConnect]->(t)\\nRETURN p\" $id | b64enc | urlquery }})\n{{ else -}}\n_This node has no `objectid`, so the Explore links can't be built._\n{{ end }}"
+          }
+        },
         "references": {
           "title": "References",
-          "position": 4,
+          "position": 7,
           "markdown": {
             "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/dv-managing-safes.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/safe-members-add.htm>"
           }
@@ -168,14 +231,28 @@
       "info": {
         "abuse": {
           "title": "Abuse & Escalation",
-          "position": 2,
+          "position": 4,
           "markdown": {
             "content": "The account is the credential — retrieving it is usually the objective.\n\n```powershell\n# Requires retrieveAccounts on the containing safe:\nInvoke-RestMethod -Uri \"https://<pvwa>/PasswordVault/API/Accounts/<accountId>/Password/Retrieve\" `\n    -Method POST -Headers @{Authorization = \"Bearer $token\"} -Body '{}' -ContentType 'application/json'\n```\n\n- Follow `CyberArk_SyncsToADUser` / `CyberArk_CanConnect` to turn a retrieved credential into AD authentication or lateral movement to a specific host.\n- A retrievable account can also be reached indirectly through CCP (`CyberArk_CanRetrieveViaCCP` from an AppID) or through a reconcile hijack (`CyberArk_CanHijackViaReconcile`), each of which bypasses interactive PVWA login.\n- If the account is `managedByPSM` but monitoring or recording is disabled (the `PSM_BREAKOUT_EXPOSURE` finding), a brokered session is an easier target for escape."
           }
         },
+        "credential_reach": {
+          "title": "Credential Reach",
+          "position": 3,
+          "markdown": {
+            "content": "What this credential unlocks once someone obtains it.\n\n{{ with .Properties.objectid }}{{ $id := printf \"%v\" . | replace \"\\\\\" \"\" | replace \"\\\"\" \"\" -}}\n- [AD users and computers](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(n:CyberArk_Account {objectid: \\\"%[1]s\\\"})-[:CyberArk_SyncsToADUser|CyberArk_CanConnect]->(t)\\nRETURN p\" $id | b64enc | urlquery }})\n- [Accounts that depend on it (logon and reconcile blast radius)](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(d:CyberArk_Account)-[:CyberArk_LinkedTo]->(n:CyberArk_Account {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n{{ else -}}\n_This node has no `objectid`, so the Explore links can't be built._\n{{ end }}"
+          }
+        },
+        "inbound_control": {
+          "title": "Inbound Control",
+          "position": 2,
+          "markdown": {
+            "content": "Who can obtain this credential, following only traversable CyberArk edges. The containing safe appears in escalation paths because controlling the safe is how those principals reach the account. The last two links are context: linked accounts control this one against the edge direction, and audit history is not a current access right.\n\n{{ with .Properties.objectid }}{{ $id := printf \"%v\" . | replace \"\\\\\" \"\" | replace \"\\\"\" \"\" -}}\n- [All inbound credential paths](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(x)-[:CyberArk_MemberOf|CyberArk_HasAccessTo|CyberArk_CanRetrieveViaCCP|CyberArk_CanGrantAccessTo|CyberArk_ManagedBy|CyberArk_Contains|CyberArk_CanHijackViaReconcile*1..]->(n:CyberArk_Account {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n- [Including AD principals through directory sync](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(x)-[:MemberOf|CyberArk_SyncsToUser|CyberArk_SyncsToGroup|CyberArk_MemberOf|CyberArk_HasAccessTo|CyberArk_CanRetrieveViaCCP|CyberArk_CanGrantAccessTo|CyberArk_ManagedBy|CyberArk_Contains|CyberArk_CanHijackViaReconcile*1..]->(n:CyberArk_Account {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n- [Direct access (safe members and CCP applications)](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(x)-[:CyberArk_HasAccessTo|CyberArk_CanRetrieveViaCCP]->(n:CyberArk_Account {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n- [Inherited through group membership](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(m)-[:CyberArk_MemberOf*1..]->(:CyberArk_Group)-[:CyberArk_HasAccessTo]->(n:CyberArk_Account {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n- [Through safe control (CanGrantAccessTo, CPM)](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(x)-[:CyberArk_CanGrantAccessTo|CyberArk_ManagedBy]->(:CyberArk_Safe)-[:CyberArk_Contains]->(n:CyberArk_Account {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n- [Reconcile-hijack paths](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(x)-[:CyberArk_CanHijackViaReconcile]->(n:CyberArk_Account {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n- [Linked accounts CyberArk uses to manage it (logon, reconcile)](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(n:CyberArk_Account {objectid: \\\"%[1]s\\\"})-[:CyberArk_LinkedTo]->(l:CyberArk_Account)\\nRETURN p\" $id | b64enc | urlquery }})\n- [Users who have used it (audit history)](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(u:CyberArk_User)-[:CyberArk_UsedAccount]->(n:CyberArk_Account {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n{{ else -}}\n_This node has no `objectid`, so the Explore links can't be built._\n{{ end }}"
+          }
+        },
         "opsec": {
           "title": "OPSEC Considerations",
-          "position": 3,
+          "position": 5,
           "markdown": {
             "content": "Every password retrieval and PSM session start is logged in the Vault audit trail under the requesting user. If the account requires approval, retrieval without an approved request is denied and the request itself is visible to approvers. Subsequent use of the credential in Active Directory generates standard Windows authentication events (4624/4648/4768/4769/4776) that can be correlated with the prior vault retrieval."
           }
@@ -189,7 +266,7 @@
         },
         "references": {
           "title": "References",
-          "position": 4,
+          "position": 6,
           "markdown": {
             "content": "- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/sdk/getaccountpasswordvalue.htm>\n- <https://docs.cyberark.com/pam-self-hosted/latest/en/content/pasimp/configuring-accounts.htm>"
           }
@@ -320,14 +397,21 @@
       "info": {
         "abuse": {
           "title": "Abuse & Escalation",
-          "position": 2,
+          "position": 4,
           "markdown": {
             "content": "An unrestricted AppID is a credential-retrieval oracle reachable by anyone who can hit the CCP endpoint.\n\n```bash\n# Exact retrieval of one account:\ncurl -s \"https://<CCP>/AIMWebService/api/Accounts?AppID=<AppID>&Safe=<safe>&UserName=<user>&Address=<addr>\"\n# RegExp sweep (one match per request):\ncurl -s \"https://<CCP>/AIMWebService/api/Accounts?AppID=<AppID>&QueryFormat=regexp&Query=username=adm\"\n# The default AIMWebService AppID usually reads every safe:\ncurl -s \"https://<CCP>/AIMWebService/api/Accounts?AppID=AIMWebService&QueryFormat=regexp&Query=username=admin\"\n```\n\n- Follow `CyberArk_CanRetrieveViaCCP` to see exactly which accounts the AppID can pull; the `CCP_UNRESTRICTED_APP`, `CCP_UNRESTRICTED_RETRIEVAL`, and `CCP_DEFAULT_AIMWEBSERVICE` findings pre-rank the highest-value targets.\n- If the AppID is restricted to Allowed Machines, `CyberArk_CCPAllowedFrom` points at the hosts that satisfy the restriction — landing on one of those hosts is enough when `machineIsOnlyRestriction` is true.\n- CI/CD runners that hold an AppID are a common foothold for reaching the CCP endpoint."
           }
         },
+        "inbound_control": {
+          "title": "Inbound Control",
+          "position": 2,
+          "markdown": {
+            "content": "Where this AppID can be used from. CCP only accepts the AppID from its allowed machines, so code running on one of them can retrieve the AppID's credentials; when the edge's `machineIsOnlyRestriction` is true, nothing else is checked. An AppID whose `isUnrestricted` property is true has no allowed-machine list and can be used from anywhere that reaches CCP.\n\n{{ with .Properties.objectid }}{{ $id := printf \"%v\" . | replace \"\\\\\" \"\" | replace \"\\\"\" \"\" -}}\n- [Allowed machines](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(n:CyberArk_Application {objectid: \\\"%[1]s\\\"})-[:CyberArk_CCPAllowedFrom]->(c)\\nRETURN p\" $id | b64enc | urlquery }})\n- [Local admins of allowed machines](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(x)-[:AdminTo]->(c:Computer)<-[:CyberArk_CCPAllowedFrom]-(n:CyberArk_Application {objectid: \\\"%[1]s\\\"})\\nRETURN p\" $id | b64enc | urlquery }})\n{{ else -}}\n_This node has no `objectid`, so the Explore links can't be built._\n{{ end }}"
+          }
+        },
         "opsec": {
           "title": "OPSEC Considerations",
-          "position": 3,
+          "position": 5,
           "markdown": {
             "content": "CCP retrievals sit outside the interactive PVWA workflow and are not subject to dual-control approval, so a successful pull raises no approval request. Usage is still recorded (Provider logs plus the Vault audit trail under the application identity). Because each request returns at most one match, RegExp sweeps are noisy — responses like \"Too many password objects\" flag over-broad queries. Prefer exact Safe/Object/UserName lookups to stay quiet."
           }
@@ -339,9 +423,16 @@
             "content": "A CyberArk Application (AppID) used with the Central Credential Provider (CCP / AIMWebService) or Credential Provider (CP) to retrieve credentials from the Vault at runtime via REST. The `isUnrestricted` property flags an AppID with no authentication binding (no Allowed Machines, OS user, path, hash, or certificate) — knowledge of the AppID alone is enough to pull its credentials. `isDefaultCCPApp` flags the out-of-the-box AIMWebService application, which usually has access to every safe. Tradecraft: Marat Nigmatullin (@_mnigma_, FalconForce), \"4 GET requests = 3 Domain admins: CyberArk magic you didn't know about\", SO-CON 2026."
           }
         },
+        "reachable_credentials": {
+          "title": "Reachable Credentials",
+          "position": 3,
+          "markdown": {
+            "content": "Accounts this AppID can retrieve from CCP.\n\n{{ with .Properties.objectid }}{{ $id := printf \"%v\" . | replace \"\\\\\" \"\" | replace \"\\\"\" \"\" -}}\n- [Retrievable accounts](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(n:CyberArk_Application {objectid: \\\"%[1]s\\\"})-[:CyberArk_CanRetrieveViaCCP]->(a:CyberArk_Account)\\nRETURN p\" $id | b64enc | urlquery }})\n- [AD users and computers they unlock](/ui/explore?exploreSearchTab=cypher&searchType=cypher&cypherSearch={{ printf \"MATCH p=(n:CyberArk_Application {objectid: \\\"%[1]s\\\"})-[:CyberArk_CanRetrieveViaCCP]->(:CyberArk_Account)-[:CyberArk_SyncsToADUser|CyberArk_CanConnect]->(t)\\nRETURN p\" $id | b64enc | urlquery }})\n{{ else -}}\n_This node has no `objectid`, so the Explore links can't be built._\n{{ end }}"
+          }
+        },
         "references": {
           "title": "References",
-          "position": 4,
+          "position": 6,
           "markdown": {
             "content": "- <https://docs.cyberark.com/credential-providers/latest/en/content/ccp/calling-the-web-service-using-rest.htm>\n- <https://docs.cyberark.com/credential-providers/latest/en/content/cp%20and%20ascp/application-details.htm>\n- <https://github.com/SpecterOps/presentations/tree/main/SO-CON%202026>"
           }
