@@ -333,6 +333,10 @@ type Application struct {
 	// Authentications is populated separately from the Authentications endpoint
 	// and is not part of the Applications list response.
 	Authentications []ApplicationAuthentication `json:"-"`
+	// AuthenticationsUnknown is set when the Authentications endpoint could not
+	// be read for this application, so an empty Authentications list means
+	// "unknown" rather than "no restrictions".
+	AuthenticationsUnknown bool `json:"-"`
 }
 
 // ApplicationAuthentication represents a single authentication method / restriction

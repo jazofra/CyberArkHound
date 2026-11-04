@@ -47,7 +47,6 @@ func buildWithAccounts(accounts []models.Account, targetDomains []string) *OpenG
 		Accounts:      accounts,
 		TargetDomains: targetDomains,
 		PVWATag:       "PVWA",
-		LogLevel:      "WARNING",
 	}, logger)
 	return og
 }
@@ -204,7 +203,6 @@ func buildDualControlGraph(platforms []models.Platform, accounts []models.Accoun
 		Accounts:    accounts,
 		PVWATag:     "PVWA",
 		Platforms:   platforms,
-		LogLevel:    "WARNING",
 	}, logger)
 	return og
 }
@@ -606,7 +604,6 @@ func buildFullPlatformGraph(platforms []models.Platform, platformConnectors map[
 		TargetPlatforms:      targetPlatforms,
 		PSMServers:           psmServers,
 		ConnectionComponents: connectionComponents,
-		LogLevel:             "WARNING",
 	}, logger)
 	return og
 }
@@ -1121,7 +1118,6 @@ func TestCyberArk_Instance_RootNodeAndContainment(t *testing.T) {
 		Safes:    []models.Safe{{SafeName: "TestSafe", SafeUrlId: "TestSafe"}},
 		Accounts: []models.Account{{ID: "acc1", UserName: "svc", SafeName: "TestSafe"}},
 		PVWATag:  "PVWA",
-		LogLevel: "WARNING",
 	}, logger)
 
 	instanceID := "CAINSTANCE-PVWA"
@@ -1190,7 +1186,6 @@ func buildWithApplications(safes []models.Safe, members []models.SafeMember, acc
 		Accounts:     accounts,
 		PVWATag:      "PVWA",
 		Applications: applications,
-		LogLevel:     "WARNING",
 	}, logger)
 	return og
 }
@@ -1314,7 +1309,6 @@ func TestPlatform_AllowedSafesWildcard(t *testing.T) {
 	og, _ := BuildOpenGraph(BuildInput{
 		PVWATag:   "PVWA",
 		Platforms: platforms,
-		LogLevel:  "WARNING",
 	}, logger)
 
 	wild := og.Nodes["CAPLATFORM-WILDPLAT-PVWA"]
@@ -1388,7 +1382,6 @@ func buildReconcileGraph(safes []models.Safe, members []models.SafeMember, accou
 		Accounts:       accounts,
 		PVWATag:        "PVWA",
 		LinkedAccounts: linked,
-		LogLevel:       "WARNING",
 	}, logger)
 	return og
 }
@@ -1473,7 +1466,6 @@ func buildLinkedGraph(platforms []models.Platform, accounts []models.Account, li
 		Platforms:      platforms,
 		LinkedAccounts: linked,
 		PVWATag:        "PVWA",
-		LogLevel:       "WARNING",
 	}, logger)
 	return og
 }
@@ -1615,7 +1607,6 @@ func TestPSMBreakout_AccountProperties(t *testing.T) {
 		Accounts:  accounts,
 		PVWATag:   "PVWA",
 		Platforms: platforms,
-		LogLevel:  "WARNING",
 	}, logger)
 
 	acc := og.Nodes["CAACCOUNT-ACC1-PVWA"]

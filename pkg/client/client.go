@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,10 +16,14 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/siemens-healthineers/cyberarkhound/internal/parallel"
 	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
 	"github.com/sirupsen/logrus"
 )
@@ -36,6 +41,12 @@ const (
 	// UserExtendedDetailsTimeout is the default timeout for the optional user
 	// enrichment endpoint before falling back to the basic user list.
 	UserExtendedDetailsTimeout = 60 * time.Second
+	// MaxRateLimitRetries is the default number of HTTP 429 responses a single
+	// request tolerates before giving up.
+	MaxRateLimitRetries = 10
+	// maxRetryAfter caps how long a server-supplied Retry-After header can make
+	// a request wait, so a bogus value cannot stall the collection for hours.
+	maxRetryAfter = 5 * time.Minute
 
 	// AuthMethodCyberArk is the default self-hosted PVWA CyberArk authentication.
 	AuthMethodCyberArk = "cyberark"
@@ -117,20 +128,48 @@ type Client struct {
 	UserExtendedDetailsTimeout time.Duration
 	UserEnrichmentWorkers      int
 	SafePageLimit              int
-	Token                      string
-	HTTPClient                 *http.Client
-	Logger                     *logrus.Logger
-	RetryInitialBackoff        time.Duration
-	RetryMaxBackoff            time.Duration
-	RetryMultiplier            float64
-	RetryJitter                float64
-	MaxReauthAttempts          int
+	// Token is the current session token. Once requests are running
+	// concurrently it must only be accessed through tokenSnapshot/setToken.
+	Token               string
+	HTTPClient          *http.Client
+	Logger              *logrus.Logger
+	RetryInitialBackoff time.Duration
+	RetryMaxBackoff     time.Duration
+	RetryMultiplier     float64
+	RetryJitter         float64
+	MaxReauthAttempts   int
+	// MaxRateLimitRetries is how many HTTP 429 responses one request tolerates
+	// before failing. Zero or less means retry indefinitely.
+	MaxRateLimitRetries int
+	// IncludePredefinedSafeMembers asks PVWA to also return built-in safe
+	// members (Master, Vault Admins, Auditors, ...), which the Safe members API
+	// omits by default.
+	IncludePredefinedSafeMembers bool
 
 	// authMu serialises re-authentication so only one goroutine re-auths at a time.
 	authMu sync.Mutex
-	// tokenGen is bumped on every successful Authenticate(); workers compare
-	// their snapshot to decide whether someone else already refreshed the token.
+	// tokenMu guards Token and tokenGen: worker goroutines read them on every
+	// request while a re-authentication may be replacing them.
+	tokenMu sync.RWMutex
+	// tokenGen is bumped on every token change; workers compare their snapshot
+	// to decide whether someone else already refreshed the token.
 	tokenGen uint64
+
+	// ctx bounds every request; cancelling it aborts in-flight requests and
+	// retry waits. See SetContext.
+	ctx context.Context
+
+	// predefinedFilterRejected is set once PVWA has rejected the
+	// includePredefinedUsers filter, so later safes skip it.
+	predefinedFilterRejected atomic.Bool
+
+	issuesMu sync.Mutex
+	issues   []string
+
+	// setupErr records a configuration problem found by NewClient (such as
+	// an unreadable CA bundle). Authenticate returns it before sending any
+	// request, so the client never runs with an unintended trust setup.
+	setupErr error
 }
 
 type cancelOnCloseReadCloser struct {
@@ -162,6 +201,8 @@ func NormalizeBaseURL(raw string) string {
 
 // NewClient creates a new CyberArk API client. baseURL is normalised with
 // NormalizeBaseURL, so a bare hostname such as "pvwa.example.com" is accepted.
+// caBundle, when set, is a PEM file of CA certificates trusted in addition to
+// the system roots; if it cannot be used, Authenticate reports why.
 func NewClient(baseURL, username, password string, insecure bool, caBundle string, logger *logrus.Logger) *Client {
 	baseURL = NormalizeBaseURL(baseURL)
 	if strings.HasPrefix(baseURL, "http://") && logger != nil {
@@ -181,7 +222,7 @@ func NewClient(baseURL, username, password string, insecure bool, caBundle strin
 		logger.Warnf("Failed to create HTTP cookie jar; PVWA affinity cookies will not be persisted: %v", err)
 	}
 
-	return &Client{
+	c := &Client{
 		BaseURL:    baseURL,
 		Username:   username,
 		Password:   password,
@@ -191,25 +232,146 @@ func NewClient(baseURL, username, password string, insecure bool, caBundle strin
 			Timeout:   360 * time.Second,
 			Jar:       jar,
 		},
-		Logger:                     logger,
-		AuthTimeout:                360 * time.Second,
-		ReqTimeout:                 360 * time.Second,
-		UserExtendedDetailsTimeout: UserExtendedDetailsTimeout,
-		UserEnrichmentWorkers:      20,
-		SafePageLimit:              SafePageLimit,
-		RetryInitialBackoff:        1 * time.Second,
-		RetryMaxBackoff:            60 * time.Second,
-		RetryMultiplier:            2.0,
-		RetryJitter:                0.2,
-		MaxReauthAttempts:          5,
+		Logger:                       logger,
+		AuthTimeout:                  360 * time.Second,
+		ReqTimeout:                   360 * time.Second,
+		UserExtendedDetailsTimeout:   UserExtendedDetailsTimeout,
+		UserEnrichmentWorkers:        20,
+		SafePageLimit:                SafePageLimit,
+		RetryInitialBackoff:          1 * time.Second,
+		RetryMaxBackoff:              60 * time.Second,
+		RetryMultiplier:              2.0,
+		RetryJitter:                  0.2,
+		MaxReauthAttempts:            5,
+		MaxRateLimitRetries:          MaxRateLimitRetries,
+		IncludePredefinedSafeMembers: true,
+	}
+	if caBundle != "" {
+		pool, err := loadCABundle(caBundle)
+		if err != nil {
+			c.setupErr = err
+		} else {
+			transport.TLSClientConfig.RootCAs = pool
+		}
+	}
+	return c
+}
+
+// loadCABundle returns the system roots plus the PEM certificates in path.
+func loadCABundle(path string) (*x509.CertPool, error) {
+	pem, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read CA bundle: %w", err)
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("CA bundle %s contains no PEM certificates", path)
+	}
+	return pool, nil
+}
+
+// SetContext sets the context that bounds every request the client makes.
+// Cancelling it aborts in-flight requests and retry waits, so a collection can
+// be stopped promptly (e.g. on Ctrl+C). Call it before issuing requests.
+func (c *Client) SetContext(ctx context.Context) {
+	c.ctx = ctx
+}
+
+// context returns the client's base context, defaulting to Background.
+func (c *Client) context() context.Context {
+	if c.ctx == nil {
+		return context.Background()
+	}
+	return c.ctx
+}
+
+// tokenSnapshot returns the current token and its generation.
+func (c *Client) tokenSnapshot() (string, uint64) {
+	c.tokenMu.RLock()
+	defer c.tokenMu.RUnlock()
+	return c.Token, c.tokenGen
+}
+
+// setToken replaces the session token and bumps its generation.
+func (c *Client) setToken(token string) {
+	c.tokenMu.Lock()
+	c.Token = token
+	c.tokenGen++
+	c.tokenMu.Unlock()
+}
+
+// noteIncomplete records a reason the collection does not cover the whole
+// environment, so the caller can report it alongside the export.
+func (c *Client) noteIncomplete(format string, args ...interface{}) {
+	c.issuesMu.Lock()
+	c.issues = append(c.issues, fmt.Sprintf(format, args...))
+	c.issuesMu.Unlock()
+}
+
+// PredefinedMembersExcluded reports whether PVWA rejected the request for
+// built-in safe members, so that safes listed since then lack them.
+func (c *Client) PredefinedMembersExcluded() bool {
+	return c.predefinedFilterRejected.Load()
+}
+
+// IncompleteReasons returns, in the order they were recorded, the reasons the
+// collection could not cover everything (failed per-object lookups whose data
+// is missing from the export).
+func (c *Client) IncompleteReasons() []string {
+	c.issuesMu.Lock()
+	defer c.issuesMu.Unlock()
+	return append([]string(nil), c.issues...)
+}
+
+// sleepContext waits for d, returning early with the context's error if ctx
+// is cancelled first.
+func sleepContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
-func (c *Client) throttleVariableDuration(backoff time.Duration) {
+// throttle waits for a jittered backoff before a retry. It returns the
+// context's error if the wait was cut short by cancellation.
+func (c *Client) throttle(ctx context.Context, backoff time.Duration) error {
 	jitter := 1.0 + (rand.Float64()*2-1)*c.RetryJitter
 	sleepTime := time.Duration(math.Min(float64(backoff)*jitter, float64(c.RetryMaxBackoff)))
 	c.Logger.Debugf("Sleeping %.2fs before retry.", sleepTime.Seconds())
-	time.Sleep(sleepTime)
+	return sleepContext(ctx, sleepTime)
+}
+
+// retryAfterDelay parses a Retry-After header, which is either a number of
+// seconds or an HTTP date. The second return reports whether a usable value
+// was present.
+func retryAfterDelay(header string, now time.Time) (time.Duration, bool) {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(header); err == nil {
+		if secs < 0 {
+			return 0, false
+		}
+		return time.Duration(secs) * time.Second, true
+	}
+	if t, err := http.ParseTime(header); err == nil {
+		if d := t.Sub(now); d > 0 {
+			return d, true
+		}
+		return 0, true
+	}
+	return 0, false
 }
 
 // requestWithRetries executes HTTP request with retry logic
@@ -218,9 +380,14 @@ func (c *Client) requestWithRetries(method, urlPath string, body interface{}, ti
 }
 
 func (c *Client) requestWithRetriesAndReauth(method, urlPath string, body interface{}, timeout time.Duration, maxRetries int, maxReauthAttempts int) (*http.Response, error) {
+	return c.doWithRetries(c.context(), method, urlPath, body, timeout, maxRetries, maxReauthAttempts)
+}
+
+func (c *Client) doWithRetries(ctx context.Context, method, urlPath string, body interface{}, timeout time.Duration, maxRetries int, maxReauthAttempts int) (*http.Response, error) {
 	attempt := 0
 	backoff := c.RetryInitialBackoff
 	reauthAttempts := 0
+	rateLimited := 0
 
 	// Pre-marshal body once to avoid re-marshaling on each retry
 	var jsonData []byte
@@ -232,37 +399,48 @@ func (c *Client) requestWithRetriesAndReauth(method, urlPath string, body interf
 		}
 	}
 
+	// aborted wraps a cancellation of ctx so callers can tell it apart from
+	// an API failure with errors.Is(err, context.Canceled).
+	aborted := func() error {
+		return fmt.Errorf("request to %s aborted: %w", urlPath, ctx.Err())
+	}
+
 	for {
+		if ctx.Err() != nil {
+			return nil, aborted()
+		}
 		attempt++
 		c.Logger.Debugf("Request attempt %d: %s %s", attempt, method, urlPath)
 
-		// Snapshot the current token generation before issuing the request.
-		// If we get a 401, we pass this to reauthIfNeeded so it can tell
-		// whether another goroutine already refreshed the token.
-		preReqGen := c.tokenGen
+		// Snapshot the token and its generation together before issuing the
+		// request. On a 401 the generation is passed to reauthIfNeeded so it
+		// can tell whether another goroutine already refreshed the token.
+		token, preReqGen := c.tokenSnapshot()
 
 		var bodyReader io.Reader
 		if jsonData != nil {
 			bodyReader = bytes.NewReader(jsonData)
 		}
 
-		req, err := http.NewRequest(method, urlPath, bodyReader)
+		reqCtx := ctx
+		var cancel context.CancelFunc
+		if timeout > 0 {
+			reqCtx, cancel = context.WithTimeout(ctx, timeout)
+		}
+
+		req, err := http.NewRequestWithContext(reqCtx, method, urlPath, bodyReader)
 		if err != nil {
+			if cancel != nil {
+				cancel()
+			}
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
 
 		if jsonData != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
-		if header := c.authorizationHeaderValue(); header != "" {
+		if header := c.authorizationHeaderValue(token); header != "" {
 			req.Header.Set("Authorization", header)
-		}
-
-		var cancel context.CancelFunc
-		if timeout > 0 {
-			ctx, cancelFunc := context.WithTimeout(context.Background(), timeout)
-			cancel = cancelFunc
-			req = req.WithContext(ctx)
 		}
 
 		resp, err := c.HTTPClient.Do(req)
@@ -270,13 +448,18 @@ func (c *Client) requestWithRetriesAndReauth(method, urlPath string, body interf
 			if cancel != nil {
 				cancel()
 			}
+			if ctx.Err() != nil {
+				return nil, aborted()
+			}
 			c.Logger.Warnf("Request error attempt %d for %s: %v", attempt, urlPath, err)
 			if maxRetries > 0 && attempt >= maxRetries {
 				return nil, fmt.Errorf("max retries reached: %w", err)
 			}
 
 			// Wait but don't increase backoff duration
-			c.throttleVariableDuration(backoff)
+			if c.throttle(ctx, backoff) != nil {
+				return nil, aborted()
+			}
 			continue
 		}
 		if cancel != nil {
@@ -284,7 +467,7 @@ func (c *Client) requestWithRetriesAndReauth(method, urlPath string, body interf
 		}
 
 		// Handle HTTP status codes
-		if resp.StatusCode == 401 {
+		if resp.StatusCode == http.StatusUnauthorized {
 			bodyBytes, readErr := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			responseText := strings.TrimSpace(string(bodyBytes))
@@ -307,18 +490,41 @@ func (c *Client) requestWithRetriesAndReauth(method, urlPath string, body interf
 			attempt--
 
 			// wait but don't increase backoff duration
-			c.throttleVariableDuration(backoff)
+			if c.throttle(ctx, backoff) != nil {
+				return nil, aborted()
+			}
 			continue
 		}
 
-		if resp.StatusCode == 429 {
+		if resp.StatusCode == http.StatusTooManyRequests {
+			retryAfter, hasRetryAfter := retryAfterDelay(resp.Header.Get("Retry-After"), time.Now())
+			_, _ = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 
-			c.throttleVariableDuration(backoff)
-			backoff = time.Duration(math.Min(float64(backoff)*c.RetryMultiplier, float64(c.RetryMaxBackoff)))
-
-			// Don't count HTTP 429 Too Many Requests against main retry counter
+			// HTTP 429 doesn't count against the main retry counter, but has
+			// its own cap so a PVWA that keeps throttling cannot stall the
+			// collection forever.
+			rateLimited++
+			if c.MaxRateLimitRetries > 0 && rateLimited > c.MaxRateLimitRetries {
+				return nil, fmt.Errorf("rate limited %d times for %s, giving up: %w", rateLimited, urlPath,
+					&HTTPError{StatusCode: http.StatusTooManyRequests, Body: "too many requests"})
+			}
 			attempt--
+
+			var waitErr error
+			if hasRetryAfter && retryAfter > 0 {
+				if retryAfter > maxRetryAfter {
+					retryAfter = maxRetryAfter
+				}
+				c.Logger.Debugf("HTTP 429 for %s; honouring Retry-After of %s", urlPath, retryAfter)
+				waitErr = sleepContext(ctx, retryAfter)
+			} else {
+				waitErr = c.throttle(ctx, backoff)
+			}
+			if waitErr != nil {
+				return nil, aborted()
+			}
+			backoff = time.Duration(math.Min(float64(backoff)*c.RetryMultiplier, float64(c.RetryMaxBackoff)))
 			continue
 		}
 
@@ -340,7 +546,9 @@ func (c *Client) requestWithRetriesAndReauth(method, urlPath string, body interf
 				if maxRetries > 0 && attempt >= maxRetries {
 					return nil, fmt.Errorf("max retries reached: %w", httpErr)
 				}
-				c.throttleVariableDuration(backoff)
+				if c.throttle(ctx, backoff) != nil {
+					return nil, aborted()
+				}
 				backoff = time.Duration(math.Min(float64(backoff)*c.RetryMultiplier, float64(c.RetryMaxBackoff)))
 				continue
 			}
@@ -360,7 +568,9 @@ func (c *Client) requestWithRetriesAndReauth(method, urlPath string, body interf
 			if maxRetries > 0 && attempt >= maxRetries {
 				return nil, fmt.Errorf("non-JSON response for %s (Content-Type: %s)", urlPath, ct)
 			}
-			c.throttleVariableDuration(backoff)
+			if c.throttle(ctx, backoff) != nil {
+				return nil, aborted()
+			}
 			continue
 		}
 
@@ -419,23 +629,6 @@ func previewBody(body string) string {
 	return body
 }
 
-func userIDString(id interface{}) string {
-	switch v := id.(type) {
-	case string:
-		return strings.TrimSpace(v)
-	case float64:
-		return fmt.Sprintf("%.0f", v)
-	case int:
-		return fmt.Sprintf("%d", v)
-	case int64:
-		return fmt.Sprintf("%d", v)
-	case json.Number:
-		return v.String()
-	default:
-		return ""
-	}
-}
-
 func mergeUserDetails(base models.User, details models.User) models.User {
 	if details.ID != nil {
 		base.ID = details.ID
@@ -475,7 +668,7 @@ func mergeUserDetails(base models.User, details models.User) models.User {
 }
 
 func userHasIdentity(user models.User) bool {
-	return user.Username != "" || userIDString(user.ID) != ""
+	return user.Username != "" || models.IDString(user.ID) != ""
 }
 
 // isIdentityAuth reports whether the client uses CyberArk Identity (ISPSS)
@@ -485,23 +678,26 @@ func (c *Client) isIdentityAuth() bool {
 	return method == AuthMethodIdentity
 }
 
-// authorizationHeaderValue returns the value to set on the Authorization header.
-// Identity (OAuth2) tokens are bearer tokens and must be prefixed with "Bearer ";
-// self-hosted PVWA session tokens are sent verbatim.
-func (c *Client) authorizationHeaderValue() string {
-	if c.Token == "" {
+// authorizationHeaderValue returns the value to set on the Authorization header
+// for token. Identity (OAuth2) tokens are bearer tokens and must be prefixed
+// with "Bearer "; self-hosted PVWA session tokens are sent verbatim.
+func (c *Client) authorizationHeaderValue(token string) string {
+	if token == "" {
 		return ""
 	}
 	if c.isIdentityAuth() {
-		return "Bearer " + c.Token
+		return "Bearer " + token
 	}
-	return c.Token
+	return token
 }
 
 // Authenticate obtains a session token from CyberArk. For self-hosted PVWA it
 // uses the /API/Auth/{method}/Logon endpoint; for Privilege Cloud (SaaS) it uses
 // the CyberArk Identity (ISPSS) OAuth2 client-credentials flow.
 func (c *Client) Authenticate() error {
+	if c.setupErr != nil {
+		return c.setupErr
+	}
 	if c.isIdentityAuth() {
 		return c.authenticateIdentity()
 	}
@@ -523,8 +719,8 @@ func (c *Client) authenticateIdentity() error {
 	// 1. OAuth2 client_credentials — for OAuth confidential client service users.
 	token, ccErr := c.identityClientCredentialsToken()
 	if ccErr == nil {
-		c.Token = token
-		c.Logger.Infof("Authenticated to CyberArk Identity via OAuth2 client_credentials (token length: %d chars)", len(c.Token))
+		c.setToken(token)
+		c.Logger.Infof("Authenticated to CyberArk Identity via OAuth2 client_credentials (token length: %d chars)", len(token))
 		return nil
 	}
 	c.Logger.Debugf("OAuth2 client_credentials grant not accepted (%v); falling back to CyberArk Identity username/password authentication", ccErr)
@@ -534,8 +730,8 @@ func (c *Client) authenticateIdentity() error {
 	if err != nil {
 		return fmt.Errorf("CyberArk Identity authentication failed (OAuth2 client_credentials grant rejected: %v): %w", ccErr, err)
 	}
-	c.Token = token
-	c.Logger.Infof("Authenticated to CyberArk Identity via username/password (token length: %d chars)", len(c.Token))
+	c.setToken(token)
+	c.Logger.Infof("Authenticated to CyberArk Identity via username/password (token length: %d chars)", len(token))
 	return nil
 }
 
@@ -558,7 +754,7 @@ func (c *Client) identityClientCredentialsToken() (string, error) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	ctx, cancel := context.WithTimeout(context.Background(), c.AuthTimeout)
+	ctx, cancel := context.WithTimeout(c.context(), c.AuthTimeout)
 	defer cancel()
 	req = req.WithContext(ctx)
 
@@ -704,7 +900,7 @@ func (c *Client) doIdentityJSONPost(reqURL string, body interface{}, out interfa
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-IDAP-NATIVE-CLIENT", "true")
 
-	ctx, cancel := context.WithTimeout(context.Background(), c.AuthTimeout)
+	ctx, cancel := context.WithTimeout(c.context(), c.AuthTimeout)
 	defer cancel()
 	req = req.WithContext(ctx)
 
@@ -795,7 +991,7 @@ func (c *Client) authenticateSelfHosted() error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	ctx, cancel := context.WithTimeout(context.Background(), c.AuthTimeout)
+	ctx, cancel := context.WithTimeout(c.context(), c.AuthTimeout)
 	defer cancel()
 	req = req.WithContext(ctx)
 
@@ -825,34 +1021,37 @@ func (c *Client) authenticateSelfHosted() error {
 	c.Logger.Debugf("Auth response length: %d bytes", len(bodyBytes))
 
 	// Try to parse as JSON first
+	var token string
 	var tokenData map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &tokenData); err == nil {
 		c.Logger.Debugf("Auth response is JSON with keys: %v", getKeys(tokenData))
 		// Extract token from various possible fields
-		if token, ok := tokenData["CyberArkLogonResult"].(string); ok {
-			c.Token = strings.TrimSpace(token)
+		if t, ok := tokenData["CyberArkLogonResult"].(string); ok {
+			token = strings.TrimSpace(t)
 			c.Logger.Debug("Token extracted from CyberArkLogonResult field")
-		} else if token, ok := tokenData["token"].(string); ok {
-			c.Token = strings.TrimSpace(token)
+		} else if t, ok := tokenData["token"].(string); ok {
+			token = strings.TrimSpace(t)
 			c.Logger.Debug("Token extracted from token field")
 		} else {
 			// Use the whole JSON as token (marshaled, not raw)
 			compactJSON, _ := json.Marshal(tokenData)
-			c.Token = string(compactJSON)
+			token = string(compactJSON)
 			c.Logger.Debug("Using entire JSON response as token (compacted)")
 		}
 	} else {
 		// Response is plain text token - trim whitespace and quotes
-		c.Token = strings.Trim(strings.TrimSpace(string(bodyBytes)), "\"")
-		c.Logger.Debugf("Using plain text response as token (trimmed from %d to %d chars)", len(bodyBytes), len(c.Token))
+		token = strings.Trim(strings.TrimSpace(string(bodyBytes)), "\"")
+		c.Logger.Debugf("Using plain text response as token (trimmed from %d to %d chars)", len(bodyBytes), len(token))
 	}
 
-	if c.Token == "" {
+	if token == "" {
 		return fmt.Errorf("authentication succeeded but token is empty")
 	}
 
-	c.Logger.Infof("Authenticated successfully (token length: %d chars)", len(c.Token))
-	c.Logger.Debugf("Token preview: %s...", truncateString(c.Token, 50))
+	// The token itself is never logged, not even a prefix: debug logs are
+	// routinely shared when troubleshooting.
+	c.setToken(token)
+	c.Logger.Infof("Authenticated successfully (token length: %d chars)", len(token))
 	return nil
 }
 
@@ -865,16 +1064,13 @@ func (c *Client) reauthIfNeeded(callerGen uint64) error {
 	defer c.authMu.Unlock()
 
 	// Another goroutine already re-authenticated since our 401.
-	if c.tokenGen != callerGen {
-		c.Logger.Debugf("Skipping re-auth: token already refreshed (gen %d → %d)", callerGen, c.tokenGen)
+	if _, gen := c.tokenSnapshot(); gen != callerGen {
+		c.Logger.Debugf("Skipping re-auth: token already refreshed (gen %d → %d)", callerGen, gen)
 		return nil
 	}
 
-	if err := c.Authenticate(); err != nil {
-		return err
-	}
-	c.tokenGen++
-	return nil
+	// Authenticate bumps the token generation through setToken.
+	return c.Authenticate()
 }
 
 // getKeys returns the keys of a map for debugging
@@ -886,37 +1082,30 @@ func getKeys(m map[string]interface{}) []string {
 	return keys
 }
 
-// truncateString truncates a string to maxLen characters
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen]
-}
-
-// Logoff terminates the session with PVWA
+// Logoff terminates the session with PVWA. It deliberately does not use the
+// client's base context, so the session is still closed after a collection
+// was cancelled.
 func (c *Client) Logoff() error {
-	if c.Token == "" {
+	if token, _ := c.tokenSnapshot(); token == "" {
 		return nil
 	}
 
 	// Privilege Cloud (Identity / ISPSS) uses short-lived OAuth2 bearer tokens
 	// that expire on their own; there is no PVWA session to terminate.
 	if c.isIdentityAuth() {
-		c.Token = ""
+		c.setToken("")
 		c.Logger.Debug("Identity (OAuth2) token discarded; no PVWA logoff required")
 		return nil
 	}
 
 	logoffURL := fmt.Sprintf("%s/PasswordVault/API/Auth/Logoff", c.BaseURL)
-	resp, err := c.requestWithRetries("POST", logoffURL, nil, 30*time.Second, 1)
+	resp, err := c.doWithRetries(context.Background(), "POST", logoffURL, nil, 30*time.Second, 1, 0)
 	if err != nil {
-		c.Logger.Warnf("Logoff failed: %v", err)
 		return err
 	}
 	defer resp.Body.Close()
 
-	c.Token = ""
+	c.setToken("")
 	c.Logger.Info("Logged off successfully")
 	return nil
 }
@@ -1015,22 +1204,84 @@ func (c *Client) ListSafes(limitCount *int, search *string) ([]models.Safe, erro
 
 	if skipped > 0 {
 		c.Logger.Warnf("Collected %d safes; skipped %d safe(s) PVWA could not return", len(safes), skipped)
+		c.noteIncomplete("%d safe(s) could not be returned by PVWA and are missing, along with their members and accounts", skipped)
 	} else {
 		c.Logger.Infof("Collected %d safes", len(safes))
 	}
 	return safes, nil
 }
 
-// ListSafeMembers retrieves all members of a safe
+// ListSafeMembers retrieves all members of a safe.
+//
+// The Safe members API leaves out predefined members (Master, Vault Admins,
+// Auditors, Backup Users, ...) unless asked for them, yet those are often the
+// most privileged principals in the vault. When IncludePredefinedSafeMembers
+// is set they are requested with filter=includePredefinedUsers eq true. If
+// PVWA rejects that filter (HTTP 400) but accepts the plain request, the
+// filter is dropped for the rest of the run and the gap is recorded.
+//
+// The safe is addressed by its safeUrlId when PVWA supplied a usable one; see
+// safePathSegment.
 func (c *Client) ListSafeMembers(safeName, safeURLID string) ([]models.SafeMember, error) {
+	segment := safePathSegment(safeName, safeURLID)
+	includePredefined := c.IncludePredefinedSafeMembers && !c.predefinedFilterRejected.Load()
+	members, err := c.listSafeMembers(segment, includePredefined)
+	if err == nil || !includePredefined || httpStatus(err) != http.StatusBadRequest {
+		return members, err
+	}
+
+	plain, plainErr := c.listSafeMembers(segment, false)
+	if plainErr != nil {
+		// The safe itself is the problem, not the filter.
+		return nil, err
+	}
+	if c.predefinedFilterRejected.CompareAndSwap(false, true) {
+		c.Logger.Warnf("PVWA rejected the includePredefinedUsers safe-member filter (%v); continuing without built-in safe members", err)
+		c.noteIncomplete("built-in safe members (Master, Vault Admins, Auditors, ...) were not collected: PVWA rejected the includePredefinedUsers filter")
+	}
+	return plain, nil
+}
+
+// safePathSegment returns the path segment that addresses a safe in
+// /API/Safes/{segment}/... PVWA's safeUrlId is the safe's ready-made URL
+// identifier — CyberArk's own SDK inserts it into the path verbatim — so it is
+// used as is whenever it is a valid escaped path segment. That matters for
+// names with characters such as '&', which the server encodes differently
+// from url.PathEscape. Without a usable safeUrlId (older PVWA versions, or a
+// value that is not URL-safe) the safe name is escaped instead.
+func safePathSegment(safeName, safeURLID string) string {
+	if safeURLID != "" && isEscapedPathSegment(safeURLID) {
+		return safeURLID
+	}
+	return url.PathEscape(safeName)
+}
+
+// isEscapedPathSegment reports whether s can be placed in a URL path as a
+// single, already-escaped segment.
+func isEscapedPathSegment(s string) bool {
+	if strings.Contains(s, "/") {
+		return false
+	}
+	unescaped, err := url.PathUnescape(s)
+	if err != nil {
+		return false
+	}
+	// EscapedPath returns RawPath only when it is a valid escaping of Path.
+	u := url.URL{Path: "/" + unescaped, RawPath: "/" + s}
+	return u.EscapedPath() == "/"+s
+}
+
+func (c *Client) listSafeMembers(segment string, includePredefined bool) ([]models.SafeMember, error) {
 	members := make([]models.SafeMember, 0)
 	limit := 1000
 	offset := 0
-	safeNameEncoded := url.PathEscape(safeName)
 
 	for {
 		memberURL := fmt.Sprintf("%s/PasswordVault/API/Safes/%s/Members?limit=%d&offset=%d",
-			c.BaseURL, safeNameEncoded, limit, offset)
+			c.BaseURL, segment, limit, offset)
+		if includePredefined {
+			memberURL += "&filter=" + url.QueryEscape("includePredefinedUsers eq true")
+		}
 
 		resp, err := c.requestWithRetries("GET", memberURL, nil, c.ReqTimeout, 3)
 		if err != nil {
@@ -1059,7 +1310,7 @@ func (c *Client) ListSafeMembers(safeName, safeURLID string) ([]models.SafeMembe
 }
 
 // ListAccounts retrieves all accounts in a safe
-func (c *Client) ListAccounts(safeName, safeURLID string) ([]models.Account, error) {
+func (c *Client) ListAccounts(safeName string) ([]models.Account, error) {
 	accounts := make([]models.Account, 0)
 	limit := 1000
 	offset := 0
@@ -1145,8 +1396,7 @@ func (c *Client) GetAccountActivities(accountID string, limit int, daysBack *int
 			c.Logger.Debugf("No activities available for account %s", accountID)
 			return []models.AccountActivity{}, nil
 		}
-		c.Logger.Warnf("Failed to get activities for account %s: %v", accountID, err)
-		return []models.AccountActivity{}, nil
+		return nil, fmt.Errorf("failed to get account activities: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -1285,10 +1535,10 @@ func decodeUsersResponse(body io.Reader) ([]models.User, error) {
 
 func (c *Client) GetUserDetails(user models.User, timeout time.Duration) (*models.User, error) {
 	identifiers := make([]string, 0, 2)
-	if id := userIDString(user.ID); id != "" {
+	if id := models.IDString(user.ID); id != "" {
 		identifiers = append(identifiers, id)
 	}
-	if user.Username != "" && user.Username != userIDString(user.ID) {
+	if user.Username != "" && user.Username != models.IDString(user.ID) {
 		identifiers = append(identifiers, user.Username)
 	}
 	if len(identifiers) == 0 {
@@ -1361,34 +1611,21 @@ func (c *Client) enrichUsersWithDetails(users []models.User, timeout time.Durati
 
 	enrichedUsers := make([]models.User, len(users))
 	copy(enrichedUsers, users)
-	semaphore := make(chan struct{}, concurrency)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	failed := 0
+	var failed atomic.Int64
 
-	for idx := range enrichedUsers {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
+	parallel.ForEach(c.context(), users, concurrency, func(idx int, user models.User) {
+		details, err := c.GetUserDetails(user, timeout)
+		if err != nil || details == nil {
+			failed.Add(1)
+			c.Logger.Debugf("Failed to enrich user %s: %v", user.Username, err)
+			return
+		}
+		enrichedUsers[idx] = mergeUserDetails(user, *details)
+	})
 
-			details, err := c.GetUserDetails(enrichedUsers[idx], timeout)
-			if err != nil || details == nil {
-				mu.Lock()
-				failed++
-				mu.Unlock()
-				c.Logger.Debugf("Failed to enrich user %s: %v", enrichedUsers[idx].Username, err)
-				return
-			}
-
-			enrichedUsers[idx] = mergeUserDetails(enrichedUsers[idx], *details)
-		}(idx)
-	}
-
-	wg.Wait()
-	if failed > 0 {
-		c.Logger.Warnf("Failed to enrich %d/%d users individually; keeping basic user data for those users", failed, len(users))
+	if n := failed.Load(); n > 0 {
+		c.Logger.Warnf("Failed to enrich %d/%d users individually; keeping basic user data for those users", n, len(users))
+		c.noteIncomplete("details could not be fetched for %d of %d users; their group memberships and vault authorizations may be missing", n, len(users))
 	}
 
 	return enrichedUsers
@@ -1400,12 +1637,11 @@ func (c *Client) GetGroupDetails(groupID string) (*models.Group, error) {
 		return nil, nil
 	}
 
-	groupURL := fmt.Sprintf("%s/PasswordVault/API/UserGroups/%s?includeMembers=true", c.BaseURL, groupID)
+	groupURL := fmt.Sprintf("%s/PasswordVault/API/UserGroups/%s?includeMembers=true", c.BaseURL, url.PathEscape(groupID))
 
 	resp, err := c.requestWithRetries("GET", groupURL, nil, c.ReqTimeout, 3)
 	if err != nil {
-		c.Logger.Warnf("Failed to get details for group %s: %v", groupID, err)
-		return nil, nil
+		return nil, fmt.Errorf("failed to get details for group %s: %w", groupID, err)
 	}
 	defer resp.Body.Close()
 
@@ -1442,55 +1678,39 @@ func (c *Client) ListGroups(limitCount *int, concurrency int) ([]models.Group, e
 
 	c.Logger.Infof("Enriching %d groups in parallel...", len(groups))
 
-	// Parallel enrichment
-	// Create a buffered channel for results
 	enrichedGroups := make([]models.Group, len(groups))
 	copy(enrichedGroups, groups)
 
-	// Create a semaphore to limit concurrency
 	if concurrency <= 0 {
 		concurrency = 50
 	}
-	semaphore := make(chan struct{}, concurrency)
-	var wg sync.WaitGroup
+	var failed atomic.Int64
 
-	for i := range enrichedGroups {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			semaphore <- struct{}{}        // Acquire
-			defer func() { <-semaphore }() // Release
+	parallel.ForEach(c.context(), groups, concurrency, func(idx int, g models.Group) {
+		// ID is interface{} because PVWA returns it as a number or a string.
+		groupID := models.IDString(g.ID)
+		if groupID == "" {
+			groupID = g.GroupName
+		}
+		if groupID == "" {
+			return
+		}
 
-			g := &enrichedGroups[idx]
-			groupID := ""
+		// The detailed object is a superset of the list item, so it replaces it.
+		details, err := c.GetGroupDetails(groupID)
+		if err != nil {
+			failed.Add(1)
+			c.Logger.Warnf("%v", err)
+			return
+		}
+		if details != nil {
+			enrichedGroups[idx] = *details
+		}
+	})
 
-			// Try to get ID as string first
-			// ID in models.Group is interface{} because it can be int or string in JSON
-			if idStr, ok := g.ID.(string); ok {
-				groupID = idStr
-			} else if idFloat, ok := g.ID.(float64); ok {
-				groupID = fmt.Sprintf("%.0f", idFloat)
-			} else if idInt, ok := g.ID.(int); ok {
-				groupID = fmt.Sprintf("%d", idInt)
-			} else if g.GroupName != "" {
-				// Fall back to groupName if id is not available
-				groupID = g.GroupName
-			}
-
-			if groupID != "" {
-				details, err := c.GetGroupDetails(groupID)
-				if err == nil && details != nil {
-					// Merge details into group
-					// We just overwrite the struct with the detailed version,
-					// assuming GetGroupDetails returns a superset or complete object.
-					// Note: attributes from 'g' (the list item) should be present in 'details'
-					enrichedGroups[idx] = *details
-				}
-			}
-		}(i)
+	if n := failed.Load(); n > 0 {
+		c.noteIncomplete("details could not be fetched for %d of %d groups; their member lists are missing", n, len(groups))
 	}
-
-	wg.Wait()
 
 	c.Logger.Infof("Collected %d groups (enriched)", len(enrichedGroups))
 	return enrichedGroups, nil
@@ -1524,38 +1744,33 @@ func (c *Client) GetAllPlatformPSMConnectors(platformIDs []string, concurrency i
 
 	result := make(map[string][]string)
 	var mu sync.Mutex
-	var wg sync.WaitGroup
-	semaphore := make(chan struct{}, concurrency)
+	var failed atomic.Int64
 
-	for _, pid := range platformIDs {
-		wg.Add(1)
-		go func(platformID string) {
-			defer wg.Done()
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
+	parallel.ForEach(c.context(), platformIDs, concurrency, func(_ int, platformID string) {
+		connectors, err := c.GetPlatformPSMConnectors(platformID)
+		if err != nil {
+			failed.Add(1)
+			c.Logger.Warnf("Failed to fetch PSM connectors for platform %s: %v", platformID, err)
+			return
+		}
 
-			connectors, err := c.GetPlatformPSMConnectors(platformID)
-			if err != nil {
-				c.Logger.Warnf("Failed to fetch PSM connectors for platform %s: %v", platformID, err)
-				return
+		var enabled []string
+		for _, conn := range connectors {
+			if conn.Enabled {
+				enabled = append(enabled, conn.PSMConnectorID)
 			}
+		}
 
-			var enabled []string
-			for _, conn := range connectors {
-				if conn.Enabled {
-					enabled = append(enabled, conn.PSMConnectorID)
-				}
-			}
+		if len(enabled) > 0 {
+			mu.Lock()
+			result[platformID] = enabled
+			mu.Unlock()
+		}
+	})
 
-			if len(enabled) > 0 {
-				mu.Lock()
-				result[platformID] = enabled
-				mu.Unlock()
-			}
-		}(pid)
+	if n := failed.Load(); n > 0 {
+		c.noteIncomplete("PSM connection components could not be fetched for %d of %d platforms", n, len(platformIDs))
 	}
-
-	wg.Wait()
 	return result
 }
 
@@ -1645,7 +1860,8 @@ func (c *Client) GetApplicationAuthentications(appID string) ([]models.Applicati
 
 // ListApplicationsWithAuth fetches all applications and concurrently enriches each
 // with its authentication methods / restrictions. Failures to enrich an individual
-// application are logged and that application is kept without authentication data.
+// application are logged and that application is kept with AuthenticationsUnknown
+// set, so it is not mistaken for an application with no restrictions.
 func (c *Client) ListApplicationsWithAuth(concurrency int) ([]models.Application, error) {
 	apps, err := c.ListApplications()
 	if err != nil {
@@ -1660,29 +1876,33 @@ func (c *Client) ListApplicationsWithAuth(concurrency int) ([]models.Application
 	}
 	c.Logger.Infof("Enriching %d applications with authentication restrictions...", len(apps))
 
-	semaphore := make(chan struct{}, concurrency)
-	var wg sync.WaitGroup
+	var failed atomic.Int64
 
+	// Every application counts as unknown until its restrictions are read,
+	// so one left unchecked by an interrupted collection is not mistaken for
+	// one without restrictions. Each worker writes only apps[idx].
 	for i := range apps {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
-
-			if apps[idx].AppID == "" {
-				return
-			}
-			auths, err := c.GetApplicationAuthentications(apps[idx].AppID)
-			if err != nil {
-				c.Logger.Warnf("Failed to fetch authentications for application %s: %v", apps[idx].AppID, err)
-				return
-			}
-			apps[idx].Authentications = auths
-		}(i)
+		apps[i].AuthenticationsUnknown = true
 	}
+	parallel.ForEach(c.context(), apps, concurrency, func(idx int, app models.Application) {
+		if app.AppID == "" {
+			return
+		}
+		auths, err := c.GetApplicationAuthentications(app.AppID)
+		if err != nil {
+			if c.context().Err() == nil {
+				failed.Add(1)
+				c.Logger.Warnf("Failed to fetch authentications for application %s: %v", app.AppID, err)
+			}
+			return
+		}
+		apps[idx].Authentications = auths
+		apps[idx].AuthenticationsUnknown = false
+	})
 
-	wg.Wait()
+	if n := failed.Load(); n > 0 {
+		c.noteIncomplete("authentication restrictions could not be fetched for %d of %d applications; they are not assessed as restricted or unrestricted", n, len(apps))
+	}
 	return apps, nil
 }
 

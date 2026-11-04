@@ -3,7 +3,9 @@ package graph
 import (
 	"fmt"
 	"net"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
 	"github.com/sirupsen/logrus"
@@ -29,8 +31,9 @@ type BuildInput struct {
 	PSMServers                []models.PSMServer
 	ConnectionComponents      []models.ConnectionComponent
 	Applications              []models.Application
-	Debug                     bool
-	LogLevel                  string
+	// Now is the reference time for deciding whether a safe membership has
+	// expired. The zero value means time.Now().
+	Now time.Time
 }
 
 // BuildOpenGraph converts CyberArk API data into BloodHound OpenGraph format.
@@ -40,7 +43,6 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 	safes := in.Safes
 	safeMembers := in.SafeMembers
 	accounts := in.Accounts
-	targetDomains := in.TargetDomains
 	parseSAMAccountNameFromDN := in.ParseSAMAccountNameFromDN
 	pvwaTag := in.PVWATag
 	accountActivities := in.AccountActivities
@@ -51,8 +53,12 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 	psmServers := in.PSMServers
 	connectionComponents := in.ConnectionComponents
 	applications := in.Applications
-	debug := in.Debug
-	logLevel := in.LogLevel
+	debug := logger.IsLevelEnabled(logrus.DebugLevel)
+	now := in.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	targetDomains := NormalizeDomains(in.TargetDomains)
 
 	og := NewOpenGraph(logger)
 	if pvwaTag == "" {
@@ -61,13 +67,13 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 
 	// Determine logging intervals based on log level
 	var userInterval, groupInterval, safeInterval, accountInterval, memberInterval int
-	if logLevel == "WARNING" || logLevel == "ERROR" {
+	if !logger.IsLevelEnabled(logrus.InfoLevel) {
 		userInterval = max(len(users), 1)
 		groupInterval = max(len(groups), 1)
 		safeInterval = max(len(safes), 1)
 		accountInterval = max(len(accounts), 1)
 		memberInterval = max(len(safeMembers), 1)
-	} else if logLevel == "DEBUG" {
+	} else if debug {
 		userInterval = 10
 		groupInterval = 10
 		safeInterval = 5
@@ -86,12 +92,41 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			len(users), len(groups), len(safes), len(accounts), len(platforms))
 	}
 
+	// referenced records the kind and display name behind node IDs built for
+	// objects that may never be collected themselves — a safe member missing
+	// from the user list, a linked account in a safe the collector cannot see —
+	// so typed placeholder nodes can be created for them at the end.
+	referenced := make(map[string]nodeRef)
+	ref := func(kind, prefix, key, name string) string {
+		id := strings.ToUpper(fmt.Sprintf("%s-%s-%s", prefix, key, pvwaTag))
+		if _, seen := referenced[id]; !seen {
+			if name == "" {
+				name = key
+			}
+			referenced[id] = nodeRef{kind: kind, name: name}
+		}
+		return id
+	}
+
 	// Track users and groups for lookups
-	usersByID := make(map[string]string)
 	usersByUsername := make(map[string]string)
-	groupsByID := make(map[string]string)
 	groupsByName := make(map[string]string)
 	safesByName := make(map[string]string)
+
+	// memberships records every (member, group) pair already linked, because
+	// CyberArk_MemberOf edges come from two sources — each user's own
+	// groupsMembership and each group's member list — and the edge must be
+	// emitted once whichever source reports it.
+	memberships := make(map[[2]string]bool)
+	addMemberOf := func(memberNodeID, groupNodeID, source string) {
+		key := [2]string{memberNodeID, groupNodeID}
+		if memberships[key] {
+			return
+		}
+		memberships[key] = true
+		og.AddEdge("CyberArk_MemberOf", memberNodeID, groupNodeID,
+			"id", "id", map[string]interface{}{"source": source}, false)
+	}
 
 	// Process Users
 	logger.Infof("Processing %d users...", len(users))
@@ -122,7 +157,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		props := map[string]interface{}{
 			"id":                           caNodeID,
 			"name":                         u.Username,
-			"userId":                       fmt.Sprintf("%v", u.ID),
+			"userId":                       models.IDString(u.ID),
 			"isLDAPSynced":                 isLDAP,
 			"enabled":                      u.Enabled,
 			"suspended":                    u.Suspended,
@@ -172,17 +207,12 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		})
 
 		// Track user
-		userID := fmt.Sprintf("%v", u.ID)
-		if userID != "" {
-			usersByID[userID] = caNodeID
-		}
 		usersByUsername[u.Username] = caNodeID
 
 		// Add MemberOf edges
 		for _, gm := range u.GroupsMembership {
 			if gm.GroupName != "" {
-				og.AddEdge("CyberArk_MemberOf", caNodeID, strings.ToUpper(fmt.Sprintf("cagroup-%s-%s", gm.GroupName, pvwaTag)),
-					"id", "id", map[string]interface{}{"source": "userDetails"}, false)
+				addMemberOf(caNodeID, ref("CyberArk_Group", "cagroup", gm.GroupName, ""), "userDetails")
 			}
 		}
 
@@ -190,7 +220,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		if isLDAP && u.UserDN != "" {
 			domain := ParseDomainFromDN(u.UserDN)
 			if domain != "" {
-				adKey := u.Username
+				adKey := adAccountName(u.Username)
 				if parseSAMAccountNameFromDN {
 					if sam := ParseSAMAccountNameFromDN(u.UserDN); sam != "" {
 						adKey = sam
@@ -217,7 +247,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			logger.Infof("  Processed %d/%d groups (%.1f%%)", idx+1, len(groups), float64(idx+1)/float64(len(groups))*100)
 		}
 
-		groupID := fmt.Sprintf("%v", g.ID)
+		groupID := models.IDString(g.ID)
 		groupName := g.GroupName
 		if groupName == "" {
 			groupName = groupID
@@ -263,10 +293,28 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		})
 
 		// Track group
-		if groupID != "" {
-			groupsByID[groupID] = caGroupID
-		}
 		groupsByName[groupName] = caGroupID
+
+		// Add MemberOf edges from the group's own member list. This covers
+		// users whose details (and so groupsMembership) could not be fetched.
+		for _, m := range g.Members {
+			memberName := m.MemberName
+			if memberName == "" {
+				memberName = m.Username
+			}
+			if memberName == "" {
+				continue
+			}
+			var memberNodeID string
+			if strings.EqualFold(m.MemberType, "group") {
+				memberNodeID = ref("CyberArk_Group", "cagroup", memberName, "")
+			} else if id := usersByUsername[memberName]; id != "" {
+				memberNodeID = id
+			} else {
+				memberNodeID = ref("CyberArk_User", "causer", memberName, "")
+			}
+			addMemberOf(memberNodeID, caGroupID, "groupMembers")
+		}
 
 		// Add CyberArk_SyncsToGroup edge if directory synced
 		if isDirectorySynced && g.DN != "" {
@@ -328,7 +376,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		if s.Creator.Name != "" {
 			creatorNodeID := usersByUsername[s.Creator.Name]
 			if creatorNodeID == "" {
-				creatorNodeID = strings.ToUpper(fmt.Sprintf("causer-%s-%s", s.Creator.Name, pvwaTag))
+				creatorNodeID = ref("CyberArk_User", "causer", s.Creator.Name, "")
 			}
 			og.AddEdge("CyberArk_Created", creatorNodeID, safeNodeID,
 				"id", "id", map[string]interface{}{
@@ -340,7 +388,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		if s.ManagingCPM != "" {
 			cpmNodeID := usersByUsername[s.ManagingCPM]
 			if cpmNodeID == "" {
-				cpmNodeID = strings.ToUpper(fmt.Sprintf("causer-%s-%s", s.ManagingCPM, pvwaTag))
+				cpmNodeID = ref("CyberArk_User", "causer", s.ManagingCPM, "")
 			}
 			og.AddEdge("CyberArk_ManagedBy", cpmNodeID, safeNodeID,
 				"id", "id", nil, false)
@@ -686,67 +734,52 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			// Add CyberArk_Contains edge (Safe -> Account)
 			safeNodeID := safesByName[a.SafeName]
 			if safeNodeID == "" {
-				safeNodeID = strings.ToUpper(fmt.Sprintf("casafe-%s-%s", a.SafeName, pvwaTag))
+				safeNodeID = ref("CyberArk_Safe", "casafe", a.SafeName, "")
 			}
 			og.AddEdge("CyberArk_Contains", safeNodeID, accountNodeID,
 				"id", "id", nil, false)
 		}
 
-		// Add CyberArk_SyncsToADUser and CyberArk_CanConnect edges if applicable
+		// Add CyberArk_SyncsToADUser and CyberArk_CanConnect edges if applicable:
+		// an account whose address is a target domain is a domain account; one
+		// whose address is a host in a target domain is a local account on that
+		// computer, matched by its FQDN (the name BloodHound gives computers).
 		if a.UserName != "" && a.Address != "" {
-			adKey := StripAfterAt(a.UserName)
+			adKey := adAccountName(a.UserName)
 			if adKey == "" {
 				if debug {
-					logger.Debugf("CyberArk_SyncsToADUser: skipping account %s — empty username after stripping '@' from '%s'", a.ID, a.UserName)
+					logger.Debugf("CyberArk_SyncsToADUser: skipping account %s — no account name in '%s'", a.ID, a.UserName)
 				}
 				continue
 			}
-			addressLower := strings.TrimRight(strings.ToLower(strings.TrimSpace(a.Address)), ".")
-			matched := false
-			for _, domain := range targetDomains {
-				domainLower := strings.ToLower(strings.TrimSpace(domain))
-
-				if addressLower == domainLower {
-					adUserName := fmt.Sprintf("%s@%s", strings.ToUpper(adKey), strings.ToUpper(domain))
-					og.AddEdge("CyberArk_SyncsToADUser", accountNodeID, adUserName,
-						"id", "name", map[string]interface{}{
-							"inferred": true,
-							"source":   "CyberArk",
-							"domain":   domain,
-						}, true)
-					matched = true
-					if debug {
-						logger.Debugf("CyberArk_SyncsToADUser: account %s (user=%s, address=%s) -> %s", a.ID, a.UserName, a.Address, adUserName)
-					}
-					break
-					// Create CyberArk_CanConnect edge from CyberArk_User to AD Computer if address is a subdomain of the target domain
-				} else if strings.HasSuffix(addressLower, "."+domainLower) {
-					adHostname := StripAfterDot(a.Address)
-					adComputerName := fmt.Sprintf("%s.%s", strings.ToUpper(adHostname), strings.ToUpper(domain))
-
-					// Check if computer name matches the address (prevents the computer.sub.domain.com case)
-					if strings.ToLower(adComputerName) == addressLower {
-						og.AddEdge("CyberArk_CanConnect", accountNodeID, adComputerName,
-							"id", "name", map[string]interface{}{
-								"inferred":  true,
-								"source":    "CyberArk",
-								"domain":    domain,
-								"localUser": adKey,
-							}, true)
-						break
-					}
+			address := strings.TrimRight(strings.ToLower(strings.TrimSpace(a.Address)), ".")
+			domain, isDomain := matchTargetDomain(address, targetDomains)
+			switch {
+			case domain == "":
+				if debug {
+					logger.Debugf("CyberArk_SyncsToADUser: account %s (user=%s, address=%q) — no target domain match (domains: %q)", a.ID, a.UserName, a.Address, targetDomains)
 				}
+			case isDomain:
+				adUserName := fmt.Sprintf("%s@%s", strings.ToUpper(adKey), strings.ToUpper(domain))
+				og.AddEdge("CyberArk_SyncsToADUser", accountNodeID, adUserName,
+					"id", "name", map[string]interface{}{
+						"inferred": true,
+						"source":   "CyberArk",
+						"domain":   domain,
+					}, true)
+				if debug {
+					logger.Debugf("CyberArk_SyncsToADUser: account %s (user=%s, address=%s) -> %s", a.ID, a.UserName, a.Address, adUserName)
+				}
+			default:
+				og.AddEdge("CyberArk_CanConnect", accountNodeID, strings.ToUpper(address),
+					"id", "name", map[string]interface{}{
+						"inferred":  true,
+						"source":    "CyberArk",
+						"domain":    domain,
+						"localUser": adKey,
+					}, true)
 			}
-			if !matched && debug {
-				logger.Debugf("CyberArk_SyncsToADUser: account %s (user=%s, address=%q [%x]) — no target domain match (domains: %q [%x])", a.ID, a.UserName, a.Address, []byte(a.Address), targetDomains, func() [][]byte {
-					var bs [][]byte
-					for _, d := range targetDomains {
-						bs = append(bs, []byte(d))
-					}
-					return bs
-				}())
-			}
-		} else if debug && (a.UserName == "" || a.Address == "") {
+		} else if debug {
 			logger.Debugf("CyberArk_SyncsToADUser: skipping account %s — missing userName=%q or address=%q", a.ID, a.UserName, a.Address)
 		}
 	}
@@ -812,7 +845,9 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 
 			// "Unrestricted" = nothing binds the AppID to a caller. Knowing the
 			// AppID is sufficient to retrieve credentials via the CCP endpoint.
-			isUnrestricted := !hasMachine && !hasOSUser && !hasPath && !hasHash && !hasCertificate
+			// When the restrictions could not be read, nothing is known either
+			// way, so the application is not flagged.
+			isUnrestricted := !app.AuthenticationsUnknown && !hasMachine && !hasOSUser && !hasPath && !hasHash && !hasCertificate
 			if isUnrestricted {
 				unrestrictedCount++
 			}
@@ -841,6 +876,9 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 				"hasCertificateRestriction": hasCertificate,
 				"isUnrestricted":            isUnrestricted,
 				"isDefaultCCPApp":           isDefaultCCP,
+			}
+			if app.AuthenticationsUnknown {
+				props["authenticationsUnknown"] = true
 			}
 
 			og.MergeNode(&Node{
@@ -881,11 +919,22 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 	// Process Safe Members and create permission edges
 	logger.Infof("Processing %d safe members...", len(safeMembers))
 
+	// A membership whose expiration date has passed grants nothing, so it
+	// produces no access edges and does not count as an approver; it is still
+	// listed in the principal's safePermissions (membershipExpired=true).
+	nowUnix := float64(now.Unix())
+	isExpired := func(sm models.SafeMember) bool {
+		return sm.MembershipExpirationDate > 0 && sm.MembershipExpirationDate <= nowUnix
+	}
+
 	// Pre-compute which safes have approvers (members with L1/L2 authorization).
 	// This is used together with the platform's requireDualControlPasswordAccessApproval
 	// setting to determine whether dual control is practically enforceable for each account.
 	safesWithApprovers := make(map[string]bool)
 	for _, sm := range safeMembers {
+		if isExpired(sm) {
+			continue
+		}
 		for permKey, permVal := range sm.Permissions {
 			normKey := NormPermName(permKey)
 			isGranted := false
@@ -916,6 +965,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		perms  []string
 	}
 	safeManagers := make(map[string][]reconcileManager) // safeName -> principals with account-management rights
+	expiredMemberships := 0
 
 	for idx, sm := range safeMembers {
 		if (idx+1)%memberInterval == 0 || idx+1 == len(safeMembers) {
@@ -924,6 +974,10 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 
 		if sm.MemberName == "" || sm.SafeName == "" {
 			continue
+		}
+		expired := isExpired(sm)
+		if expired {
+			expiredMemberships++
 		}
 
 		// Application (CCP/AIMWebService AppID) safe members are routed to
@@ -975,19 +1029,23 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 					canUse = true
 				}
 			}
+			// Permissions is a map, so sort for deterministic edge properties.
+			sort.Strings(grantedPerms)
 
-			if canRetrieve || canUse {
+			if (canRetrieve || canUse) && !expired {
+				// One properties map serves every edge from this application
+				// into the safe; edge properties are never modified afterwards.
+				props := map[string]interface{}{
+					"safeName":            sm.SafeName,
+					"permissions":         grantedPerms,
+					"canRetrievePassword": canRetrieve,
+					"appIsUnrestricted":   appIsUnrestricted[appKey],
+					"allowedMachines":     appAllowedMachines[appKey],
+					"isDefaultCCPApp":     appIsDefaultCCP[appKey],
+					"inferred":            false,
+				}
 				for _, accountNodeID := range accountsBySafe[sm.SafeName] {
-					og.AddEdge("CyberArk_CanRetrieveViaCCP", appNodeID, accountNodeID,
-						"id", "id", map[string]interface{}{
-							"safeName":            sm.SafeName,
-							"permissions":         grantedPerms,
-							"canRetrievePassword": canRetrieve,
-							"appIsUnrestricted":   appIsUnrestricted[appKey],
-							"allowedMachines":     appAllowedMachines[appKey],
-							"isDefaultCCPApp":     appIsDefaultCCP[appKey],
-							"inferred":            false,
-						}, false)
+					og.AddEdge("CyberArk_CanRetrieveViaCCP", appNodeID, accountNodeID, "id", "id", props, false)
 				}
 			}
 			continue
@@ -1008,15 +1066,15 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		if memberNodeID == "" {
 			// Member not found, create placeholder
 			if isMemberGroup {
-				memberNodeID = strings.ToUpper(fmt.Sprintf("cagroup-%s-%s", sm.MemberName, pvwaTag))
+				memberNodeID = ref("CyberArk_Group", "cagroup", sm.MemberName, "")
 			} else {
-				memberNodeID = strings.ToUpper(fmt.Sprintf("causer-%s-%s", sm.MemberName, pvwaTag))
+				memberNodeID = ref("CyberArk_User", "causer", sm.MemberName, "")
 			}
 		}
 
 		safeNodeID := safesByName[sm.SafeName]
 		if safeNodeID == "" {
-			safeNodeID = strings.ToUpper(fmt.Sprintf("casafe-%s-%s", sm.SafeName, pvwaTag))
+			safeNodeID = ref("CyberArk_Safe", "casafe", sm.SafeName, "")
 		}
 
 		// Normalize permission names
@@ -1047,6 +1105,9 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			// Store parameter value
 			matchedPermParams[permKey] = permVal
 		}
+		// Permissions is a map, so sort for deterministic edge and node
+		// properties: two collections of the same vault must export identically.
+		sort.Strings(matchedPermNames)
 
 		// Determine edge type based on permissions
 		hasDirectAccess := false
@@ -1079,15 +1140,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 				canApproveL2 = true
 			}
 		}
-
-		// Record principals able to introduce/control accounts in this safe so
-		// reconcile-hijack edges can be built once linked-account data is processed.
-		if canManageAccounts {
-			safeManagers[sm.SafeName] = append(safeManagers[sm.SafeName], reconcileManager{
-				nodeID: memberNodeID,
-				perms:  mgmtPermNames,
-			})
-		}
+		sort.Strings(mgmtPermNames)
 
 		// Store safe permission details for node properties
 		safePermDetail := map[string]interface{}{
@@ -1099,11 +1152,31 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			"accessWithoutConfirmation": accessWithoutConfirmation,
 			"canApproveRequests":        canApproveL1 || canApproveL2,
 		}
+		if sm.MembershipExpirationDate > 0 {
+			safePermDetail["membershipExpirationDate"] = UnixToISO8601(sm.MembershipExpirationDate)
+		}
+		if expired {
+			safePermDetail["membershipExpired"] = true
+		}
 
 		if isMemberGroup {
 			groupSafePerms[memberNodeID] = append(groupSafePerms[memberNodeID], safePermDetail)
 		} else {
 			userSafePerms[memberNodeID] = append(userSafePerms[memberNodeID], safePermDetail)
+		}
+
+		// An expired membership grants nothing, so it creates no edges.
+		if expired {
+			continue
+		}
+
+		// Record principals able to introduce/control accounts in this safe so
+		// reconcile-hijack edges can be built once linked-account data is processed.
+		if canManageAccounts {
+			safeManagers[sm.SafeName] = append(safeManagers[sm.SafeName], reconcileManager{
+				nodeID: memberNodeID,
+				perms:  mgmtPermNames,
+			})
 		}
 
 		// Create edges based on permissions
@@ -1125,9 +1198,19 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			// When platform data is not available (--include-platforms not used), we fall
 			// back to the approver-presence heuristic: if the safe has members with L1/L2
 			// permissions, we assume dual control is likely intended.
+			//
+			// The properties depend only on the account's platform, so accounts
+			// on the same platform share one map (edge properties are never
+			// modified afterwards); on large vaults this saves most of the
+			// memory the edges take.
+			propsByPlatform := make(map[string]map[string]interface{})
 			accountsInSafe := accountsBySafe[sm.SafeName]
 			for _, accountNodeID := range accountsInSafe {
 				platID := accountPlatformID[accountNodeID]
+				if props, ok := propsByPlatform[platID]; ok {
+					og.AddEdge("CyberArk_HasAccessTo", memberNodeID, accountNodeID, "id", "id", props, false)
+					continue
+				}
 				requiresApproval := false
 				if !accessWithoutConfirmation {
 					_, platformLoaded := platformDualControl[platID]
@@ -1150,15 +1233,16 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 					recordsSessionActivity = platformSessionRecording[platID]
 				}
 
-				og.AddEdge("CyberArk_HasAccessTo", memberNodeID, accountNodeID,
-					"id", "id", map[string]interface{}{
-						"safeName":                  sm.SafeName,
-						"permissions":               matchedPermNames,
-						"inferred":                  false,
-						"requiresApproval":          requiresApproval,
-						"requiresSessionMonitoring": requiresSessionMonitoring,
-						"recordsSessionActivity":    recordsSessionActivity,
-					}, false)
+				props := map[string]interface{}{
+					"safeName":                  sm.SafeName,
+					"permissions":               matchedPermNames,
+					"inferred":                  false,
+					"requiresApproval":          requiresApproval,
+					"requiresSessionMonitoring": requiresSessionMonitoring,
+					"recordsSessionActivity":    recordsSessionActivity,
+				}
+				propsByPlatform[platID] = props
+				og.AddEdge("CyberArk_HasAccessTo", memberNodeID, accountNodeID, "id", "id", props, false)
 			}
 		}
 
@@ -1185,6 +1269,10 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		}
 	}
 
+	if expiredMemberships > 0 {
+		logger.Infof("Skipped edges for %d expired safe memberships", expiredMemberships)
+	}
+
 	// Update user and group nodes with safe permissions
 	for userNodeID, perms := range userSafePerms {
 		if node, exists := og.Nodes[userNodeID]; exists {
@@ -1199,7 +1287,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 	}
 
 	// Process Account Activities (if provided)
-	if accountActivities != nil && len(accountActivities) > 0 {
+	if len(accountActivities) > 0 {
 		logger.Infof("Processing account activities for %d accounts...", len(accountActivities))
 		activityEdgeCount := 0
 
@@ -1211,7 +1299,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		for accountID, activities := range accountActivities {
 			accountNodeID := accountsByID[accountID]
 			if accountNodeID == "" {
-				accountNodeID = strings.ToUpper(fmt.Sprintf("caaccount-%s-%s", accountID, pvwaTag))
+				accountNodeID = ref("CyberArk_Account", "caaccount", accountID, "")
 			}
 
 			if debug {
@@ -1289,7 +1377,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			for username, usageData := range userActivity {
 				userNodeID := usersByUsername[username]
 				if userNodeID == "" {
-					userNodeID = strings.ToUpper(fmt.Sprintf("causer-%s-%s", username, pvwaTag))
+					userNodeID = ref("CyberArk_User", "causer", username, "")
 				}
 
 				if debug {
@@ -1316,20 +1404,20 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 	}
 
 	// Process Linked Accounts (if provided)
-	if linkedAccounts != nil && len(linkedAccounts) > 0 {
+	if len(linkedAccounts) > 0 {
 		logger.Infof("Processing linked accounts for %d accounts...", len(linkedAccounts))
 		linkedEdgeCount := 0
 
 		for accountID, links := range linkedAccounts {
 			sourceNodeID := accountsByID[accountID]
 			if sourceNodeID == "" {
-				sourceNodeID = strings.ToUpper(fmt.Sprintf("caaccount-%s-%s", accountID, pvwaTag))
+				sourceNodeID = ref("CyberArk_Account", "caaccount", accountID, "")
 			}
 
 			for _, link := range links {
 				targetNodeID := accountsByID[link.AccountID]
 				if targetNodeID == "" && link.AccountID != "" {
-					targetNodeID = strings.ToUpper(fmt.Sprintf("caaccount-%s-%s", link.AccountID, pvwaTag))
+					targetNodeID = ref("CyberArk_Account", "caaccount", link.AccountID, link.Name)
 				}
 				if targetNodeID == "" {
 					continue
@@ -1384,7 +1472,7 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 				}
 				reconcileNodeID := accountsByID[link.AccountID]
 				if reconcileNodeID == "" && link.AccountID != "" {
-					reconcileNodeID = strings.ToUpper(fmt.Sprintf("caaccount-%s-%s", link.AccountID, pvwaTag))
+					reconcileNodeID = ref("CyberArk_Account", "caaccount", link.AccountID, link.Name)
 				}
 				if reconcileNodeID == "" {
 					continue
@@ -1547,6 +1635,44 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		}
 	}
 
+	// Create typed placeholder nodes for objects that edges reference but the
+	// collection did not return. BloodHound would otherwise create kind-less
+	// "?" nodes for them on ingest, which kind-based queries never match.
+	placeholders := 0
+	for _, edges := range [][]*Edge{og.InternalEdges, og.ExternalEdges} {
+		for _, e := range edges {
+			for _, end := range []EdgeRef{e.Start, e.End} {
+				if end.MatchBy != "id" {
+					continue
+				}
+				if _, exists := og.Nodes[end.Value]; exists {
+					continue
+				}
+				r, ok := referenced[end.Value]
+				if !ok {
+					r = nodeRefFromID(end.Value, pvwaTag)
+				}
+				kinds := []string{r.kind, "CyberArkBase"}
+				if r.kind == "CyberArkBase" {
+					kinds = kinds[1:]
+				}
+				og.MergeNode(&Node{
+					ID:    end.Value,
+					Kinds: kinds,
+					Properties: map[string]interface{}{
+						"id":          end.Value,
+						"name":        r.name,
+						"placeholder": true,
+					},
+				})
+				placeholders++
+			}
+		}
+	}
+	if placeholders > 0 {
+		logger.Infof("Created %d placeholder nodes for objects referenced but not collected (placeholder=true)", placeholders)
+	}
+
 	// Create the CyberArk_Instance environment root node and connect it to the
 	// bounded set of top-level configuration objects via CyberArk_InstanceContains.
 	//
@@ -1603,11 +1729,79 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 	return og, nil
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
+// adAccountName reduces a user name as CyberArk stores it to the bare
+// account name BloodHound uses in AD principal names: the down-level form
+// "CORP\jdoe" and the UPN form "jdoe@corp.local" both become "jdoe".
+func adAccountName(name string) string {
+	name = strings.TrimSpace(name)
+	if i := strings.LastIndexByte(name, '\\'); i >= 0 {
+		name = name[i+1:]
 	}
-	return b
+	return StripAfterAt(name)
+}
+
+// matchTargetDomain finds the target domain an (already lower-cased) address
+// belongs to. An address equal to a target domain is that domain itself
+// (isDomain); otherwise the most specific target domain the address is a host
+// in wins, so "srv.emea.corp.local" belongs to "emea.corp.local" rather than
+// "corp.local" when both are targets. It returns "" when nothing matches.
+func matchTargetDomain(address string, domains []string) (domain string, isDomain bool) {
+	for _, d := range domains {
+		if strings.ToLower(d) == address {
+			return d, true
+		}
+	}
+	for _, d := range domains {
+		if strings.HasSuffix(address, "."+strings.ToLower(d)) && len(d) > len(domain) {
+			domain = d
+		}
+	}
+	return domain, false
+}
+
+// nodeRef is the kind and display name of a referenced node.
+type nodeRef struct {
+	kind, name string
+}
+
+// nodeIDPrefixes maps node-ID prefixes to node kinds.
+var nodeIDPrefixes = []struct {
+	prefix, kind string
+}{
+	{"CAUSER-", "CyberArk_User"},
+	{"CAGROUP-", "CyberArk_Group"},
+	{"CASAFE-", "CyberArk_Safe"},
+	{"CAACCOUNT-", "CyberArk_Account"},
+	{"CAPLATFORM-", "CyberArk_Platform"},
+	{"CAPSMSERVER-", "CyberArk_PSMServer"},
+	{"CACONNCOMP-", "CyberArk_ConnectionComponent"},
+	{"CAAPP-", "CyberArk_Application"},
+}
+
+// nodeRefFromID recovers the kind and (upper-cased) name from a node ID, for
+// references the builder did not record.
+func nodeRefFromID(id, pvwaTag string) nodeRef {
+	name := strings.TrimSuffix(id, "-"+strings.ToUpper(pvwaTag))
+	for _, p := range nodeIDPrefixes {
+		if strings.HasPrefix(name, p.prefix) {
+			return nodeRef{kind: p.kind, name: strings.TrimPrefix(name, p.prefix)}
+		}
+	}
+	return nodeRef{kind: "CyberArkBase", name: name}
+}
+
+// NormalizeDomains trims whitespace and trailing dots from target domains and
+// drops empty entries, so " corp.local" or "corp.local." produce the same AD
+// names as "corp.local".
+func NormalizeDomains(domains []string) []string {
+	out := make([]string, 0, len(domains))
+	for _, d := range domains {
+		d = strings.TrimRight(strings.TrimSpace(d), ".")
+		if d != "" {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // isWildcardAllowedSafes reports whether a platform's AllowedSafes restriction is

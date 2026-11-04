@@ -5,6 +5,7 @@ package graph
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"regexp"
 	"strings"
 	"time"
@@ -19,7 +20,9 @@ type Node struct {
 	Properties map[string]interface{} `json:"properties"`
 }
 
-// Edge represents a BloodHound edge
+// Edge represents a BloodHound edge. Props must not be modified once the
+// edge is added: the builder shares one properties map among edges whose
+// properties are identical.
 type Edge struct {
 	Kind  string                 `json:"kind"`
 	Start EdgeRef                `json:"start"`
@@ -38,9 +41,16 @@ type OpenGraph struct {
 	Nodes         map[string]*Node
 	InternalEdges []*Edge
 	ExternalEdges []*Edge
-	EdgeSet       map[string]bool
 	Logger        *logrus.Logger
+
+	// edgeSet holds a 128-bit hash of every edge added, for deduplication.
+	// Hashing keeps the set at 16 bytes per edge instead of a copy of the
+	// edge's serialized properties, which matters on multi-million-edge
+	// graphs; at 128 bits an accidental collision is not a practical concern.
+	edgeSet map[edgeKey]struct{}
 }
+
+type edgeKey [16]byte
 
 // NewOpenGraph creates a new OpenGraph
 func NewOpenGraph(logger *logrus.Logger) *OpenGraph {
@@ -48,8 +58,8 @@ func NewOpenGraph(logger *logrus.Logger) *OpenGraph {
 		Nodes:         make(map[string]*Node),
 		InternalEdges: make([]*Edge, 0),
 		ExternalEdges: make([]*Edge, 0),
-		EdgeSet:       make(map[string]bool),
 		Logger:        logger,
+		edgeSet:       make(map[edgeKey]struct{}),
 	}
 }
 
@@ -82,14 +92,22 @@ func (og *OpenGraph) MergeNode(node *Node) {
 
 // AddEdge adds an edge to the graph (with deduplication)
 func (og *OpenGraph) AddEdge(kind, startID, endID, startMatchBy, endMatchBy string, props map[string]interface{}, external bool) {
-	// Create unique key for deduplication
+	// Create unique key for deduplication. json.Marshal sorts map keys, so
+	// equal property maps always serialize identically.
 	propsJSON, _ := json.Marshal(props)
-	key := fmt.Sprintf("%s|%s|%s|%s|%s|%s", kind, startID, endID, startMatchBy, endMatchBy, string(propsJSON))
+	h := fnv.New128a()
+	for _, part := range []string{kind, startID, endID, startMatchBy, endMatchBy} {
+		h.Write([]byte(part))
+		h.Write([]byte{0})
+	}
+	h.Write(propsJSON)
+	var key edgeKey
+	h.Sum(key[:0])
 
-	if og.EdgeSet[key] {
+	if _, seen := og.edgeSet[key]; seen {
 		return
 	}
-	og.EdgeSet[key] = true
+	og.edgeSet[key] = struct{}{}
 
 	edge := &Edge{
 		Kind: kind,
@@ -111,14 +129,21 @@ func (og *OpenGraph) AddEdge(kind, startID, endID, startMatchBy, endMatchBy stri
 	}
 }
 
+// DN-parsing patterns, compiled once: they run for every user and group, and
+// directory-synced vaults can hold very many of those.
+var (
+	dnDomainComponentRe = regexp.MustCompile(`(?i)(?:^|,)\s*DC=([^,]+)`)
+	dnCommonNameRe      = regexp.MustCompile(`(?i)(?:^|,)\s*CN=([^,]+)`)
+	samAccountNameRe    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+)
+
 // ParseDomainFromDN extracts domain from distinguished name
 func ParseDomainFromDN(dn string) string {
 	if dn == "" {
 		return ""
 	}
 
-	re := regexp.MustCompile(`(?i)DC=([^,]+)`)
-	matches := re.FindAllStringSubmatch(dn, -1)
+	matches := dnDomainComponentRe.FindAllStringSubmatch(dn, -1)
 	if len(matches) == 0 {
 		return ""
 	}
@@ -144,8 +169,7 @@ func ParseSAMAccountNameFromDN(dn string) string {
 	}
 
 	// Extract CN value from the RDN (best-effort; does not fully handle escaped commas).
-	re := regexp.MustCompile(`(?i)(?:^|,)\s*CN=([^,]+)`)
-	match := re.FindStringSubmatch(dn)
+	match := dnCommonNameRe.FindStringSubmatch(dn)
 	if len(match) < 2 {
 		return ""
 	}
@@ -166,8 +190,7 @@ func ParseSAMAccountNameFromDN(dn string) string {
 	}
 
 	// Keep it conservative: alphanumerics plus common account separators.
-	valid := regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
-	if !valid.MatchString(candidate) {
+	if !samAccountNameRe.MatchString(candidate) {
 		return ""
 	}
 

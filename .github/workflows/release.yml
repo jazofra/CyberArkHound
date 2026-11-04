@@ -1,0 +1,62 @@
+name: Release
+
+# Pushing a version tag (v1.2.3) builds the binaries, records build
+# provenance, and publishes them with checksums as a GitHub release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # create the GitHub release
+      id-token: write      # sign the build provenance
+      attestations: write  # store the build provenance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Release binaries are built with the latest stable Go so they carry
+      # the newest standard-library security fixes.
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            ext=""
+            if [ "$os" = windows ]; then ext=".exe"; fi
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X main.version=${VERSION}" \
+              -o "dist/cyberarkhound_${VERSION}_${os}_${arch}${ext}" ./cmd/cyberarkhound
+          done
+          (cd dist && sha256sum -- * > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - name: Record build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/cyberarkhound_*
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.ref_name }}
+        run: gh release create "$VERSION" dist/* --title "$VERSION" --generate-notes --verify-tag

@@ -51,9 +51,8 @@ func TestComputeFindings_CleanEnvironment(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.WarnLevel)
 	og, _ := BuildOpenGraph(BuildInput{
-		Safes:    []models.Safe{{SafeName: "Prod", SafeUrlId: "Prod", ManagingCPM: "PasswordManager"}},
-		PVWATag:  "PVWA",
-		LogLevel: "WARNING",
+		Safes:   []models.Safe{{SafeName: "Prod", SafeUrlId: "Prod", ManagingCPM: "PasswordManager"}},
+		PVWATag: "PVWA",
 	}, logger)
 
 	if fs := ComputeFindings(og); len(fs) != 0 {
@@ -96,7 +95,6 @@ func TestComputeFindings_ReconcileHijackAndPSMBreakout(t *testing.T) {
 		PVWATag:        "PVWA",
 		Platforms:      platforms,
 		LinkedAccounts: linked,
-		LogLevel:       "WARNING",
 	}, logger)
 
 	fs := ComputeFindings(og)
@@ -106,5 +104,35 @@ func TestComputeFindings_ReconcileHijackAndPSMBreakout(t *testing.T) {
 	// acc1 and recon1 both use the PSM-routed, unmonitored platform.
 	if f := findingByID(fs, "PSM_BREAKOUT_EXPOSURE"); f == nil || f.Count != 2 {
 		t.Errorf("expected PSM_BREAKOUT_EXPOSURE count=2, got %v", f)
+	}
+}
+
+func TestComputeFindings_ListsObjects(t *testing.T) {
+	safes := []models.Safe{{SafeName: "Prod", SafeUrlId: "Prod"}, {SafeName: "Dev", SafeUrlId: "Dev"}}
+	accounts := []models.Account{{ID: "acc1", UserName: "svc", SafeName: "Prod"}}
+	members := []models.SafeMember{{
+		MemberName: "AIMWebService", MemberType: "Application", SafeName: "Prod",
+		Permissions: map[string]interface{}{"retrieveAccounts": true},
+	}}
+	apps := []models.Application{{AppID: "AIMWebService"}}
+
+	fs := ComputeFindings(buildWithApplications(safes, members, accounts, apps))
+
+	noCPM := findingByID(fs, "SAFE_NO_CPM")
+	if noCPM == nil || noCPM.Count != 2 || len(noCPM.Objects) != 2 {
+		t.Fatalf("SAFE_NO_CPM = %+v, want 2 objects", noCPM)
+	}
+	if noCPM.Objects[0].ID != "CASAFE-DEV-PVWA" || noCPM.Objects[0].Name != "Dev" {
+		t.Errorf("objects should be sorted by ID with names, got %+v", noCPM.Objects)
+	}
+
+	retrieval := findingByID(fs, "CCP_UNRESTRICTED_RETRIEVAL")
+	if retrieval == nil || len(retrieval.Objects) != 1 {
+		t.Fatalf("CCP_UNRESTRICTED_RETRIEVAL = %+v", retrieval)
+	}
+	obj := retrieval.Objects[0]
+	if obj.ID != "CAAPP-AIMWEBSERVICE-PVWA" || obj.Name != "AIMWebService" ||
+		obj.Target != "CAACCOUNT-ACC1-PVWA" || obj.TargetName != "svc" {
+		t.Errorf("relationship object = %+v", obj)
 	}
 }
