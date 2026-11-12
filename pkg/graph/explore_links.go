@@ -75,7 +75,7 @@ const (
 	directoryPathKinds = "MemberOf|CyberArk_SyncsToUser|CyberArk_SyncsToGroup"
 
 	// Edges from a stored credential to the AD objects it authenticates as.
-	credentialBridgeKinds = "CyberArk_SyncsToADUser|CyberArk_CanConnect"
+	credentialBridgeKinds = "CyberArk_SyncsToADUser|CyberArk_CanConnect" //nolint:gosec // edge kinds, not a credential
 
 	// First-degree AD control that lets an attacker take over an AD user.
 	adUserControlKinds = "AllExtendedRights|ForceChangePassword|GenericAll|GenericWrite|Owns|OwnsLimitedRights|WriteDacl|WriteOwner|WriteOwnerLimitedRights|AddKeyCredentialLink|WriteSPN|WriteAltSecurityIdentities"

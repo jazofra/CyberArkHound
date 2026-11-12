@@ -45,7 +45,8 @@ func run() error {
 		return err
 	}
 
-	if err := os.WriteFile(path, out, 0o644); err != nil {
+	// The schema is a file of the repository, readable like the rest of it.
+	if err := os.WriteFile(path, out, 0o644); err != nil { //nolint:gosec
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 

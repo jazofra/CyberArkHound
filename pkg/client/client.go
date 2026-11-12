@@ -749,7 +749,7 @@ func (c *Client) authenticateIdentity() error {
 	// 2. Interactive username/password — StartAuthentication → AdvanceAuthentication.
 	token, err := c.identityInteractiveToken()
 	if err != nil {
-		return fmt.Errorf("CyberArk Identity authentication failed (OAuth2 client_credentials grant rejected: %v): %w", ccErr, err)
+		return fmt.Errorf("CyberArk Identity authentication failed (OAuth2 client_credentials grant rejected: %w): %w", ccErr, err)
 	}
 	c.setToken(token)
 	c.Logger.Infof("Authenticated to CyberArk Identity via username/password (token length: %d chars)", len(token))

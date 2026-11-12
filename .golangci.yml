@@ -1,0 +1,32 @@
+# Lint configuration for `golangci-lint run` (see .github/workflows/ci.yml).
+version: "2"
+
+linters:
+  # The default set: errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    - bodyclose    # HTTP response bodies are closed
+    - errorlint    # errors are compared with errors.Is / errors.As
+    - gosec        # common security mistakes
+    - misspell
+    - unconvert
+  settings:
+    gosec:
+      excludes:
+        # --insecure and the weak-random retry jitter are deliberate.
+        - G402
+        - G404
+        # Paths come from the operator's own command line.
+        - G304
+        # Unchecked errors are errcheck's job, with its standard exceptions.
+        - G104
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters: [gosec, bodyclose, errcheck]
+
+formatters:
+  enable:
+    - gofmt
