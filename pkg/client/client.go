@@ -369,6 +369,10 @@ func retryAfterDelay(header string, now time.Time) (time.Duration, bool) {
 		if secs < 0 {
 			return 0, false
 		}
+		// Cap before converting: a huge value would overflow the duration.
+		if secs > int(maxRetryAfter/time.Second) {
+			return maxRetryAfter, true
+		}
 		return time.Duration(secs) * time.Second, true
 	}
 	if t, err := http.ParseTime(header); err == nil {
