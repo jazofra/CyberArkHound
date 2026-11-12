@@ -36,99 +36,190 @@ type BuildInput struct {
 	Now time.Time
 }
 
-// BuildOpenGraph converts CyberArk API data into BloodHound OpenGraph format.
-func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
-	users := in.Users
-	groups := in.Groups
-	safes := in.Safes
-	safeMembers := in.SafeMembers
-	accounts := in.Accounts
-	parseSAMAccountNameFromDN := in.ParseSAMAccountNameFromDN
-	pvwaTag := in.PVWATag
-	accountActivities := in.AccountActivities
-	platforms := in.Platforms
-	platformConnectors := in.PlatformConnectors
-	targetPlatforms := in.TargetPlatforms
-	linkedAccounts := in.LinkedAccounts
-	psmServers := in.PSMServers
-	connectionComponents := in.ConnectionComponents
-	applications := in.Applications
-	debug := logger.IsLevelEnabled(logrus.DebugLevel)
-	now := in.Now
-	if now.IsZero() {
-		now = time.Now()
-	}
-	targetDomains := NormalizeDomains(in.TargetDomains)
+// reconcileManager is a principal able to introduce or control accounts in a
+// safe, with the account-management permissions it holds there.
+type reconcileManager struct {
+	nodeID string
+	perms  []string
+}
 
-	og := NewOpenGraph(logger)
-	if pvwaTag == "" {
-		pvwaTag = "PVWA"
-	}
-
-	// Determine logging intervals based on log level
-	var userInterval, groupInterval, safeInterval, accountInterval, memberInterval int
-	if !logger.IsLevelEnabled(logrus.InfoLevel) {
-		userInterval = max(len(users), 1)
-		groupInterval = max(len(groups), 1)
-		safeInterval = max(len(safes), 1)
-		accountInterval = max(len(accounts), 1)
-		memberInterval = max(len(safeMembers), 1)
-	} else if debug {
-		userInterval = 10
-		groupInterval = 10
-		safeInterval = 5
-		accountInterval = 25
-		memberInterval = 25
-	} else { // INFO (default)
-		userInterval = 50
-		groupInterval = 50
-		safeInterval = 20
-		accountInterval = 100
-		memberInterval = 100
-	}
-
-	if debug {
-		logger.Debugf("Building OpenGraph (users=%d groups=%d safes=%d accounts=%d platforms=%d)",
-			len(users), len(groups), len(safes), len(accounts), len(platforms))
-	}
+// builder holds the state shared by the passes that turn a collection into a
+// graph. Each pass adds one kind of object and the indexes later passes need,
+// so the passes run in a fixed order (see BuildOpenGraph).
+type builder struct {
+	in            BuildInput
+	og            *OpenGraph
+	logger        *logrus.Logger
+	debug         bool
+	pvwaTag       string
+	now           time.Time
+	targetDomains []string
 
 	// referenced records the kind and display name behind node IDs built for
 	// objects that may never be collected themselves — a safe member missing
 	// from the user list, a linked account in a safe the collector cannot see —
 	// so typed placeholder nodes can be created for them at the end.
-	referenced := make(map[string]nodeRef)
-	ref := func(kind, prefix, key, name string) string {
-		id := strings.ToUpper(fmt.Sprintf("%s-%s-%s", prefix, key, pvwaTag))
-		if _, seen := referenced[id]; !seen {
-			if name == "" {
-				name = key
-			}
-			referenced[id] = nodeRef{kind: kind, name: name}
-		}
-		return id
-	}
+	referenced map[string]nodeRef
 
-	// Track users and groups for lookups
-	usersByUsername := make(map[string]string)
-	groupsByName := make(map[string]string)
-	safesByName := make(map[string]string)
+	usersByUsername map[string]string
+	groupsByName    map[string]string
+	safesByName     map[string]string
 
 	// memberships records every (member, group) pair already linked, because
 	// CyberArk_MemberOf edges come from two sources — each user's own
 	// groupsMembership and each group's member list — and the edge must be
 	// emitted once whichever source reports it.
-	memberships := make(map[[2]string]bool)
-	addMemberOf := func(memberNodeID, groupNodeID, source string) {
-		key := [2]string{memberNodeID, groupNodeID}
-		if memberships[key] {
-			return
-		}
-		memberships[key] = true
-		og.AddEdge("CyberArk_MemberOf", memberNodeID, groupNodeID,
-			"id", "id", map[string]interface{}{"source": source}, false)
+	memberships map[[2]string]bool
+
+	platformsByID             map[string]string // platformID (as given and lower-cased) -> platformNodeID
+	platformDualControl       map[string]bool   // platformID (lowercase) -> requireDualControlPasswordAccessApproval
+	platformSessionMonitoring map[string]bool   // platformID (lowercase) -> requirePrivilegedSessionMonitoringAndIsolation
+	platformSessionRecording  map[string]bool   // platformID (lowercase) -> recordAndSaveSessionActivity
+	platformPSMServerID       map[string]string // platformID (lowercase) -> PSMServerID
+	// platformID (lowercase) -> ordered linked-account types as defined by the
+	// platform. Position is significant: index 0 corresponds to ExtraPass1,
+	// index 1 to ExtraPass2, and so on. Used to resolve the real type name of a
+	// platform-defined "additional" linked account (e.g. a Unix JumpAccount or a
+	// Cisco EnablePassword) instead of guessing from the ExtraPassID alone.
+	platformLinkedTypes map[string][]models.PlatformLinkedAccountType
+
+	accountsBySafe    map[string][]string // safeName -> []accountNodeIDs
+	accountsByID      map[string]string   // accountID -> accountNodeID
+	accountPlatformID map[string]string   // accountNodeID -> platformID (lowercase)
+	accountIDToSafe   map[string]string   // accountID -> safeName (for reconcile-hijack mapping)
+
+	applicationsByName map[string]string   // lowercase AppID -> appNodeID
+	appIsUnrestricted  map[string]bool     // lowercase AppID -> no auth restrictions at all
+	appAllowedMachines map[string][]string // lowercase AppID -> allowed machines/IPs
+	appIsDefaultCCP    map[string]bool     // lowercase AppID -> is the default AIMWebService app
+
+	// safeManagers lists, per safe, the principals who can introduce or control
+	// accounts in it. These are the candidates for reconcile-account hijack: with
+	// addAccounts/manageSafe on a safe whose platform has a reconcile account, a
+	// principal can create or redirect an account so the CPM uses the
+	// (privileged) reconcile account against a target of their choosing
+	// (Nigmatullin, SO-CON 2026).
+	safeManagers map[string][]reconcileManager
+}
+
+func newBuilder(in BuildInput, logger *logrus.Logger) *builder {
+	now := in.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	pvwaTag := in.PVWATag
+	if pvwaTag == "" {
+		pvwaTag = "PVWA"
+	}
+	return &builder{
+		in:            in,
+		og:            NewOpenGraph(logger),
+		logger:        logger,
+		debug:         logger.IsLevelEnabled(logrus.DebugLevel),
+		pvwaTag:       pvwaTag,
+		now:           now,
+		targetDomains: NormalizeDomains(in.TargetDomains),
+
+		referenced:                make(map[string]nodeRef),
+		usersByUsername:           make(map[string]string),
+		groupsByName:              make(map[string]string),
+		safesByName:               make(map[string]string),
+		memberships:               make(map[[2]string]bool),
+		platformsByID:             make(map[string]string),
+		platformDualControl:       make(map[string]bool),
+		platformSessionMonitoring: make(map[string]bool),
+		platformSessionRecording:  make(map[string]bool),
+		platformPSMServerID:       make(map[string]string),
+		platformLinkedTypes:       make(map[string][]models.PlatformLinkedAccountType),
+		accountsBySafe:            make(map[string][]string),
+		accountsByID:              make(map[string]string),
+		accountPlatformID:         make(map[string]string),
+		accountIDToSafe:           make(map[string]string),
+		applicationsByName:        make(map[string]string),
+		appIsUnrestricted:         make(map[string]bool),
+		appAllowedMachines:        make(map[string][]string),
+		appIsDefaultCCP:           make(map[string]bool),
+		safeManagers:              make(map[string][]reconcileManager),
+	}
+}
+
+// BuildOpenGraph converts CyberArk API data into BloodHound OpenGraph format.
+func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
+	b := newBuilder(in, logger)
+	if b.debug {
+		logger.Debugf("Building OpenGraph (users=%d groups=%d safes=%d accounts=%d platforms=%d)",
+			len(in.Users), len(in.Groups), len(in.Safes), len(in.Accounts), len(in.Platforms))
 	}
 
-	// Process Users
+	// The order matters: each pass uses the indexes built by earlier ones.
+	b.addUsers()
+	b.addGroups()
+	b.addSafes()
+	b.addPlatforms()
+	b.addTargetPlatforms()
+	b.addAccounts()
+	b.addApplications()
+	b.addSafeMembers()
+	b.addAccountActivities()
+	b.addLinkedAccounts()
+	b.addPSMServers()
+	b.addConnectionComponents()
+	b.addPlaceholders()
+	b.addInstance()
+
+	if b.debug {
+		logger.Debugf("Graph build complete: nodes=%d internal_edges=%d external_edges=%d",
+			len(b.og.Nodes), len(b.og.InternalEdges), len(b.og.ExternalEdges))
+	}
+	return b.og, nil
+}
+
+// progressInterval returns how many items are processed between progress
+// messages: info at the default log level, debug at debug level, and a single
+// message at the end when info logging is off.
+func (b *builder) progressInterval(total, info, debug int) int {
+	switch {
+	case !b.logger.IsLevelEnabled(logrus.InfoLevel):
+		return max(total, 1)
+	case b.debug:
+		return debug
+	default:
+		return info
+	}
+}
+
+// ref returns the node ID for an object referenced by name, and remembers its
+// kind and display name in case the object itself is never collected.
+func (b *builder) ref(kind, prefix, key, name string) string {
+	id := strings.ToUpper(fmt.Sprintf("%s-%s-%s", prefix, key, b.pvwaTag))
+	if _, seen := b.referenced[id]; !seen {
+		if name == "" {
+			name = key
+		}
+		b.referenced[id] = nodeRef{kind: kind, name: name}
+	}
+	return id
+}
+
+// addMemberOf links a member to a group once, whichever source reports it.
+func (b *builder) addMemberOf(memberNodeID, groupNodeID, source string) {
+	key := [2]string{memberNodeID, groupNodeID}
+	if b.memberships[key] {
+		return
+	}
+	b.memberships[key] = true
+	b.og.AddEdge("CyberArk_MemberOf", memberNodeID, groupNodeID,
+		"id", "id", map[string]interface{}{"source": source}, false)
+}
+
+// addUsers creates the user nodes, their group memberships and the edges
+// from the AD users they are synced from.
+func (b *builder) addUsers() {
+	og, logger, pvwaTag, users := b.og, b.logger, b.pvwaTag, b.in.Users
+	usersByUsername, ref, addMemberOf := b.usersByUsername, b.ref, b.addMemberOf
+	parseSAMAccountNameFromDN := b.in.ParseSAMAccountNameFromDN
+	userInterval := b.progressInterval(len(users), 50, 10)
+
 	logger.Infof("Processing %d users...", len(users))
 	for idx, u := range users {
 		if (idx+1)%userInterval == 0 || idx+1 == len(users) {
@@ -239,8 +330,15 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			}
 		}
 	}
+}
 
-	// Process Groups
+// addGroups creates the group nodes, the memberships their member lists
+// report and the edges from the AD groups they are synced from.
+func (b *builder) addGroups() {
+	og, logger, pvwaTag, groups := b.og, b.logger, b.pvwaTag, b.in.Groups
+	usersByUsername, groupsByName, ref, addMemberOf := b.usersByUsername, b.groupsByName, b.ref, b.addMemberOf
+	groupInterval := b.progressInterval(len(groups), 50, 10)
+
 	logger.Infof("Processing %d groups...", len(groups))
 	for idx, g := range groups {
 		if (idx+1)%groupInterval == 0 || idx+1 == len(groups) {
@@ -331,8 +429,14 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			}
 		}
 	}
+}
 
-	// Process Safes
+// addSafes creates the safe nodes with their creator and managing CPM.
+func (b *builder) addSafes() {
+	og, logger, pvwaTag, safes := b.og, b.logger, b.pvwaTag, b.in.Safes
+	usersByUsername, safesByName, ref := b.usersByUsername, b.safesByName, b.ref
+	safeInterval := b.progressInterval(len(safes), 20, 5)
+
 	logger.Infof("Processing %d safes...", len(safes))
 	for idx, s := range safes {
 		if (idx+1)%safeInterval == 0 || idx+1 == len(safes) {
@@ -394,212 +498,224 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 				"id", "id", nil, false)
 		}
 	}
+}
 
-	// Process Platforms (if provided)
-	platformsByID := make(map[string]string)           // platformID (string) -> platformNodeID
-	platformDualControl := make(map[string]bool)       // platformID (lowercase) -> requireDualControlPasswordAccessApproval
-	platformSessionMonitoring := make(map[string]bool) // platformID (lowercase) -> requirePrivilegedSessionMonitoringAndIsolation
-	platformSessionRecording := make(map[string]bool)  // platformID (lowercase) -> recordAndSaveSessionActivity
-	platformPSMServerID := make(map[string]string)     // platformID (lowercase) -> PSMServerID
-	// platformID (lowercase) -> ordered linked-account types as defined by the
-	// platform. Position is significant: index 0 corresponds to ExtraPass1,
-	// index 1 to ExtraPass2, and so on. Used to resolve the real type name of a
-	// platform-defined "additional" linked account (e.g. a Unix JumpAccount or a
-	// Cisco EnablePassword) instead of guessing from the ExtraPassID alone.
-	platformLinkedTypes := make(map[string][]models.PlatformLinkedAccountType)
-	if len(platforms) > 0 {
-		logger.Infof("Processing %d platforms...", len(platforms))
-		for _, p := range platforms {
-			pid := p.General.ID
-			if pid == "" {
-				pid = p.General.Name
-			}
-			if pid == "" {
-				continue
-			}
-			platformNodeID := strings.ToUpper(fmt.Sprintf("caplatform-%s-%s", pid, pvwaTag))
+// addPlatforms creates the platform nodes from /API/Platforms and indexes
+// the policy settings the account and safe-member passes need.
+func (b *builder) addPlatforms() {
+	og, logger, pvwaTag, platforms, platformConnectors := b.og, b.logger, b.pvwaTag, b.in.Platforms, b.in.PlatformConnectors
+	platformsByID, platformDualControl := b.platformsByID, b.platformDualControl
+	platformSessionMonitoring, platformSessionRecording := b.platformSessionMonitoring, b.platformSessionRecording
+	platformPSMServerID, platformLinkedTypes := b.platformPSMServerID, b.platformLinkedTypes
+	if len(platforms) == 0 {
+		return
+	}
 
-			// Collect required and optional property names
-			requiredProps := make([]string, 0, len(p.Properties.Required))
-			for _, rp := range p.Properties.Required {
-				requiredProps = append(requiredProps, rp.Name)
-			}
-			optionalProps := make([]string, 0, len(p.Properties.Optional))
-			for _, op := range p.Properties.Optional {
-				optionalProps = append(optionalProps, op.Name)
-			}
+	logger.Infof("Processing %d platforms...", len(platforms))
+	for _, p := range platforms {
+		pid := p.General.ID
+		if pid == "" {
+			pid = p.General.Name
+		}
+		if pid == "" {
+			continue
+		}
+		platformNodeID := strings.ToUpper(fmt.Sprintf("caplatform-%s-%s", pid, pvwaTag))
 
-			// Collect linked account type names
-			linkedAccountTypes := make([]string, 0, len(p.LinkedAccounts))
-			for _, la := range p.LinkedAccounts {
-				linkedAccountTypes = append(linkedAccountTypes, la.Name)
-			}
+		// Collect required and optional property names
+		requiredProps := make([]string, 0, len(p.Properties.Required))
+		for _, rp := range p.Properties.Required {
+			requiredProps = append(requiredProps, rp.Name)
+		}
+		optionalProps := make([]string, 0, len(p.Properties.Optional))
+		for _, op := range p.Properties.Optional {
+			optionalProps = append(optionalProps, op.Name)
+		}
 
+		// Collect linked account type names
+		linkedAccountTypes := make([]string, 0, len(p.LinkedAccounts))
+		for _, la := range p.LinkedAccounts {
+			linkedAccountTypes = append(linkedAccountTypes, la.Name)
+		}
+
+		props := map[string]interface{}{
+			"id":             platformNodeID,
+			"name":           p.General.Name,
+			"platformId":     pid,
+			"systemType":     p.General.SystemType,
+			"active":         p.General.Active,
+			"description":    p.General.Description,
+			"platformBaseID": p.General.PlatformBaseID,
+			"platformType":   p.General.PlatformType,
+
+			// Properties
+			"requiredProperties": requiredProps,
+			"optionalProperties": optionalProps,
+
+			// Linked account types defined for this platform
+			"linkedAccountTypes": linkedAccountTypes,
+
+			// Credentials management
+			"allowedSafes":                          p.CredentialsManagement.AllowedSafes,
+			"allowedSafesIsWildcard":                isWildcardAllowedSafes(p.CredentialsManagement.AllowedSafes),
+			"allowManualChange":                     p.CredentialsManagement.AllowManualChange,
+			"performPeriodicChange":                 p.CredentialsManagement.PerformPeriodicChange,
+			"requirePasswordChangeEveryXDays":       p.CredentialsManagement.RequirePasswordChangeEveryXDays,
+			"allowManualVerification":               p.CredentialsManagement.AllowManualVerification,
+			"performPeriodicVerification":           p.CredentialsManagement.PerformPeriodicVerification,
+			"requirePasswordVerificationEveryXDays": p.CredentialsManagement.RequirePasswordVerificationEveryXDays,
+			"allowManualReconciliation":             p.CredentialsManagement.AllowManualReconciliation,
+			"automaticReconcileWhenUnsynched":       p.CredentialsManagement.AutomaticReconcileWhenUnsynched,
+
+			// Session management
+			"requirePrivilegedSessionMonitoringAndIsolation": p.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation,
+			"recordAndSaveSessionActivity":                   p.SessionManagement.RecordAndSaveSessionActivity,
+			"psmServerID":                                    p.SessionManagement.PSMServerID,
+
+			// Privileged access workflows
+			"requireDualControlPasswordAccessApproval": p.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval,
+			"enforceCheckinCheckoutExclusiveAccess":    p.PrivilegedAccessWorkflows.EnforceCheckinCheckoutExclusiveAccess,
+			"enforceOnetimePasswordAccess":             p.PrivilegedAccessWorkflows.EnforceOnetimePasswordAccess,
+		}
+
+		// Add connection components if available
+		if platformConnectors != nil {
+			if connectors, ok := platformConnectors[pid]; ok {
+				props["connectionComponents"] = connectors
+			}
+		}
+
+		og.MergeNode(&Node{
+			ID:         platformNodeID,
+			Kinds:      []string{"CyberArk_Platform", "CyberArkBase"},
+			Properties: SanitizeProperties(props),
+		})
+
+		platformsByID[pid] = platformNodeID
+		platformsByID[strings.ToLower(pid)] = platformNodeID
+		platformDualControl[strings.ToLower(pid)] = p.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval
+		platformSessionMonitoring[strings.ToLower(pid)] = p.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation
+		platformSessionRecording[strings.ToLower(pid)] = p.SessionManagement.RecordAndSaveSessionActivity
+		if p.SessionManagement.PSMServerID != "" {
+			platformPSMServerID[strings.ToLower(pid)] = p.SessionManagement.PSMServerID
+		}
+		if len(p.LinkedAccounts) > 0 {
+			platformLinkedTypes[strings.ToLower(pid)] = p.LinkedAccounts
+		}
+	}
+	logger.Infof("Indexed %d platform IDs for matching", len(platformsByID))
+}
+
+// addTargetPlatforms enriches platform nodes with Master Policy exception
+// flags from the Targets endpoint. When /API/Platforms/ failed (e.g. HTTP 500),
+// it creates fallback platform nodes from the Targets data so that
+// account→platform and platform→PSMServer edges still work.
+func (b *builder) addTargetPlatforms() {
+	og, logger, pvwaTag, targetPlatforms := b.og, b.logger, b.pvwaTag, b.in.TargetPlatforms
+	platformsByID, platformDualControl := b.platformsByID, b.platformDualControl
+	platformSessionMonitoring, platformSessionRecording := b.platformSessionMonitoring, b.platformSessionRecording
+	platformPSMServerID := b.platformPSMServerID
+	if len(targetPlatforms) == 0 {
+		return
+	}
+
+	fallbackCount := 0
+	logger.Infof("Processing %d target platform exception flags...", len(targetPlatforms))
+	for _, tp := range targetPlatforms {
+		tpID := tp.PlatformID
+		if tpID == "" {
+			tpID = tp.Name
+		}
+		if tpID == "" {
+			continue
+		}
+		platformNodeID, ok := platformsByID[tpID]
+		if !ok {
+			platformNodeID, ok = platformsByID[strings.ToLower(tpID)]
+		}
+
+		if !ok {
+			// Fallback: create a rich platform node from target data when
+			// the full /API/Platforms/ endpoint was unavailable.
+			platformNodeID = strings.ToUpper(fmt.Sprintf("caplatform-%s-%s", tpID, pvwaTag))
 			props := map[string]interface{}{
-				"id":             platformNodeID,
-				"name":           p.General.Name,
-				"platformId":     pid,
-				"systemType":     p.General.SystemType,
-				"active":         p.General.Active,
-				"description":    p.General.Description,
-				"platformBaseID": p.General.PlatformBaseID,
-				"platformType":   p.General.PlatformType,
+				"id":          platformNodeID,
+				"name":        tp.Name,
+				"platformId":  tpID,
+				"active":      tp.Active,
+				"systemType":  tp.SystemType,
+				"psmServerID": tp.SessionManagement.PSMServerID,
 
-				// Properties
-				"requiredProperties": requiredProps,
-				"optionalProperties": optionalProps,
-
-				// Linked account types defined for this platform
-				"linkedAccountTypes": linkedAccountTypes,
-
-				// Credentials management
-				"allowedSafes":                          p.CredentialsManagement.AllowedSafes,
-				"allowedSafesIsWildcard":                isWildcardAllowedSafes(p.CredentialsManagement.AllowedSafes),
-				"allowManualChange":                     p.CredentialsManagement.AllowManualChange,
-				"performPeriodicChange":                 p.CredentialsManagement.PerformPeriodicChange,
-				"requirePasswordChangeEveryXDays":       p.CredentialsManagement.RequirePasswordChangeEveryXDays,
-				"allowManualVerification":               p.CredentialsManagement.AllowManualVerification,
-				"performPeriodicVerification":           p.CredentialsManagement.PerformPeriodicVerification,
-				"requirePasswordVerificationEveryXDays": p.CredentialsManagement.RequirePasswordVerificationEveryXDays,
-				"allowManualReconciliation":             p.CredentialsManagement.AllowManualReconciliation,
-				"automaticReconcileWhenUnsynched":       p.CredentialsManagement.AutomaticReconcileWhenUnsynched,
-
-				// Session management
-				"requirePrivilegedSessionMonitoringAndIsolation": p.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation,
-				"recordAndSaveSessionActivity":                   p.SessionManagement.RecordAndSaveSessionActivity,
-				"psmServerID":                                    p.SessionManagement.PSMServerID,
+				// Session management (from IsActive flags)
+				"requirePrivilegedSessionMonitoringAndIsolation": tp.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation.IsActive,
+				"recordAndSaveSessionActivity":                   tp.SessionManagement.RecordAndSaveSessionActivity.IsActive,
 
 				// Privileged access workflows
-				"requireDualControlPasswordAccessApproval": p.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval,
-				"enforceCheckinCheckoutExclusiveAccess":    p.PrivilegedAccessWorkflows.EnforceCheckinCheckoutExclusiveAccess,
-				"enforceOnetimePasswordAccess":             p.PrivilegedAccessWorkflows.EnforceOnetimePasswordAccess,
-			}
+				"requireDualControlPasswordAccessApproval": tp.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval.IsActive,
+				"enforceCheckinCheckoutExclusiveAccess":    tp.PrivilegedAccessWorkflows.EnforceCheckinCheckoutExclusiveAccess.IsActive,
+				"enforceOnetimePasswordAccess":             tp.PrivilegedAccessWorkflows.EnforceOnetimePasswordAccess.IsActive,
+				"requireUsersToSpecifyReasonForAccess":     tp.PrivilegedAccessWorkflows.RequireUsersToSpecifyReasonForAccess.IsActive,
 
-			// Add connection components if available
-			if platformConnectors != nil {
-				if connectors, ok := platformConnectors[pid]; ok {
-					props["connectionComponents"] = connectors
-				}
-			}
+				// Credentials management
+				"allowedSafes":                          tp.AllowedSafes,
+				"allowedSafesIsWildcard":                isWildcardAllowedSafes(tp.AllowedSafes),
+				"performPeriodicVerification":           tp.CredentialsManagementPolicy.Verification.PerformAutomatic,
+				"requirePasswordVerificationEveryXDays": tp.CredentialsManagementPolicy.Verification.RequirePasswordEveryXDays,
+				"allowManualVerification":               tp.CredentialsManagementPolicy.Verification.AllowManual,
+				"performPeriodicChange":                 tp.CredentialsManagementPolicy.Change.PerformAutomatic,
+				"requirePasswordChangeEveryXDays":       tp.CredentialsManagementPolicy.Change.RequirePasswordEveryXDays,
+				"allowManualChange":                     tp.CredentialsManagementPolicy.Change.AllowManual,
+				"automaticReconcileWhenUnsynched":       tp.CredentialsManagementPolicy.Reconcile.AutomaticReconcileWhenUnsynced,
+				"allowManualReconciliation":             tp.CredentialsManagementPolicy.Reconcile.AllowManual,
+				"changePasswordInResetMode":             tp.CredentialsManagementPolicy.SecretUpdateConfiguration.ChangePasswordInResetMode,
 
+				// Credential management exception flags
+				"verificationFrequencyIsException": tp.CredentialsManagementPolicy.Verification.IsRequirePasswordEveryXDaysAnException,
+				"changeFrequencyIsException":       tp.CredentialsManagementPolicy.Change.IsRequirePasswordEveryXDaysAnException,
+
+				"dataSource": "targets-fallback",
+			}
 			og.MergeNode(&Node{
 				ID:         platformNodeID,
 				Kinds:      []string{"CyberArk_Platform", "CyberArkBase"},
 				Properties: SanitizeProperties(props),
 			})
-
-			platformsByID[pid] = platformNodeID
-			platformsByID[strings.ToLower(pid)] = platformNodeID
-			platformDualControl[strings.ToLower(pid)] = p.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval
-			platformSessionMonitoring[strings.ToLower(pid)] = p.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation
-			platformSessionRecording[strings.ToLower(pid)] = p.SessionManagement.RecordAndSaveSessionActivity
-			if p.SessionManagement.PSMServerID != "" {
-				platformPSMServerID[strings.ToLower(pid)] = p.SessionManagement.PSMServerID
+			platformsByID[tpID] = platformNodeID
+			platformsByID[strings.ToLower(tpID)] = platformNodeID
+			platformDualControl[strings.ToLower(tpID)] = tp.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval.IsActive
+			platformSessionMonitoring[strings.ToLower(tpID)] = tp.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation.IsActive
+			platformSessionRecording[strings.ToLower(tpID)] = tp.SessionManagement.RecordAndSaveSessionActivity.IsActive
+			if tp.SessionManagement.PSMServerID != "" {
+				platformPSMServerID[strings.ToLower(tpID)] = tp.SessionManagement.PSMServerID
 			}
-			if len(p.LinkedAccounts) > 0 {
-				platformLinkedTypes[strings.ToLower(pid)] = p.LinkedAccounts
-			}
+			fallbackCount++
 		}
-		logger.Infof("Indexed %d platform IDs for matching", len(platformsByID))
-	}
 
-	// Enrich platform nodes with Master Policy exception flags from Targets endpoint.
-	// When /API/Platforms/ fails (e.g., HTTP 500), create fallback platform nodes from
-	// the Targets data so that account→platform and platform→PSMServer edges still work.
-	if len(targetPlatforms) > 0 {
-		fallbackCount := 0
-		logger.Infof("Processing %d target platform exception flags...", len(targetPlatforms))
-		for _, tp := range targetPlatforms {
-			tpID := tp.PlatformID
-			if tpID == "" {
-				tpID = tp.Name
-			}
-			if tpID == "" {
-				continue
-			}
-			platformNodeID, ok := platformsByID[tpID]
-			if !ok {
-				platformNodeID, ok = platformsByID[strings.ToLower(tpID)]
-			}
-
-			if !ok {
-				// Fallback: create a rich platform node from target data when
-				// the full /API/Platforms/ endpoint was unavailable.
-				platformNodeID = strings.ToUpper(fmt.Sprintf("caplatform-%s-%s", tpID, pvwaTag))
-				props := map[string]interface{}{
-					"id":          platformNodeID,
-					"name":        tp.Name,
-					"platformId":  tpID,
-					"active":      tp.Active,
-					"systemType":  tp.SystemType,
-					"psmServerID": tp.SessionManagement.PSMServerID,
-
-					// Session management (from IsActive flags)
-					"requirePrivilegedSessionMonitoringAndIsolation": tp.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation.IsActive,
-					"recordAndSaveSessionActivity":                   tp.SessionManagement.RecordAndSaveSessionActivity.IsActive,
-
-					// Privileged access workflows
-					"requireDualControlPasswordAccessApproval": tp.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval.IsActive,
-					"enforceCheckinCheckoutExclusiveAccess":    tp.PrivilegedAccessWorkflows.EnforceCheckinCheckoutExclusiveAccess.IsActive,
-					"enforceOnetimePasswordAccess":             tp.PrivilegedAccessWorkflows.EnforceOnetimePasswordAccess.IsActive,
-					"requireUsersToSpecifyReasonForAccess":     tp.PrivilegedAccessWorkflows.RequireUsersToSpecifyReasonForAccess.IsActive,
-
-					// Credentials management
-					"allowedSafes":                          tp.AllowedSafes,
-					"allowedSafesIsWildcard":                isWildcardAllowedSafes(tp.AllowedSafes),
-					"performPeriodicVerification":           tp.CredentialsManagementPolicy.Verification.PerformAutomatic,
-					"requirePasswordVerificationEveryXDays": tp.CredentialsManagementPolicy.Verification.RequirePasswordEveryXDays,
-					"allowManualVerification":               tp.CredentialsManagementPolicy.Verification.AllowManual,
-					"performPeriodicChange":                 tp.CredentialsManagementPolicy.Change.PerformAutomatic,
-					"requirePasswordChangeEveryXDays":       tp.CredentialsManagementPolicy.Change.RequirePasswordEveryXDays,
-					"allowManualChange":                     tp.CredentialsManagementPolicy.Change.AllowManual,
-					"automaticReconcileWhenUnsynched":       tp.CredentialsManagementPolicy.Reconcile.AutomaticReconcileWhenUnsynced,
-					"allowManualReconciliation":             tp.CredentialsManagementPolicy.Reconcile.AllowManual,
-					"changePasswordInResetMode":             tp.CredentialsManagementPolicy.SecretUpdateConfiguration.ChangePasswordInResetMode,
-
-					// Credential management exception flags
-					"verificationFrequencyIsException": tp.CredentialsManagementPolicy.Verification.IsRequirePasswordEveryXDaysAnException,
-					"changeFrequencyIsException":       tp.CredentialsManagementPolicy.Change.IsRequirePasswordEveryXDaysAnException,
-
-					"dataSource": "targets-fallback",
-				}
-				og.MergeNode(&Node{
-					ID:         platformNodeID,
-					Kinds:      []string{"CyberArk_Platform", "CyberArkBase"},
-					Properties: SanitizeProperties(props),
-				})
-				platformsByID[tpID] = platformNodeID
-				platformsByID[strings.ToLower(tpID)] = platformNodeID
-				platformDualControl[strings.ToLower(tpID)] = tp.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval.IsActive
-				platformSessionMonitoring[strings.ToLower(tpID)] = tp.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation.IsActive
-				platformSessionRecording[strings.ToLower(tpID)] = tp.SessionManagement.RecordAndSaveSessionActivity.IsActive
-				if tp.SessionManagement.PSMServerID != "" {
-					platformPSMServerID[strings.ToLower(tpID)] = tp.SessionManagement.PSMServerID
-				}
-				fallbackCount++
-			}
-
-			// Merge exception flags into the existing platform node
-			node := og.Nodes[platformNodeID]
-			if node != nil {
-				node.Properties["dualControlIsException"] = tp.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval.IsAnException
-				node.Properties["exclusiveAccessIsException"] = tp.PrivilegedAccessWorkflows.EnforceCheckinCheckoutExclusiveAccess.IsAnException
-				node.Properties["otpIsException"] = tp.PrivilegedAccessWorkflows.EnforceOnetimePasswordAccess.IsAnException
-				node.Properties["reasonForAccessIsException"] = tp.PrivilegedAccessWorkflows.RequireUsersToSpecifyReasonForAccess.IsAnException
-				node.Properties["sessionMonitoringIsException"] = tp.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation.IsAnException
-				node.Properties["sessionRecordingIsException"] = tp.SessionManagement.RecordAndSaveSessionActivity.IsAnException
-			}
-		}
-		if fallbackCount > 0 {
-			logger.Infof("Created %d fallback platform nodes from Targets endpoint data", fallbackCount)
+		// Merge exception flags into the existing platform node
+		node := og.Nodes[platformNodeID]
+		if node != nil {
+			node.Properties["dualControlIsException"] = tp.PrivilegedAccessWorkflows.RequireDualControlPasswordAccessApproval.IsAnException
+			node.Properties["exclusiveAccessIsException"] = tp.PrivilegedAccessWorkflows.EnforceCheckinCheckoutExclusiveAccess.IsAnException
+			node.Properties["otpIsException"] = tp.PrivilegedAccessWorkflows.EnforceOnetimePasswordAccess.IsAnException
+			node.Properties["reasonForAccessIsException"] = tp.PrivilegedAccessWorkflows.RequireUsersToSpecifyReasonForAccess.IsAnException
+			node.Properties["sessionMonitoringIsException"] = tp.SessionManagement.RequirePrivilegedSessionMonitoringAndIsolation.IsAnException
+			node.Properties["sessionRecordingIsException"] = tp.SessionManagement.RecordAndSaveSessionActivity.IsAnException
 		}
 	}
+	if fallbackCount > 0 {
+		logger.Infof("Created %d fallback platform nodes from Targets endpoint data", fallbackCount)
+	}
+}
 
-	// Process Accounts
-	accountsBySafe := make(map[string][]string)  // safeName -> []accountNodeIDs
-	accountsByID := make(map[string]string)      // accountID -> accountNodeID
-	accountPlatformID := make(map[string]string) // accountNodeID -> platformID (lowercase)
-	accountIDToSafe := make(map[string]string)   // accountID -> safeName (for reconcile-hijack mapping)
+// addAccounts creates the account nodes, their containment and platform
+// edges, and the edges to the AD users and computers they correspond to.
+func (b *builder) addAccounts() {
+	og, logger, pvwaTag, debug, accounts := b.og, b.logger, b.pvwaTag, b.debug, b.in.Accounts
+	targetDomains, ref, safesByName := b.targetDomains, b.ref, b.safesByName
+	platformsByID, platformSessionMonitoring, platformSessionRecording := b.platformsByID, b.platformSessionMonitoring, b.platformSessionRecording
+	platformPSMServerID := b.platformPSMServerID
+	accountsBySafe, accountsByID, accountPlatformID, accountIDToSafe := b.accountsBySafe, b.accountsByID, b.accountPlatformID, b.accountIDToSafe
+	accountInterval := b.progressInterval(len(accounts), 100, 25)
 
 	logger.Infof("Processing %d accounts...", len(accounts))
 	for idx, a := range accounts {
@@ -783,140 +899,155 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			logger.Debugf("CyberArk_SyncsToADUser: skipping account %s — missing userName=%q or address=%q", a.ID, a.UserName, a.Address)
 		}
 	}
+}
 
-	// Process Applications (CCP / AIMWebService AppIDs), if provided.
-	//
-	// Tradecraft reference: Marat Nigmatullin (@_mnigma_, FalconForce),
-	// "4 GET requests = 3 Domain admins: CyberArk magic you didn't know about"
-	// (SO-CON 2026). CyberArk Applications are the identities the Central
-	// Credential Provider (CCP/AIMWebService) authenticates before serving
-	// credentials. An AppID whose authentication is weak or absent (no Allowed
-	// Machines and no OS user / path / hash / certificate binding) can be abused
-	// from anywhere that can reach the CCP endpoint to retrieve every credential
-	// the application is permitted to read — frequently in a single GET request.
-	applicationsByName := make(map[string]string)   // lowercase AppID -> appNodeID
-	appIsUnrestricted := make(map[string]bool)      // lowercase AppID -> no auth restrictions at all
-	appAllowedMachines := make(map[string][]string) // lowercase AppID -> allowed machines/IPs
-	appIsDefaultCCP := make(map[string]bool)        // lowercase AppID -> is the default AIMWebService app
-	if len(applications) > 0 {
-		logger.Infof("Processing %d applications (CCP/AIMWebService AppIDs)...", len(applications))
-		unrestrictedCount := 0
-		for _, app := range applications {
-			if app.AppID == "" {
-				continue
-			}
-			appNodeID := strings.ToUpper(fmt.Sprintf("caapp-%s-%s", app.AppID, pvwaTag))
-			appKey := strings.ToLower(app.AppID)
-
-			// Summarise the authentication restrictions configured on the AppID.
-			allowedMachines := make([]string, 0)
-			authMethods := make([]string, 0)
-			seenAuthType := make(map[string]bool)
-			hasMachine := false
-			hasOSUser := false
-			hasPath := false
-			hasHash := false
-			hasCertificate := false
-			for _, a := range app.Authentications {
-				at := strings.ToLower(strings.TrimSpace(a.AuthType))
-				if at == "" {
-					continue
-				}
-				if !seenAuthType[at] {
-					seenAuthType[at] = true
-					authMethods = append(authMethods, a.AuthType)
-				}
-				switch at {
-				case "machineaddress":
-					hasMachine = true
-					if a.AuthValue != "" {
-						allowedMachines = append(allowedMachines, a.AuthValue)
-					}
-				case "osuser":
-					hasOSUser = true
-				case "path":
-					hasPath = true
-				case "hash":
-					hasHash = true
-				case "certificateserialnumber", "certificateattributes", "certificate":
-					hasCertificate = true
-				}
-			}
-
-			// "Unrestricted" = nothing binds the AppID to a caller. Knowing the
-			// AppID is sufficient to retrieve credentials via the CCP endpoint.
-			// When the restrictions could not be read, nothing is known either
-			// way, so the application is not flagged.
-			isUnrestricted := !app.AuthenticationsUnknown && !hasMachine && !hasOSUser && !hasPath && !hasHash && !hasCertificate
-			if isUnrestricted {
-				unrestrictedCount++
-			}
-			// The out-of-the-box CCP application ("AIMWebService") most likely has
-			// access to all safes and is a prime target (Nigmatullin, SO-CON 2026).
-			isDefaultCCP := appKey == "aimwebservice"
-
-			businessOwnerName := strings.TrimSpace(fmt.Sprintf("%s %s", app.BusinessOwnerFName, app.BusinessOwnerLName))
-
-			props := map[string]interface{}{
-				"id":                        appNodeID,
-				"name":                      app.AppID,
-				"appId":                     app.AppID,
-				"description":               app.Description,
-				"location":                  app.Location,
-				"disabled":                  asBool(app.Disabled),
-				"businessOwnerName":         businessOwnerName,
-				"businessOwnerEmail":        app.BusinessOwnerEmail,
-				"businessOwnerPhone":        app.BusinessOwnerPhone,
-				"allowedMachines":           allowedMachines,
-				"authMethods":               authMethods,
-				"hasMachineRestriction":     hasMachine,
-				"hasOSUserRestriction":      hasOSUser,
-				"hasPathRestriction":        hasPath,
-				"hasHashRestriction":        hasHash,
-				"hasCertificateRestriction": hasCertificate,
-				"isUnrestricted":            isUnrestricted,
-				"isDefaultCCPApp":           isDefaultCCP,
-			}
-			if app.AuthenticationsUnknown {
-				props["authenticationsUnknown"] = true
-			}
-
-			og.MergeNode(&Node{
-				ID:         appNodeID,
-				Kinds:      []string{"CyberArk_Application", "CyberArkBase"},
-				Properties: SanitizeProperties(props),
-			})
-
-			applicationsByName[appKey] = appNodeID
-			appIsUnrestricted[appKey] = isUnrestricted
-			appAllowedMachines[appKey] = allowedMachines
-			appIsDefaultCCP[appKey] = isDefaultCCP
-
-			// CyberArk_CCPAllowedFrom external edges (Application → AD Computer).
-			// The Allowed Machines list is the set of hosts permitted to present
-			// this AppID to the CCP endpoint. When machineIsOnlyRestriction is true,
-			// landing on one of these hosts is sufficient to wield the AppID — there
-			// is no OS user / path / hash / certificate factor to also satisfy.
-			machineIsOnlyRestriction := hasMachine && !hasOSUser && !hasPath && !hasHash && !hasCertificate
-			for _, machine := range allowedMachines {
-				m := strings.TrimSpace(machine)
-				if m == "" {
-					continue
-				}
-				og.AddEdge("CyberArk_CCPAllowedFrom", appNodeID, strings.ToUpper(m),
-					"id", "name", map[string]interface{}{
-						"machine":                  m,
-						"machineIsOnlyRestriction": machineIsOnlyRestriction,
-						"targetIsIP":               looksLikeIP(m),
-						"inferred":                 true,
-						"source":                   "CyberArk",
-					}, true)
-			}
-		}
-		logger.Infof("Created %d CyberArk_Application nodes (%d with no authentication restrictions)", len(applicationsByName), unrestrictedCount)
+// Process Applications (CCP / AIMWebService AppIDs), if provided.
+//
+// Tradecraft reference: Marat Nigmatullin (@_mnigma_, FalconForce),
+// "4 GET requests = 3 Domain admins: CyberArk magic you didn't know about"
+// (SO-CON 2026). CyberArk Applications are the identities the Central
+// Credential Provider (CCP/AIMWebService) authenticates before serving
+// credentials. An AppID whose authentication is weak or absent (no Allowed
+// Machines and no OS user / path / hash / certificate binding) can be abused
+// from anywhere that can reach the CCP endpoint to retrieve every credential
+// the application is permitted to read — frequently in a single GET request.
+func (b *builder) addApplications() {
+	og, logger, pvwaTag, applications := b.og, b.logger, b.pvwaTag, b.in.Applications
+	applicationsByName, appIsUnrestricted := b.applicationsByName, b.appIsUnrestricted
+	appAllowedMachines, appIsDefaultCCP := b.appAllowedMachines, b.appIsDefaultCCP
+	if len(applications) == 0 {
+		return
 	}
 
-	// Process Safe Members and create permission edges
+	logger.Infof("Processing %d applications (CCP/AIMWebService AppIDs)...", len(applications))
+	unrestrictedCount := 0
+	for _, app := range applications {
+		if app.AppID == "" {
+			continue
+		}
+		appNodeID := strings.ToUpper(fmt.Sprintf("caapp-%s-%s", app.AppID, pvwaTag))
+		appKey := strings.ToLower(app.AppID)
+
+		// Summarise the authentication restrictions configured on the AppID.
+		allowedMachines := make([]string, 0)
+		authMethods := make([]string, 0)
+		seenAuthType := make(map[string]bool)
+		hasMachine := false
+		hasOSUser := false
+		hasPath := false
+		hasHash := false
+		hasCertificate := false
+		for _, a := range app.Authentications {
+			at := strings.ToLower(strings.TrimSpace(a.AuthType))
+			if at == "" {
+				continue
+			}
+			if !seenAuthType[at] {
+				seenAuthType[at] = true
+				authMethods = append(authMethods, a.AuthType)
+			}
+			switch at {
+			case "machineaddress":
+				hasMachine = true
+				if a.AuthValue != "" {
+					allowedMachines = append(allowedMachines, a.AuthValue)
+				}
+			case "osuser":
+				hasOSUser = true
+			case "path":
+				hasPath = true
+			case "hash":
+				hasHash = true
+			case "certificateserialnumber", "certificateattributes", "certificate":
+				hasCertificate = true
+			}
+		}
+
+		// "Unrestricted" = nothing binds the AppID to a caller. Knowing the
+		// AppID is sufficient to retrieve credentials via the CCP endpoint.
+		// When the restrictions could not be read, nothing is known either
+		// way, so the application is not flagged.
+		isUnrestricted := !app.AuthenticationsUnknown && !hasMachine && !hasOSUser && !hasPath && !hasHash && !hasCertificate
+		if isUnrestricted {
+			unrestrictedCount++
+		}
+		// The out-of-the-box CCP application ("AIMWebService") most likely has
+		// access to all safes and is a prime target (Nigmatullin, SO-CON 2026).
+		isDefaultCCP := appKey == "aimwebservice"
+
+		businessOwnerName := strings.TrimSpace(fmt.Sprintf("%s %s", app.BusinessOwnerFName, app.BusinessOwnerLName))
+
+		props := map[string]interface{}{
+			"id":                        appNodeID,
+			"name":                      app.AppID,
+			"appId":                     app.AppID,
+			"description":               app.Description,
+			"location":                  app.Location,
+			"disabled":                  asBool(app.Disabled),
+			"businessOwnerName":         businessOwnerName,
+			"businessOwnerEmail":        app.BusinessOwnerEmail,
+			"businessOwnerPhone":        app.BusinessOwnerPhone,
+			"allowedMachines":           allowedMachines,
+			"authMethods":               authMethods,
+			"hasMachineRestriction":     hasMachine,
+			"hasOSUserRestriction":      hasOSUser,
+			"hasPathRestriction":        hasPath,
+			"hasHashRestriction":        hasHash,
+			"hasCertificateRestriction": hasCertificate,
+			"isUnrestricted":            isUnrestricted,
+			"isDefaultCCPApp":           isDefaultCCP,
+		}
+		if app.AuthenticationsUnknown {
+			props["authenticationsUnknown"] = true
+		}
+
+		og.MergeNode(&Node{
+			ID:         appNodeID,
+			Kinds:      []string{"CyberArk_Application", "CyberArkBase"},
+			Properties: SanitizeProperties(props),
+		})
+
+		applicationsByName[appKey] = appNodeID
+		appIsUnrestricted[appKey] = isUnrestricted
+		appAllowedMachines[appKey] = allowedMachines
+		appIsDefaultCCP[appKey] = isDefaultCCP
+
+		// CyberArk_CCPAllowedFrom external edges (Application → AD Computer).
+		// The Allowed Machines list is the set of hosts permitted to present
+		// this AppID to the CCP endpoint. When machineIsOnlyRestriction is true,
+		// landing on one of these hosts is sufficient to wield the AppID — there
+		// is no OS user / path / hash / certificate factor to also satisfy.
+		machineIsOnlyRestriction := hasMachine && !hasOSUser && !hasPath && !hasHash && !hasCertificate
+		for _, machine := range allowedMachines {
+			m := strings.TrimSpace(machine)
+			if m == "" {
+				continue
+			}
+			og.AddEdge("CyberArk_CCPAllowedFrom", appNodeID, strings.ToUpper(m),
+				"id", "name", map[string]interface{}{
+					"machine":                  m,
+					"machineIsOnlyRestriction": machineIsOnlyRestriction,
+					"targetIsIP":               looksLikeIP(m),
+					"inferred":                 true,
+					"source":                   "CyberArk",
+				}, true)
+		}
+	}
+	logger.Infof("Created %d CyberArk_Application nodes (%d with no authentication restrictions)", len(applicationsByName), unrestrictedCount)
+}
+
+// addSafeMembers turns safe memberships into permission edges and records
+// each principal's safe permissions on its node.
+func (b *builder) addSafeMembers() {
+	og, logger, pvwaTag, safeMembers, now := b.og, b.logger, b.pvwaTag, b.in.SafeMembers, b.now
+	usersByUsername, groupsByName, safesByName, ref := b.usersByUsername, b.groupsByName, b.safesByName, b.ref
+	applicationsByName, appIsUnrestricted := b.applicationsByName, b.appIsUnrestricted
+	appAllowedMachines, appIsDefaultCCP := b.appAllowedMachines, b.appIsDefaultCCP
+	accountsBySafe, accountPlatformID := b.accountsBySafe, b.accountPlatformID
+	platformDualControl, platformSessionMonitoring, platformSessionRecording := b.platformDualControl, b.platformSessionMonitoring, b.platformSessionRecording
+	safeManagers := b.safeManagers
+	memberInterval := b.progressInterval(len(safeMembers), 100, 25)
+
 	logger.Infof("Processing %d safe members...", len(safeMembers))
 
 	// A membership whose expiration date has passed grants nothing, so it
@@ -955,16 +1086,6 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 	userSafePerms := make(map[string][]map[string]interface{})
 	groupSafePerms := make(map[string][]map[string]interface{})
 
-	// Track principals who can introduce or control accounts in each safe. These
-	// are the candidates for reconcile-account hijack: with addAccounts/manageSafe
-	// on a safe whose platform has a reconcile account, a principal can create or
-	// redirect an account so the CPM uses the (privileged) reconcile account
-	// against a target of their choosing (Nigmatullin, SO-CON 2026).
-	type reconcileManager struct {
-		nodeID string
-		perms  []string
-	}
-	safeManagers := make(map[string][]reconcileManager) // safeName -> principals with account-management rights
 	expiredMemberships := 0
 
 	for idx, sm := range safeMembers {
@@ -1285,359 +1406,393 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 			node.Properties["safePermissions"] = SanitizeProperties(map[string]interface{}{"perms": perms})["perms"]
 		}
 	}
+}
 
-	// Process Account Activities (if provided)
-	if len(accountActivities) > 0 {
-		logger.Infof("Processing account activities for %d accounts...", len(accountActivities))
-		activityEdgeCount := 0
+// addAccountActivities creates one CyberArk_UsedAccount edge per user and
+// account from the collected activity.
+func (b *builder) addAccountActivities() {
+	og, logger, debug, accountActivities := b.og, b.logger, b.debug, b.in.AccountActivities
+	usersByUsername, accountsByID, ref := b.usersByUsername, b.accountsByID, b.ref
+	if len(accountActivities) == 0 {
+		return
+	}
 
-		if debug {
-			logger.Debug("=== CyberArk_UsedAccount Edge Creation Debug ===")
-			logger.Debugf("Total accounts with activities: %d", len(accountActivities))
+	logger.Infof("Processing account activities for %d accounts...", len(accountActivities))
+	activityEdgeCount := 0
+
+	if debug {
+		logger.Debug("=== CyberArk_UsedAccount Edge Creation Debug ===")
+		logger.Debugf("Total accounts with activities: %d", len(accountActivities))
+	}
+
+	for accountID, activities := range accountActivities {
+		accountNodeID := accountsByID[accountID]
+		if accountNodeID == "" {
+			accountNodeID = ref("CyberArk_Account", "caaccount", accountID, "")
 		}
 
-		for accountID, activities := range accountActivities {
-			accountNodeID := accountsByID[accountID]
-			if accountNodeID == "" {
-				accountNodeID = ref("CyberArk_Account", "caaccount", accountID, "")
+		if debug {
+			logger.Debugf("Processing account: %s (activities: %d)", accountID, len(activities))
+		}
+
+		// Track unique users who used this account
+		userActivity := make(map[string]map[string]interface{}) // username -> {lastUsedTime, lastAction, usageCount}
+
+		for _, activity := range activities {
+			username := activity.User
+			action := activity.Action
+
+			var activityDate float64
+			switch v := activity.Date.(type) {
+			case float64:
+				activityDate = v
+			case int:
+				activityDate = float64(v)
+			case int64:
+				activityDate = float64(v)
+			}
+
+			// Convert Unix timestamp to ISO 8601
+			var activityTime string
+			if activityDate > 0 {
+				activityTime = UnixToISO8601(activityDate)
 			}
 
 			if debug {
-				logger.Debugf("Processing account: %s (activities: %d)", accountID, len(activities))
+				logger.Debugf("  Activity: User=%s, Action=%s, Date=%.0f (converted to %s)",
+					username, action, activityDate, activityTime)
 			}
 
-			// Track unique users who used this account
-			userActivity := make(map[string]map[string]interface{}) // username -> {lastUsedTime, lastAction, usageCount}
-
-			for _, activity := range activities {
-				username := activity.User
-				action := activity.Action
-
-				var activityDate float64
-				switch v := activity.Date.(type) {
-				case float64:
-					activityDate = v
-				case int:
-					activityDate = float64(v)
-				case int64:
-					activityDate = float64(v)
-				}
-
-				// Convert Unix timestamp to ISO 8601
-				var activityTime string
-				if activityDate > 0 {
-					activityTime = UnixToISO8601(activityDate)
-				}
-
+			if username == "" {
 				if debug {
-					logger.Debugf("  Activity: User=%s, Action=%s, Date=%.0f (converted to %s)",
-						username, action, activityDate, activityTime)
+					logger.Debug("  Skipping activity - no username")
 				}
+				continue
+			}
 
-				if username == "" {
+			// Track usage per user
+			if _, exists := userActivity[username]; !exists {
+				userActivity[username] = map[string]interface{}{
+					"lastUsedTime": activityTime,
+					"lastAction":   action,
+					"usageCount":   0,
+				}
+				if debug {
+					logger.Debugf("  New user tracked: %s", username)
+				}
+			}
+
+			ua := userActivity[username]
+			ua["usageCount"] = ua["usageCount"].(int) + 1
+
+			// Update last used time and action if this is more recent
+			if activityTime != "" {
+				lastTime, _ := ua["lastUsedTime"].(string)
+				if lastTime == "" || activityTime > lastTime {
+					ua["lastUsedTime"] = activityTime
+					ua["lastAction"] = action
 					if debug {
-						logger.Debug("  Skipping activity - no username")
-					}
-					continue
-				}
-
-				// Track usage per user
-				if _, exists := userActivity[username]; !exists {
-					userActivity[username] = map[string]interface{}{
-						"lastUsedTime": activityTime,
-						"lastAction":   action,
-						"usageCount":   0,
-					}
-					if debug {
-						logger.Debugf("  New user tracked: %s", username)
+						logger.Debugf("  Updated %s: lastTime=%s, lastAction=%s", username, activityTime, action)
 					}
 				}
+			}
+		}
 
-				ua := userActivity[username]
-				ua["usageCount"] = ua["usageCount"].(int) + 1
+		if debug {
+			logger.Debugf("Account %s: %d unique users found", accountID, len(userActivity))
+		}
 
-				// Update last used time and action if this is more recent
-				if activityTime != "" {
-					lastTime, _ := ua["lastUsedTime"].(string)
-					if lastTime == "" || activityTime > lastTime {
-						ua["lastUsedTime"] = activityTime
-						ua["lastAction"] = action
-						if debug {
-							logger.Debugf("  Updated %s: lastTime=%s, lastAction=%s", username, activityTime, action)
-						}
-					}
-				}
+		// Create ONE edge per user with their most recent activity
+		for username, usageData := range userActivity {
+			userNodeID := usersByUsername[username]
+			if userNodeID == "" {
+				userNodeID = ref("CyberArk_User", "causer", username, "")
 			}
 
 			if debug {
-				logger.Debugf("Account %s: %d unique users found", accountID, len(userActivity))
+				userExists := usersByUsername[username] != ""
+				logger.Debugf("Creating edge: %s -> %s (user_exists=%v, count=%v, lastTime=%s, lastAction=%s)",
+					userNodeID, accountNodeID, userExists, usageData["usageCount"], usageData["lastUsedTime"], usageData["lastAction"])
 			}
 
-			// Create ONE edge per user with their most recent activity
-			for username, usageData := range userActivity {
-				userNodeID := usersByUsername[username]
-				if userNodeID == "" {
-					userNodeID = ref("CyberArk_User", "causer", username, "")
-				}
-
-				if debug {
-					userExists := usersByUsername[username] != ""
-					logger.Debugf("Creating edge: %s -> %s (user_exists=%v, count=%v, lastTime=%s, lastAction=%s)",
-						userNodeID, accountNodeID, userExists, usageData["usageCount"], usageData["lastUsedTime"], usageData["lastAction"])
-				}
-
-				og.AddEdge("CyberArk_UsedAccount", userNodeID, accountNodeID,
-					"id", "id", map[string]interface{}{
-						"lastUsedTime": usageData["lastUsedTime"],
-						"lastActivity": usageData["lastAction"],
-						"usageCount":   usageData["usageCount"],
-						"inferred":     false,
-					}, false)
-				activityEdgeCount++
-			}
-		}
-
-		logger.Infof("Created %d CyberArk_UsedAccount edges from activity data", activityEdgeCount)
-		if debug {
-			logger.Debug("===========================================")
+			og.AddEdge("CyberArk_UsedAccount", userNodeID, accountNodeID,
+				"id", "id", map[string]interface{}{
+					"lastUsedTime": usageData["lastUsedTime"],
+					"lastActivity": usageData["lastAction"],
+					"usageCount":   usageData["usageCount"],
+					"inferred":     false,
+				}, false)
+			activityEdgeCount++
 		}
 	}
 
-	// Process Linked Accounts (if provided)
-	if len(linkedAccounts) > 0 {
-		logger.Infof("Processing linked accounts for %d accounts...", len(linkedAccounts))
-		linkedEdgeCount := 0
+	logger.Infof("Created %d CyberArk_UsedAccount edges from activity data", activityEdgeCount)
+	if debug {
+		logger.Debug("===========================================")
+	}
+}
 
-		for accountID, links := range linkedAccounts {
-			sourceNodeID := accountsByID[accountID]
-			if sourceNodeID == "" {
-				sourceNodeID = ref("CyberArk_Account", "caaccount", accountID, "")
-			}
+// addLinkedAccounts creates the CyberArk_LinkedTo edges and, from them, the
+// reconcile-account hijack edges.
+func (b *builder) addLinkedAccounts() {
+	og, logger, linkedAccounts := b.og, b.logger, b.in.LinkedAccounts
+	accountsByID, accountPlatformID, accountIDToSafe, ref := b.accountsByID, b.accountPlatformID, b.accountIDToSafe, b.ref
+	platformLinkedTypes, safeManagers := b.platformLinkedTypes, b.safeManagers
+	if len(linkedAccounts) == 0 {
+		return
+	}
 
-			for _, link := range links {
-				targetNodeID := accountsByID[link.AccountID]
-				if targetNodeID == "" && link.AccountID != "" {
-					targetNodeID = ref("CyberArk_Account", "caaccount", link.AccountID, link.Name)
-				}
-				if targetNodeID == "" {
-					continue
-				}
+	logger.Infof("Processing linked accounts for %d accounts...", len(linkedAccounts))
+	linkedEdgeCount := 0
 
-				// Resolve the link type from the source account's platform
-				// metadata. Only ExtraPass1 (logon) and ExtraPass3 (reconcile)
-				// are fixed roles; every other slot is a platform-defined
-				// "additional" account whose real type name is looked up
-				// positionally in Platform.linkedAccounts.
-				linkType, linkTypeDisplay := resolveLinkedAccountType(
-					link.ExtraPassID, platformLinkedTypes[accountPlatformID[sourceNodeID]])
-
-				og.AddEdge("CyberArk_LinkedTo", sourceNodeID, targetNodeID,
-					"id", "id", map[string]interface{}{
-						"linkType":            linkType,
-						"linkTypeDisplayName": linkTypeDisplay,
-						"extraPassID":         link.ExtraPassID,
-						"linkName":            link.Name,
-						"safeName":            link.SafeName,
-					}, false)
-				linkedEdgeCount++
-			}
+	for accountID, links := range linkedAccounts {
+		sourceNodeID := accountsByID[accountID]
+		if sourceNodeID == "" {
+			sourceNodeID = ref("CyberArk_Account", "caaccount", accountID, "")
 		}
 
-		logger.Infof("Created %d CyberArk_LinkedTo edges from linked account data", linkedEdgeCount)
+		for _, link := range links {
+			targetNodeID := accountsByID[link.AccountID]
+			if targetNodeID == "" && link.AccountID != "" {
+				targetNodeID = ref("CyberArk_Account", "caaccount", link.AccountID, link.Name)
+			}
+			if targetNodeID == "" {
+				continue
+			}
 
-		// Build CyberArk_CanHijackViaReconcile edges (Principal → reconcile account).
-		//
-		// Tradecraft reference: Marat Nigmatullin (FalconForce), SO-CON 2026 —
-		// "Hijacking accounts under a platform with a Reconcile Account". When a
-		// principal can introduce or control accounts in a safe (addAccounts /
-		// manageSafe), and that safe holds accounts whose platform defines a
-		// privileged reconcile account, the principal can create or redirect an
-		// account so the CPM uses that reconcile account to reset a target of
-		// their choosing. The reconcile account is the privileged credential being
-		// wielded, so the edge points to it; its own downstream edges
-		// (CyberArk_SyncsToADUser, etc.) bound the blast radius.
-		reconcileHijackEdges := 0
-		for accountID, links := range linkedAccounts {
-			sourceSafe := accountIDToSafe[accountID]
-			if sourceSafe == "" {
-				continue
-			}
-			managers := safeManagers[sourceSafe]
-			if len(managers) == 0 {
-				continue
-			}
-			for _, link := range links {
-				if link.ExtraPassID != 3 { // only reconcile accounts
-					continue
-				}
-				reconcileNodeID := accountsByID[link.AccountID]
-				if reconcileNodeID == "" && link.AccountID != "" {
-					reconcileNodeID = ref("CyberArk_Account", "caaccount", link.AccountID, link.Name)
-				}
-				if reconcileNodeID == "" {
-					continue
-				}
-				for _, mgr := range managers {
-					og.AddEdge("CyberArk_CanHijackViaReconcile", mgr.nodeID, reconcileNodeID,
-						"id", "id", map[string]interface{}{
-							"viaSafe":     sourceSafe,
-							"permissions": mgr.perms,
-							"linkType":    "reconcile",
-							"linkName":    link.Name,
-							"inferred":    true,
-						}, false)
-					reconcileHijackEdges++
-				}
-			}
-		}
-		if reconcileHijackEdges > 0 {
-			logger.Infof("Created %d CyberArk_CanHijackViaReconcile edges", reconcileHijackEdges)
+			// Resolve the link type from the source account's platform
+			// metadata. Only ExtraPass1 (logon) and ExtraPass3 (reconcile)
+			// are fixed roles; every other slot is a platform-defined
+			// "additional" account whose real type name is looked up
+			// positionally in Platform.linkedAccounts.
+			linkType, linkTypeDisplay := resolveLinkedAccountType(
+				link.ExtraPassID, platformLinkedTypes[accountPlatformID[sourceNodeID]])
+
+			og.AddEdge("CyberArk_LinkedTo", sourceNodeID, targetNodeID,
+				"id", "id", map[string]interface{}{
+					"linkType":            linkType,
+					"linkTypeDisplayName": linkTypeDisplay,
+					"extraPassID":         link.ExtraPassID,
+					"linkName":            link.Name,
+					"safeName":            link.SafeName,
+				}, false)
+			linkedEdgeCount++
 		}
 	}
 
-	// Process PSM Servers (if provided)
+	logger.Infof("Created %d CyberArk_LinkedTo edges from linked account data", linkedEdgeCount)
+
+	// Build CyberArk_CanHijackViaReconcile edges (Principal → reconcile account).
+	//
+	// Tradecraft reference: Marat Nigmatullin (FalconForce), SO-CON 2026 —
+	// "Hijacking accounts under a platform with a Reconcile Account". When a
+	// principal can introduce or control accounts in a safe (addAccounts /
+	// manageSafe), and that safe holds accounts whose platform defines a
+	// privileged reconcile account, the principal can create or redirect an
+	// account so the CPM uses that reconcile account to reset a target of
+	// their choosing. The reconcile account is the privileged credential being
+	// wielded, so the edge points to it; its own downstream edges
+	// (CyberArk_SyncsToADUser, etc.) bound the blast radius.
+	reconcileHijackEdges := 0
+	for accountID, links := range linkedAccounts {
+		sourceSafe := accountIDToSafe[accountID]
+		if sourceSafe == "" {
+			continue
+		}
+		managers := safeManagers[sourceSafe]
+		if len(managers) == 0 {
+			continue
+		}
+		for _, link := range links {
+			if link.ExtraPassID != 3 { // only reconcile accounts
+				continue
+			}
+			reconcileNodeID := accountsByID[link.AccountID]
+			if reconcileNodeID == "" && link.AccountID != "" {
+				reconcileNodeID = ref("CyberArk_Account", "caaccount", link.AccountID, link.Name)
+			}
+			if reconcileNodeID == "" {
+				continue
+			}
+			for _, mgr := range managers {
+				og.AddEdge("CyberArk_CanHijackViaReconcile", mgr.nodeID, reconcileNodeID,
+					"id", "id", map[string]interface{}{
+						"viaSafe":     sourceSafe,
+						"permissions": mgr.perms,
+						"linkType":    "reconcile",
+						"linkName":    link.Name,
+						"inferred":    true,
+					}, false)
+				reconcileHijackEdges++
+			}
+		}
+	}
+	if reconcileHijackEdges > 0 {
+		logger.Infof("Created %d CyberArk_CanHijackViaReconcile edges", reconcileHijackEdges)
+	}
+}
+
+// addPSMServers creates the PSM server nodes and the edges from the
+// platforms and accounts routed through them.
+func (b *builder) addPSMServers() {
+	og, logger, pvwaTag, debug, psmServers := b.og, b.logger, b.pvwaTag, b.debug, b.in.PSMServers
+	platformsByID, platformPSMServerID, accountPlatformID := b.platformsByID, b.platformPSMServerID, b.accountPlatformID
+	if len(psmServers) == 0 {
+		return
+	}
 	psmServersByID := make(map[string]string) // PSMServerID -> psmServerNodeID
-	if len(psmServers) > 0 {
-		logger.Infof("Processing %d PSM servers...", len(psmServers))
-		for _, ps := range psmServers {
-			if ps.ID == "" {
-				continue
-			}
-			psmNodeID := strings.ToUpper(fmt.Sprintf("capsmserver-%s-%s", ps.ID, pvwaTag))
 
-			og.MergeNode(&Node{
-				ID:    psmNodeID,
-				Kinds: []string{"CyberArk_PSMServer", "CyberArkBase"},
-				Properties: SanitizeProperties(map[string]interface{}{
-					"id":          psmNodeID,
-					"psmServerId": ps.ID,
-					"name":        ps.Name,
-					"address":     ps.Address,
-				}),
-			})
-
-			psmServersByID[ps.ID] = psmNodeID
+	logger.Infof("Processing %d PSM servers...", len(psmServers))
+	for _, ps := range psmServers {
+		if ps.ID == "" {
+			continue
 		}
-		logger.Infof("Created %d CyberArk_PSMServer nodes", len(psmServersByID))
+		psmNodeID := strings.ToUpper(fmt.Sprintf("capsmserver-%s-%s", ps.ID, pvwaTag))
 
-		// Create CyberArk_UsesPSMServer edges (Platform → PSM Server)
-		psmEdgeCount := 0
-		for platID, psmSrvID := range platformPSMServerID {
+		og.MergeNode(&Node{
+			ID:    psmNodeID,
+			Kinds: []string{"CyberArk_PSMServer", "CyberArkBase"},
+			Properties: SanitizeProperties(map[string]interface{}{
+				"id":          psmNodeID,
+				"psmServerId": ps.ID,
+				"name":        ps.Name,
+				"address":     ps.Address,
+			}),
+		})
+
+		psmServersByID[ps.ID] = psmNodeID
+	}
+	logger.Infof("Created %d CyberArk_PSMServer nodes", len(psmServersByID))
+
+	// Create CyberArk_UsesPSMServer edges (Platform → PSM Server)
+	psmEdgeCount := 0
+	for platID, psmSrvID := range platformPSMServerID {
+		platNodeID, ok := platformsByID[platID]
+		if !ok {
+			continue
+		}
+		psmNodeID, ok := psmServersByID[psmSrvID]
+		if !ok {
+			if debug {
+				logger.Debugf("Platform %s references PSMServerID '%s' but no matching PSM server node found", platID, psmSrvID)
+			}
+			continue
+		}
+		og.AddEdge("CyberArk_UsesPSMServer", platNodeID, psmNodeID,
+			"id", "id", nil, false)
+		psmEdgeCount++
+	}
+	logger.Infof("Created %d CyberArk_UsesPSMServer edges", psmEdgeCount)
+
+	// Create CyberArk_ManagedByPSM edges (Account → PSM Server)
+	accountPSMEdgeCount := 0
+	for accountNodeID, platID := range accountPlatformID {
+		psmSrvID, ok := platformPSMServerID[platID]
+		if !ok {
+			continue
+		}
+		psmNodeID, ok := psmServersByID[psmSrvID]
+		if !ok {
+			continue
+		}
+		og.AddEdge("CyberArk_ManagedByPSM", accountNodeID, psmNodeID,
+			"id", "id", nil, false)
+		accountPSMEdgeCount++
+	}
+	logger.Infof("Created %d CyberArk_ManagedByPSM edges", accountPSMEdgeCount)
+
+	// Create CyberArk_PSMServerHostedOn external edges (PSM Server → AD Computer)
+	psmHostedOnCount := 0
+	for _, ps := range psmServers {
+		addr := strings.TrimSpace(ps.Address)
+		if addr == "" {
+			continue
+		}
+		psmNodeID, ok := psmServersByID[ps.ID]
+		if !ok {
+			continue
+		}
+		og.AddEdge("CyberArk_PSMServerHostedOn", psmNodeID, strings.ToUpper(addr),
+			"id", "name", nil, true)
+		psmHostedOnCount++
+	}
+	logger.Infof("Created %d CyberArk_PSMServerHostedOn edges", psmHostedOnCount)
+}
+
+// addConnectionComponents creates the connection component nodes and the
+// edges from the platforms that enable them.
+func (b *builder) addConnectionComponents() {
+	og, logger, pvwaTag, debug, connectionComponents := b.og, b.logger, b.pvwaTag, b.debug, b.in.ConnectionComponents
+	platformsByID, platformConnectors := b.platformsByID, b.in.PlatformConnectors
+	if len(connectionComponents) == 0 {
+		return
+	}
+
+	logger.Infof("Processing %d connection components...", len(connectionComponents))
+	connCompNodeCount := 0
+	connCompsByID := make(map[string]string) // connectorID (lowercase) -> connCompNodeID
+
+	for _, cc := range connectionComponents {
+		if cc.ID == "" {
+			continue
+		}
+		connCompNodeID := strings.ToUpper(fmt.Sprintf("caconncomp-%s-%s", cc.ID, pvwaTag))
+
+		og.MergeNode(&Node{
+			ID:    connCompNodeID,
+			Kinds: []string{"CyberArk_ConnectionComponent", "CyberArkBase"},
+			Properties: SanitizeProperties(map[string]interface{}{
+				"id":          connCompNodeID,
+				"connectorId": cc.ID,
+				"displayName": cc.DisplayName,
+			}),
+		})
+
+		connCompsByID[strings.ToLower(cc.ID)] = connCompNodeID
+		connCompNodeCount++
+	}
+	logger.Infof("Created %d CyberArk_ConnectionComponent nodes", connCompNodeCount)
+
+	// Create CyberArk_HasConnectionComponent edges (Platform → Connection Component)
+	if platformConnectors != nil {
+		connCompEdgeCount := 0
+		for platID, connectorIDs := range platformConnectors {
 			platNodeID, ok := platformsByID[platID]
 			if !ok {
-				continue
+				platNodeID, ok = platformsByID[strings.ToLower(platID)]
 			}
-			psmNodeID, ok := psmServersByID[psmSrvID]
 			if !ok {
 				if debug {
-					logger.Debugf("Platform %s references PSMServerID '%s' but no matching PSM server node found", platID, psmSrvID)
+					logger.Debugf("Platform '%s' from platformConnectors not found in platformsByID", platID)
 				}
 				continue
 			}
-			og.AddEdge("CyberArk_UsesPSMServer", platNodeID, psmNodeID,
-				"id", "id", nil, false)
-			psmEdgeCount++
-		}
-		logger.Infof("Created %d CyberArk_UsesPSMServer edges", psmEdgeCount)
-
-		// Create CyberArk_ManagedByPSM edges (Account → PSM Server)
-		accountPSMEdgeCount := 0
-		for accountNodeID, platID := range accountPlatformID {
-			psmSrvID, ok := platformPSMServerID[platID]
-			if !ok {
-				continue
-			}
-			psmNodeID, ok := psmServersByID[psmSrvID]
-			if !ok {
-				continue
-			}
-			og.AddEdge("CyberArk_ManagedByPSM", accountNodeID, psmNodeID,
-				"id", "id", nil, false)
-			accountPSMEdgeCount++
-		}
-		logger.Infof("Created %d CyberArk_ManagedByPSM edges", accountPSMEdgeCount)
-
-		// Create CyberArk_PSMServerHostedOn external edges (PSM Server → AD Computer)
-		psmHostedOnCount := 0
-		for _, ps := range psmServers {
-			addr := strings.TrimSpace(ps.Address)
-			if addr == "" {
-				continue
-			}
-			psmNodeID, ok := psmServersByID[ps.ID]
-			if !ok {
-				continue
-			}
-			og.AddEdge("CyberArk_PSMServerHostedOn", psmNodeID, strings.ToUpper(addr),
-				"id", "name", nil, true)
-			psmHostedOnCount++
-		}
-		logger.Infof("Created %d CyberArk_PSMServerHostedOn edges", psmHostedOnCount)
-	}
-
-	// Process Connection Components (if provided)
-	if len(connectionComponents) > 0 {
-		logger.Infof("Processing %d connection components...", len(connectionComponents))
-		connCompNodeCount := 0
-		connCompsByID := make(map[string]string) // connectorID (lowercase) -> connCompNodeID
-
-		for _, cc := range connectionComponents {
-			if cc.ID == "" {
-				continue
-			}
-			connCompNodeID := strings.ToUpper(fmt.Sprintf("caconncomp-%s-%s", cc.ID, pvwaTag))
-
-			og.MergeNode(&Node{
-				ID:    connCompNodeID,
-				Kinds: []string{"CyberArk_ConnectionComponent", "CyberArkBase"},
-				Properties: SanitizeProperties(map[string]interface{}{
-					"id":          connCompNodeID,
-					"connectorId": cc.ID,
-					"displayName": cc.DisplayName,
-				}),
-			})
-
-			connCompsByID[strings.ToLower(cc.ID)] = connCompNodeID
-			connCompNodeCount++
-		}
-		logger.Infof("Created %d CyberArk_ConnectionComponent nodes", connCompNodeCount)
-
-		// Create CyberArk_HasConnectionComponent edges (Platform → Connection Component)
-		if platformConnectors != nil {
-			connCompEdgeCount := 0
-			for platID, connectorIDs := range platformConnectors {
-				platNodeID, ok := platformsByID[platID]
-				if !ok {
-					platNodeID, ok = platformsByID[strings.ToLower(platID)]
-				}
+			for _, connID := range connectorIDs {
+				connCompNodeID, ok := connCompsByID[strings.ToLower(connID)]
 				if !ok {
 					if debug {
-						logger.Debugf("Platform '%s' from platformConnectors not found in platformsByID", platID)
+						logger.Debugf("Platform %s references connector '%s' but no matching connection component node found", platID, connID)
 					}
 					continue
 				}
-				for _, connID := range connectorIDs {
-					connCompNodeID, ok := connCompsByID[strings.ToLower(connID)]
-					if !ok {
-						if debug {
-							logger.Debugf("Platform %s references connector '%s' but no matching connection component node found", platID, connID)
-						}
-						continue
-					}
-					og.AddEdge("CyberArk_HasConnectionComponent", platNodeID, connCompNodeID,
-						"id", "id", map[string]interface{}{"enabled": true}, false)
-					connCompEdgeCount++
-				}
+				og.AddEdge("CyberArk_HasConnectionComponent", platNodeID, connCompNodeID,
+					"id", "id", map[string]interface{}{"enabled": true}, false)
+				connCompEdgeCount++
 			}
-			logger.Infof("Created %d CyberArk_HasConnectionComponent edges", connCompEdgeCount)
-		} else {
-			logger.Infof("No platform-to-connector mapping available; skipping CyberArk_HasConnectionComponent edges")
 		}
+		logger.Infof("Created %d CyberArk_HasConnectionComponent edges", connCompEdgeCount)
+	} else {
+		logger.Infof("No platform-to-connector mapping available; skipping CyberArk_HasConnectionComponent edges")
 	}
+}
 
-	// Create typed placeholder nodes for objects that edges reference but the
-	// collection did not return. BloodHound would otherwise create kind-less
-	// "?" nodes for them on ingest, which kind-based queries never match.
+// addPlaceholders creates typed placeholder nodes for objects that edges
+// reference but the collection did not return. BloodHound would otherwise
+// create kind-less "?" nodes for them on ingest, which kind-based queries
+// never match.
+func (b *builder) addPlaceholders() {
+	og, logger, pvwaTag, referenced := b.og, b.logger, b.pvwaTag, b.referenced
+
 	placeholders := 0
 	for _, edges := range [][]*Edge{og.InternalEdges, og.ExternalEdges} {
 		for _, e := range edges {
@@ -1672,21 +1827,25 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 	if placeholders > 0 {
 		logger.Infof("Created %d placeholder nodes for objects referenced but not collected (placeholder=true)", placeholders)
 	}
+}
 
-	// Create the CyberArk_Instance environment root node and connect it to the
-	// bounded set of top-level configuration objects via CyberArk_InstanceContains.
-	//
-	// Users and Groups are intentionally NOT linked here. In LDAP/AD-integrated
-	// vaults they can number in the millions (every directory-synced principal
-	// becomes a node), so fanning out an InstanceContains edge to each one blows
-	// up the export (observed 3.3M+ edges) without adding navigational value —
-	// users and groups already attach to the graph through their membership and
-	// safe-permission edges (CyberArk_MemberOf, CyberArk_HasAccessTo,
-	// CyberArk_CanGrantAccessTo, CyberArk_CanApprove, CyberArk_Created, etc.).
-	//
-	// Accounts are likewise not linked here — they remain nested under their safe
-	// via CyberArk_Contains (Instance → Safe → Account), mirroring hierarchical
-	// containment.
+// Create the CyberArk_Instance environment root node and connect it to the
+// bounded set of top-level configuration objects via CyberArk_InstanceContains.
+//
+// Users and Groups are intentionally NOT linked here. In LDAP/AD-integrated
+// vaults they can number in the millions (every directory-synced principal
+// becomes a node), so fanning out an InstanceContains edge to each one blows
+// up the export (observed 3.3M+ edges) without adding navigational value —
+// users and groups already attach to the graph through their membership and
+// safe-permission edges (CyberArk_MemberOf, CyberArk_HasAccessTo,
+// CyberArk_CanGrantAccessTo, CyberArk_CanApprove, CyberArk_Created, etc.).
+//
+// Accounts are likewise not linked here — they remain nested under their safe
+// via CyberArk_Contains (Instance → Safe → Account), mirroring hierarchical
+// containment.
+func (b *builder) addInstance() {
+	og, logger, pvwaTag := b.og, b.logger, b.pvwaTag
+
 	instanceNodeID := strings.ToUpper(fmt.Sprintf("cainstance-%s", pvwaTag))
 	og.MergeNode(&Node{
 		ID:    instanceNodeID,
@@ -1720,13 +1879,6 @@ func BuildOpenGraph(in BuildInput, logger *logrus.Logger) (*OpenGraph, error) {
 		}
 	}
 	logger.Infof("Created CyberArk_Instance node (%s) and %d CyberArk_InstanceContains edges", instanceNodeID, instanceEdgeCount)
-
-	if debug {
-		logger.Debugf("Graph build complete: nodes=%d internal_edges=%d external_edges=%d",
-			len(og.Nodes), len(og.InternalEdges), len(og.ExternalEdges))
-	}
-
-	return og, nil
 }
 
 // adAccountName reduces a user name as CyberArk stores it to the bare
