@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/url"
 	"runtime"
@@ -13,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/siemens-healthineers/cyberarkhound/internal/atomicfile"
 	"github.com/siemens-healthineers/cyberarkhound/pkg/client"
 	"github.com/siemens-healthineers/cyberarkhound/pkg/exporter"
 	"github.com/siemens-healthineers/cyberarkhound/pkg/graph"
@@ -91,6 +88,7 @@ func run(ctx context.Context, cfg *config, logger *logrus.Logger) int {
 		logger.Infof("PVWA tag: %s", pvwaTag(cfg))
 		warnGenericTag(cfg, logger)
 		api := newClient(ctx, cfg, logger)
+		api.ChallengePrompt = terminalChallengePrompt()
 
 		if cfg.authMethod == client.AuthMethodIdentity {
 			logger.Infof("Authenticating to CyberArk Identity (Privilege Cloud) at %s...", cfg.identityURL)
@@ -166,13 +164,15 @@ func run(ctx context.Context, cfg *config, logger *logrus.Logger) int {
 		for _, f := range findings {
 			logger.Warnf("[%s] %s: %d — %s", f.Severity, f.Title, f.Count, f.Detail)
 		}
-		logger.Info("Run with --include-applications and --include-platforms for complete findings coverage.")
+		if !cfg.includeApplications || !cfg.includePlatforms {
+			logger.Info("Run with --include-applications and --include-platforms for complete findings coverage.")
+		}
 	} else {
 		logger.Info("=== Security Findings === none detected from the collected data")
 	}
 
 	if cfg.findingsOutput != "" {
-		if err := writeFindings(cfg.findingsOutput, snap, findings); err != nil {
+		if err := writeFindings(cfg.findingsOutput, cfg.findingsFormat, snap, findings); err != nil {
 			logger.Errorf("Failed to write findings to %s: %v", cfg.findingsOutput, err)
 			exitCode = exitError
 		} else {
@@ -180,10 +180,24 @@ func run(ctx context.Context, cfg *config, logger *logrus.Logger) int {
 		}
 	}
 
-	if cfg.fromRaw == "" && ctx.Err() != nil {
+	// The most serious outcome decides the exit code: an error, then an
+	// interruption, then findings at or above --fail-on, then incomplete data.
+	switch {
+	case exitCode != exitOK:
+		return exitCode
+	case cfg.fromRaw == "" && ctx.Err() != nil:
 		return exitInterrupted
 	}
-	return exitCode
+	if cfg.failOn != "" {
+		if failing := findingsAtOrAbove(findings, cfg.failOn); len(failing) > 0 {
+			logger.Errorf("%d finding(s) at or above --fail-on %s", len(failing), cfg.failOn)
+			return exitFindings
+		}
+	}
+	if len(snap.Incomplete) > 0 {
+		return exitIncomplete
+	}
+	return exitOK
 }
 
 // loadResumable loads the --resume file and makes cfg match the collection it
@@ -279,36 +293,6 @@ func buildInput(snap *snapshot.Snapshot, cfg *config) graph.BuildInput {
 		}
 	}
 	return in
-}
-
-// findingsReport is the document written by --findings-output.
-type findingsReport struct {
-	GeneratedAt time.Time       `json:"generatedAt"`
-	CollectedAt time.Time       `json:"collectedAt"`
-	PVWAURL     string          `json:"pvwaUrl"`
-	PVWATag     string          `json:"pvwaTag"`
-	Incomplete  []string        `json:"incomplete,omitempty"`
-	Findings    []graph.Finding `json:"findings"`
-}
-
-func writeFindings(path string, snap *snapshot.Snapshot, findings []graph.Finding) error {
-	if findings == nil {
-		findings = []graph.Finding{}
-	}
-	report := findingsReport{
-		GeneratedAt: time.Now().UTC(),
-		CollectedAt: snap.CollectedAt,
-		PVWAURL:     snap.PVWAURL,
-		PVWATag:     snap.PVWATag,
-		Incomplete:  snap.Incomplete,
-		Findings:    findings,
-	}
-	return atomicfile.Write(path, func(w io.Writer) error {
-		enc := json.NewEncoder(w)
-		enc.SetEscapeHTML(false)
-		enc.SetIndent("", "  ")
-		return enc.Encode(report)
-	})
 }
 
 // logSummary prints node and edge counts by kind, in a stable order.

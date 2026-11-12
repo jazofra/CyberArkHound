@@ -5,10 +5,13 @@
 package snapshot
 
 import (
+	"bufio"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/siemens-healthineers/cyberarkhound/internal/atomicfile"
@@ -124,7 +127,10 @@ type onDisk struct {
 }
 
 // Save writes s to path as JSON, atomically and with mode 0600: the snapshot
-// describes the vault in detail.
+// describes the vault in detail. A path ending in ".gz" is written
+// gzip-compressed. Snapshots are repetitive JSON and compress to a small
+// fraction of their size, which matters for large vaults whose progress is
+// saved again every minute while collecting.
 func Save(path string, s *Snapshot) error {
 	d := onDisk{Snapshot: s}
 	for _, app := range s.Applications {
@@ -135,13 +141,36 @@ func Save(path string, s *Snapshot) error {
 		})
 	}
 	return atomicfile.Write(path, func(w io.Writer) error {
-		enc := json.NewEncoder(w)
+		buffered := bufio.NewWriterSize(w, 1<<20)
+		var out io.Writer = buffered
+		var zw *gzip.Writer
+		if IsCompressedPath(path) {
+			// The fastest level already removes most of the redundancy and
+			// keeps a save from taking much longer than an uncompressed one.
+			zw, _ = gzip.NewWriterLevel(buffered, gzip.BestSpeed)
+			out = zw
+		}
+		enc := json.NewEncoder(out)
 		enc.SetEscapeHTML(false)
-		return enc.Encode(d)
+		if err := enc.Encode(d); err != nil {
+			return err
+		}
+		if zw != nil {
+			if err := zw.Close(); err != nil {
+				return err
+			}
+		}
+		return buffered.Flush()
 	})
 }
 
-// Load reads a snapshot written by Save.
+// IsCompressedPath reports whether Save compresses the file at path.
+func IsCompressedPath(path string) bool {
+	return strings.HasSuffix(strings.ToLower(path), ".gz")
+}
+
+// Load reads a snapshot written by Save. Compression is recognised from the
+// file's content, not its name, so a renamed file still loads.
 func Load(path string) (*Snapshot, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -149,8 +178,19 @@ func Load(path string) (*Snapshot, error) {
 	}
 	defer f.Close()
 
+	in := bufio.NewReaderSize(f, 1<<20)
+	var r io.Reader = in
+	if magic, _ := in.Peek(2); len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
+		zr, err := gzip.NewReader(in)
+		if err != nil {
+			return nil, fmt.Errorf("decompress snapshot %s: %w", path, err)
+		}
+		defer zr.Close()
+		r = zr
+	}
+
 	d := onDisk{Snapshot: &Snapshot{}}
-	if err := json.NewDecoder(f).Decode(&d); err != nil {
+	if err := json.NewDecoder(r).Decode(&d); err != nil {
 		return nil, fmt.Errorf("decode snapshot %s: %w", path, err)
 	}
 	if d.FormatVersion != FormatVersion {

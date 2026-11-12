@@ -44,6 +44,8 @@ const passwordEnvVar = "CYBERARK_PASSWORD"
 const (
 	exitOK          = 0
 	exitError       = 1
+	exitIncomplete  = 2   // exported, but the collection does not cover the whole vault
+	exitFindings    = 3   // exported, with findings at or above --fail-on
 	exitInterrupted = 130 // conventional for SIGINT
 )
 
@@ -87,6 +89,8 @@ type config struct {
 	testSafe    string
 
 	findingsOutput string
+	findingsFormat string
+	failOn         string // lower-cased severity, or "" for no threshold
 	saveRaw        string
 	fromRaw        string
 	resume         string
@@ -163,7 +167,9 @@ func newFlagSet(cfg *config) (*pflag.FlagSet, *string, *bool, *bool) {
 
 	// Additional outputs and offline rebuilds
 	fs.StringVar(&cfg.findingsOutput, "findings-output", "", "Also write the security findings, with the objects behind each one, to this JSON file")
-	fs.StringVar(&cfg.saveRaw, "save-raw", "", "Also save the raw collected data to this JSON file, so the graph can be rebuilt later with --from-raw. Progress is saved periodically while collecting, so an interrupted or failed collection can be continued with --resume")
+	fs.StringVar(&cfg.findingsFormat, "findings-format", formatAuto, "Format of --findings-output: json, sarif, csv or markdown. The default, auto, goes by the file extension (.sarif, .csv, .md) and otherwise writes JSON")
+	fs.StringVar(&cfg.failOn, "fail-on", "", "Exit with code 3 when there are findings of this severity or higher: critical, high, medium or low")
+	fs.StringVar(&cfg.saveRaw, "save-raw", "", "Also save the raw collected data to this JSON file, so the graph can be rebuilt later with --from-raw. A name ending in .gz is written gzip-compressed, which is much smaller for large vaults. Progress is saved periodically while collecting, so an interrupted or failed collection can be continued with --resume")
 	fs.StringVar(&cfg.fromRaw, "from-raw", "", "Build the graph from a file written by --save-raw instead of contacting PVWA")
 	fs.Bool("version", false, "Print the version and exit")
 	fs.StringVar(&cfg.resume, "resume", "", "Continue an interrupted or failed collection from its --save-raw file: finished work is not fetched again, failed work is retried, and progress keeps being saved to that file (or to --save-raw)")
@@ -240,6 +246,18 @@ func parseFlags(args []string) (*config, error) {
 		cfg.pvwaTag = strings.ToUpper(cfg.pvwaTag)
 	}
 
+	format, ok := normalizeFindingsFormat(cfg.findingsFormat)
+	if !ok {
+		return nil, &usageError{fmt.Sprintf("invalid --findings-format %q (valid: json, sarif, csv, markdown)", cfg.findingsFormat)}
+	}
+	cfg.findingsFormat = format
+	if cfg.failOn != "" {
+		cfg.failOn = strings.ToLower(strings.TrimSpace(cfg.failOn))
+		if severityLevel(cfg.failOn) < 0 {
+			return nil, &usageError{fmt.Sprintf("invalid --fail-on %q (valid: critical, high, medium, low)", cfg.failOn)}
+		}
+	}
+
 	method, ok := client.NormalizeAuthMethod(cfg.authMethod)
 	if !ok {
 		return nil, &usageError{fmt.Sprintf("unsupported --auth-method %q (valid: cyberark, ldap, radius, windows, identity)", cfg.authMethod)}
@@ -295,6 +313,21 @@ func terminalPrompt() func() (string, error) {
 	}
 }
 
+// terminalChallengePrompt asks on the terminal for the answer to a RADIUS
+// challenge, without echoing it, or returns nil when stdin is not a terminal.
+func terminalChallengePrompt() func(string) (string, error) {
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		return nil
+	}
+	return func(challenge string) (string, error) {
+		fmt.Fprintf(os.Stderr, "%s: ", challenge)
+		b, err := term.ReadPassword(fd)
+		fmt.Fprintln(os.Stderr)
+		return strings.TrimSpace(string(b)), err
+	}
+}
+
 func main() {
 	os.Exit(realMain(os.Args[1:]))
 }
@@ -304,6 +337,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "       cyberarkhound --resume FILE --username USER --output FILE --target-domains DOMAINS [OPTIONS]\n")
 	fmt.Fprintf(w, "       cyberarkhound --from-raw FILE --output FILE --target-domains DOMAINS [OPTIONS]\n\n")
 	fmt.Fprintf(w, "The password is read from --password, the %s environment variable, or an interactive prompt.\n\n", passwordEnvVar)
+	fmt.Fprintf(w, "Exit codes: 0 success; 1 error; 2 exported, but the collection is incomplete; 3 findings at or above --fail-on; 130 interrupted.\n\n")
 	fs, _, _, _ := newFlagSet(&config{})
 	fs.SetOutput(w)
 	fs.PrintDefaults()

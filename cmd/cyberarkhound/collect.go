@@ -113,6 +113,10 @@ type collector struct {
 	saveMu     sync.Mutex
 	writtenSeq uint64 // sequence number of the copy on disk
 	saveFailed bool
+	// lastSaveNanos is how long the latest save took, and spaceSaves whether
+	// slow saves are spaced further apart than the checkpoint interval.
+	lastSaveNanos atomic.Int64
+	spaceSaves    bool
 	// predefinedExcludedBefore records that an earlier run of a resumed
 	// collection could not collect built-in safe members.
 	predefinedExcludedBefore bool
@@ -156,6 +160,7 @@ func newCollector(ctx context.Context, cfg *config, api *client.Client, logger *
 		logger:                   logger,
 		checkpointPath:           checkpointPath,
 		checkpointInterval:       interval,
+		spaceSaves:               cfg.checkpointInterval == 0,
 		snap:                     snap,
 		stages:                   toSet(p.Stages),
 		scanned:                  safeNameSet(p.ScannedSafes),
@@ -251,8 +256,15 @@ func (c *collector) checkpoint(force bool) {
 	if c.checkpointPath == "" {
 		return
 	}
+	// A save rewrites the whole collection, so on a very large vault it can
+	// take a while. Saves are spaced so that they never take more than about
+	// a tenth of the collection's time, however long each one gets.
+	interval := c.checkpointInterval
+	if spaced := 10 * time.Duration(c.lastSaveNanos.Load()); c.spaceSaves && spaced > interval {
+		interval = spaced
+	}
 	c.mu.Lock()
-	if !force && time.Since(c.lastSave) < c.checkpointInterval {
+	if !force && time.Since(c.lastSave) < interval {
 		c.mu.Unlock()
 		return
 	}
@@ -293,7 +305,10 @@ func (c *collector) write(snap *snapshot.Snapshot, seq uint64) {
 	if seq < c.writtenSeq {
 		return
 	}
-	if err := snapshot.Save(c.checkpointPath, snap); err != nil {
+	start := time.Now()
+	err := snapshot.Save(c.checkpointPath, snap)
+	c.lastSaveNanos.Store(int64(time.Since(start)))
+	if err != nil {
 		if !c.saveFailed {
 			c.logger.Errorf("Failed to save collection progress to %s: %v", c.checkpointPath, err)
 		}
