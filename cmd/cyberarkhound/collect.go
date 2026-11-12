@@ -10,10 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/siemens-healthineers/cyberarkhound/internal/parallel"
-	"github.com/siemens-healthineers/cyberarkhound/pkg/client"
-	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
-	"github.com/siemens-healthineers/cyberarkhound/pkg/snapshot"
+	"github.com/jazofra/CyberArkHound/internal/parallel"
+	"github.com/jazofra/CyberArkHound/pkg/client"
+	"github.com/jazofra/CyberArkHound/pkg/models"
+	"github.com/jazofra/CyberArkHound/pkg/snapshot"
 	"github.com/sirupsen/logrus"
 )
 

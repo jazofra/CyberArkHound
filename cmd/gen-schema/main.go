@@ -19,7 +19,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/siemens-healthineers/cyberarkhound/pkg/graph"
+	"github.com/jazofra/CyberArkHound/pkg/graph"
 )
 
 func main() {

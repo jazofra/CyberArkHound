@@ -11,11 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/siemens-healthineers/cyberarkhound/pkg/client"
-	"github.com/siemens-healthineers/cyberarkhound/pkg/exporter"
-	"github.com/siemens-healthineers/cyberarkhound/pkg/graph"
-	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
-	"github.com/siemens-healthineers/cyberarkhound/pkg/snapshot"
+	"github.com/jazofra/CyberArkHound/pkg/client"
+	"github.com/jazofra/CyberArkHound/pkg/exporter"
+	"github.com/jazofra/CyberArkHound/pkg/graph"
+	"github.com/jazofra/CyberArkHound/pkg/models"
+	"github.com/jazofra/CyberArkHound/pkg/snapshot"
 	"github.com/sirupsen/logrus"
 )
 

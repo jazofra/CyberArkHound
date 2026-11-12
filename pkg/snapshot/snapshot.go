@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/siemens-healthineers/cyberarkhound/internal/atomicfile"
-	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
+	"github.com/jazofra/CyberArkHound/internal/atomicfile"
+	"github.com/jazofra/CyberArkHound/pkg/models"
 )
 
 // FormatVersion is the on-disk format written by Save. Load rejects other

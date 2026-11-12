@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
+	"github.com/jazofra/CyberArkHound/pkg/models"
 )
 
 func TestSaveLoadRoundTrip(t *testing.T) {

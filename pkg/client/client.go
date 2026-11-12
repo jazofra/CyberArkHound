@@ -24,8 +24,8 @@ import (
 	"time"
 
 	ntlmssp "github.com/Azure/go-ntlmssp"
-	"github.com/siemens-healthineers/cyberarkhound/internal/parallel"
-	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
+	"github.com/jazofra/CyberArkHound/internal/parallel"
+	"github.com/jazofra/CyberArkHound/pkg/models"
 	"github.com/sirupsen/logrus"
 )
 

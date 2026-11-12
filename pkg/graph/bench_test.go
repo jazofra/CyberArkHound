@@ -4,8 +4,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/siemens-healthineers/cyberarkhound/internal/synth"
-	"github.com/siemens-healthineers/cyberarkhound/pkg/graph"
+	"github.com/jazofra/CyberArkHound/internal/synth"
+	"github.com/jazofra/CyberArkHound/pkg/graph"
 	"github.com/sirupsen/logrus"
 )
 

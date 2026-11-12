@@ -1,4 +1,4 @@
-module github.com/siemens-healthineers/cyberarkhound
+module github.com/jazofra/CyberArkHound
 
 go 1.26.0
 

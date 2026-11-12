@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/siemens-healthineers/cyberarkhound/internal/atomicfile"
-	"github.com/siemens-healthineers/cyberarkhound/pkg/graph"
-	"github.com/siemens-healthineers/cyberarkhound/pkg/snapshot"
+	"github.com/jazofra/CyberArkHound/internal/atomicfile"
+	"github.com/jazofra/CyberArkHound/pkg/graph"
+	"github.com/jazofra/CyberArkHound/pkg/snapshot"
 )
 
 // Findings report formats.

@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/siemens-healthineers/cyberarkhound/pkg/snapshot"
+	"github.com/jazofra/CyberArkHound/pkg/snapshot"
 )
 
 // multiSafePVWA is a fake PVWA with several safes ("Safe0", "Safe1", ...),

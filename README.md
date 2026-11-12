@@ -201,6 +201,11 @@ go build -o cyberarkhound.exe ./cmd/cyberarkhound
 go install ./cmd/cyberarkhound
 ```
 
+**Install with Go, without cloning:**
+```bash
+go install github.com/jazofra/CyberArkHound/cmd/cyberarkhound@latest
+```
+
 **Pre-built binaries:**
 Download pre-compiled binaries from the [Releases](https://github.com/jazofra/CyberArkHound/releases) page. Each release is built by the `Release` workflow when a `v*` tag is pushed, for Linux, macOS and Windows (amd64 and arm64), with the latest stable Go. Before running a downloaded binary, check it:
 

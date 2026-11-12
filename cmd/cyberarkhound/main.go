@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/siemens-healthineers/cyberarkhound/pkg/client"
-	"github.com/siemens-healthineers/cyberarkhound/pkg/graph"
+	"github.com/jazofra/CyberArkHound/pkg/client"
+	"github.com/jazofra/CyberArkHound/pkg/graph"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
 	"golang.org/x/term"

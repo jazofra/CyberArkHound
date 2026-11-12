@@ -3,7 +3,7 @@ package graph
 import (
 	"testing"
 
-	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
+	"github.com/jazofra/CyberArkHound/pkg/models"
 )
 
 func findingObjectIDs(f *Finding) map[string]string {
