@@ -474,7 +474,7 @@ func (b *builder) addSafes() {
 			Properties: SanitizeProperties(props),
 		})
 
-		safesByName[s.SafeName] = safeNodeID
+		safesByName[strings.ToLower(s.SafeName)] = safeNodeID
 
 		// CyberArk_Created edge (User → Safe) — safe creator relationship
 		if s.Creator.Name != "" {
@@ -845,10 +845,11 @@ func (b *builder) addAccounts() {
 
 		// Track accounts by safe
 		if a.SafeName != "" {
-			accountsBySafe[a.SafeName] = append(accountsBySafe[a.SafeName], accountNodeID)
+			safeKey := strings.ToLower(a.SafeName)
+			accountsBySafe[safeKey] = append(accountsBySafe[safeKey], accountNodeID)
 
 			// Add CyberArk_Contains edge (Safe -> Account)
-			safeNodeID := safesByName[a.SafeName]
+			safeNodeID := safesByName[safeKey]
 			if safeNodeID == "" {
 				safeNodeID = ref("CyberArk_Safe", "casafe", a.SafeName, "")
 			}
@@ -1062,7 +1063,11 @@ func (b *builder) addSafeMembers() {
 	// This is used together with the platform's requireDualControlPasswordAccessApproval
 	// setting to determine whether dual control is practically enforceable for each account.
 	safesWithApprovers := make(map[string]bool)
+	safesWithMembers := make(map[string]bool)
 	for _, sm := range safeMembers {
+		if sm.SafeName != "" {
+			safesWithMembers[strings.ToLower(sm.SafeName)] = true
+		}
 		if isExpired(sm) {
 			continue
 		}
@@ -1076,7 +1081,7 @@ func (b *builder) addSafeMembers() {
 				isGranted = strings.ToLower(v) == "true"
 			}
 			if isGranted && (normKey == "requestsauthorizationlevel1" || normKey == "requestsauthorizationlevel2") {
-				safesWithApprovers[sm.SafeName] = true
+				safesWithApprovers[strings.ToLower(sm.SafeName)] = true
 				break
 			}
 		}
@@ -1165,7 +1170,7 @@ func (b *builder) addSafeMembers() {
 					"isDefaultCCPApp":     appIsDefaultCCP[appKey],
 					"inferred":            false,
 				}
-				for _, accountNodeID := range accountsBySafe[sm.SafeName] {
+				for _, accountNodeID := range accountsBySafe[strings.ToLower(sm.SafeName)] {
 					og.AddEdge("CyberArk_CanRetrieveViaCCP", appNodeID, accountNodeID, "id", "id", props, false)
 				}
 			}
@@ -1193,7 +1198,8 @@ func (b *builder) addSafeMembers() {
 			}
 		}
 
-		safeNodeID := safesByName[sm.SafeName]
+		safeKey := strings.ToLower(sm.SafeName)
+		safeNodeID := safesByName[safeKey]
 		if safeNodeID == "" {
 			safeNodeID = ref("CyberArk_Safe", "casafe", sm.SafeName, "")
 		}
@@ -1294,7 +1300,7 @@ func (b *builder) addSafeMembers() {
 		// Record principals able to introduce/control accounts in this safe so
 		// reconcile-hijack edges can be built once linked-account data is processed.
 		if canManageAccounts {
-			safeManagers[sm.SafeName] = append(safeManagers[sm.SafeName], reconcileManager{
+			safeManagers[safeKey] = append(safeManagers[safeKey], reconcileManager{
 				nodeID: memberNodeID,
 				perms:  mgmtPermNames,
 			})
@@ -1325,27 +1331,25 @@ func (b *builder) addSafeMembers() {
 			// modified afterwards); on large vaults this saves most of the
 			// memory the edges take.
 			propsByPlatform := make(map[string]map[string]interface{})
-			accountsInSafe := accountsBySafe[sm.SafeName]
+			accountsInSafe := accountsBySafe[safeKey]
 			for _, accountNodeID := range accountsInSafe {
 				platID := accountPlatformID[accountNodeID]
 				if props, ok := propsByPlatform[platID]; ok {
 					og.AddEdge("CyberArk_HasAccessTo", memberNodeID, accountNodeID, "id", "id", props, false)
 					continue
 				}
-				requiresApproval := false
-				if !accessWithoutConfirmation {
-					_, platformLoaded := platformDualControl[platID]
-					if platID != "" && platformLoaded {
-						// Platform data available: use the authoritative policy setting,
-						// but only if the safe actually has approvers to enforce it
-						requiresApproval = platformDualControl[platID] && safesWithApprovers[sm.SafeName]
-					} else {
-						// No platform data for this account: fall back to approver-presence
-						// heuristic. This occurs when --include-platforms is not used, or when
-						// the account's platformId doesn't match any loaded platform.
-						requiresApproval = safesWithApprovers[sm.SafeName]
-					}
+				// Whether dual control applies to this account at all, before
+				// this member's own bypass is considered.
+				dualControlApplies := safesWithApprovers[safeKey]
+				if _, platformLoaded := platformDualControl[platID]; platID != "" && platformLoaded {
+					// Platform data available: use the authoritative policy setting,
+					// but only if the safe actually has approvers to enforce it.
+					// Otherwise fall back to the approver-presence heuristic. That
+					// occurs when --include-platforms is not used, or when the
+					// account's platformId doesn't match any loaded platform.
+					dualControlApplies = platformDualControl[platID] && safesWithApprovers[safeKey]
 				}
+				requiresApproval := dualControlApplies && !accessWithoutConfirmation
 				// Look up session management properties from the account's platform
 				requiresSessionMonitoring := false
 				recordsSessionActivity := false
@@ -1361,6 +1365,11 @@ func (b *builder) addSafeMembers() {
 					"requiresApproval":          requiresApproval,
 					"requiresSessionMonitoring": requiresSessionMonitoring,
 					"recordsSessionActivity":    recordsSessionActivity,
+				}
+				// Set only when true, so the many edges it does not apply to
+				// stay as small as before.
+				if dualControlApplies && accessWithoutConfirmation {
+					props["bypassesApproval"] = true
 				}
 				propsByPlatform[platID] = props
 				og.AddEdge("CyberArk_HasAccessTo", memberNodeID, accountNodeID, "id", "id", props, false)
@@ -1392,6 +1401,24 @@ func (b *builder) addSafeMembers() {
 
 	if expiredMemberships > 0 {
 		logger.Infof("Skipped edges for %d expired safe memberships", expiredMemberships)
+	}
+
+	// Flag accounts whose platform requires dual control while nobody in their
+	// safe can confirm a request. Only safes whose members were collected are
+	// judged, so a safe that could not be read is not reported as lacking
+	// approvers.
+	for safeKey, accountNodeIDs := range accountsBySafe {
+		if !safesWithMembers[safeKey] || safesWithApprovers[safeKey] {
+			continue
+		}
+		for _, accountNodeID := range accountNodeIDs {
+			if !platformDualControl[accountPlatformID[accountNodeID]] {
+				continue
+			}
+			if node := og.Nodes[accountNodeID]; node != nil {
+				node.Properties["dualControlWithoutApprovers"] = true
+			}
+		}
 	}
 
 	// Update user and group nodes with safe permissions
@@ -1484,6 +1511,10 @@ func (b *builder) addAccountActivities() {
 
 			ua := userActivity[username]
 			ua["usageCount"] = ua["usageCount"].(int) + 1
+			if key := activityCountKey[classifyActivity(action)]; key != "" {
+				n, _ := ua[key].(int)
+				ua[key] = n + 1
+			}
 
 			// Update last used time and action if this is more recent
 			if activityTime != "" {
@@ -1515,12 +1546,21 @@ func (b *builder) addAccountActivities() {
 					userNodeID, accountNodeID, userExists, usageData["usageCount"], usageData["lastUsedTime"], usageData["lastAction"])
 			}
 
+			retrieves, _ := usageData["retrieveCount"].(int)
+			connects, _ := usageData["connectCount"].(int)
+			cpmOps, _ := usageData["cpmCount"].(int)
 			og.AddEdge("CyberArk_UsedAccount", userNodeID, accountNodeID,
 				"id", "id", map[string]interface{}{
 					"lastUsedTime": usageData["lastUsedTime"],
 					"lastActivity": usageData["lastAction"],
 					"usageCount":   usageData["usageCount"],
-					"inferred":     false,
+					// How the account was used: a person retrieving or connecting with
+					// the credential, as opposed to the CPM managing it.
+					"retrieveCount":    retrieves,
+					"connectCount":     connects,
+					"cpmCount":         cpmOps,
+					"credentialAccess": retrieves+connects > 0,
+					"inferred":         false,
 				}, false)
 			activityEdgeCount++
 		}
@@ -1599,7 +1639,7 @@ func (b *builder) addLinkedAccounts() {
 		if sourceSafe == "" {
 			continue
 		}
-		managers := safeManagers[sourceSafe]
+		managers := safeManagers[strings.ToLower(sourceSafe)]
 		if len(managers) == 0 {
 			continue
 		}
@@ -1879,6 +1919,39 @@ func (b *builder) addInstance() {
 		}
 	}
 	logger.Infof("Created CyberArk_Instance node (%s) and %d CyberArk_InstanceContains edges", instanceNodeID, instanceEdgeCount)
+}
+
+// Activity categories, by who used the credential and how.
+const (
+	activityRetrieve = "retrieve" // a password was shown, copied or retrieved
+	activityConnect  = "connect"  // a session was opened with the account
+	activityCPM      = "cpm"      // the CPM verified, changed or reconciled it
+	activityOther    = "other"
+)
+
+// activityCountKey names the per-category counter kept for each category
+// that is reported on CyberArk_UsedAccount edges.
+var activityCountKey = map[string]string{
+	activityRetrieve: "retrieveCount",
+	activityConnect:  "connectCount",
+	activityCPM:      "cpmCount",
+}
+
+// classifyActivity sorts an account activity's action text ("Retrieve
+// password", "PSM Connect", "CPM Verify Password", ...) into a category.
+// Action texts vary between PVWA versions and languages, so anything not
+// recognised is activityOther rather than guessed at.
+func classifyActivity(action string) string {
+	a := strings.ToLower(strings.TrimSpace(action))
+	switch {
+	case strings.HasPrefix(a, "cpm"):
+		return activityCPM
+	case strings.Contains(a, "retrieve"), strings.Contains(a, "show"), strings.Contains(a, "copy"):
+		return activityRetrieve
+	case strings.Contains(a, "connect"), strings.Contains(a, "psm"):
+		return activityConnect
+	}
+	return activityOther
 }
 
 // adAccountName reduces a user name as CyberArk stores it to the bare
