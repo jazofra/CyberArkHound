@@ -104,7 +104,7 @@ Create a dedicated service account for BloodHound data collection:
 
 1. **Create Vault User**: `bloodhound-collector` (or similar)
 2. **Grant Vault Authorization**: `Audit Users`
-3. **Authentication Method**: CyberArk authentication (LDAP/RADIUS also supported)
+3. **Authentication Method**: CyberArk authentication (LDAP, RADIUS and Windows are also supported; see `--auth-method`)
 4. **User Type**: EPVUser (non-LDAP) or Directory User
 5. **Safe Permissions**: The user needs to be a member of all the safes in the environment or a member of a group that is a member to all the safes in CyberArk. Permissions required are 'list' and 'View Safe Members'
 6. **Store this account within CyberArk**: to ensure it is rotated as per CyberArk policies
@@ -288,7 +288,17 @@ A resumed collection skips the stages (users, groups, safes, platforms, PSM, app
 
 **Interrupting a collection:** the first Ctrl+C (or SIGTERM) stops the collection, logs off the PVWA session, and builds and exports whatever was collected so far, flagged as INCOMPLETE. With `--save-raw`, the progress is saved too, so the collection can be continued with `--resume`. A second Ctrl+C aborts immediately.
 
-**Exit codes:** `0` success (including an export flagged INCOMPLETE, e.g. with `--continue-on-error`), `1` error, `130` interrupted.
+**Exit codes:**
+
+| Code | Meaning |
+|------|---------|
+| `0` | The export was written and covers everything the collection asked for |
+| `1` | Error: nothing usable was exported, or an output file could not be written |
+| `2` | The export was written but is flagged INCOMPLETE (some safes, accounts or lookups failed, e.g. with `--continue-on-error`). Continue it with `--resume` |
+| `3` | The export was written and there are findings at or above `--fail-on` |
+| `130` | Interrupted (Ctrl+C or SIGTERM); what was collected so far was exported |
+
+When several apply, the first of 1, 130, 3, 2 wins. A script that only checks for a non-zero exit code now also stops on an incomplete export; accept code 2 explicitly if a partial graph is good enough.
 
 ### Command-Line Arguments
 
@@ -302,6 +312,8 @@ A resumed collection skips the stages (users, groups, safes, platforms, PSM, app
 
 **Authentication:**
 - `--auth-method` Authentication method: `cyberark` (default), `ldap`, `radius`, `windows` for self-hosted PVWA, or `identity` for Privilege Cloud / ISPSS (SaaS) OAuth2
+  - `radius`: if the RADIUS server answers the password with a challenge (typically a one-time code), CyberArkHound asks for the response on the terminal and sends it. Without a terminal such a logon fails, and a re-authentication in the middle of a long collection asks again, so prefer an account without a challenge for unattended runs
+  - `windows`: integrated Windows authentication. The credentials answer the NTLM (or Negotiate carrying NTLM) handshake of the logon request and are never sent in its body; give the user as `DOMAIN\user` or `user@domain`. Kerberos-only servers are not supported. Windows authentication must be enabled for the PVWA in IIS
 - `--identity-url` CyberArk Identity tenant URL for `--auth-method identity` (e.g. https://<tenant>.id.cyberark.cloud) — **required** for Privilege Cloud
 
 **Optional:**
@@ -337,8 +349,10 @@ When the bulk `GET /API/Users?ExtendedDetails=true` endpoint times out, CyberArk
 With `--from-raw`, the `--include-*` flags filter what is built from the raw data.
 
 **Additional outputs and offline rebuilds:**
-- `--findings-output` Also write the [security findings](#security-findings), with the objects behind each one, to this JSON file
-- `--save-raw` Also save the raw collected data (no credentials) to this JSON file. While collecting, progress is saved to it every minute and whenever the run stops, so the collection can be resumed
+- `--findings-output` Also write the [security findings](#security-findings), with the objects behind each one, to this file
+- `--findings-format` Format of that file: `json`, `sarif`, `csv` or `markdown`. The default, `auto`, goes by the file extension (`.sarif`, `.csv`, `.md`) and otherwise writes JSON
+- `--fail-on` Exit with code 3 when there are findings of this severity or higher: `critical`, `high`, `medium` or `low`. Useful to fail a scheduled job or pipeline on new exposure
+- `--save-raw` Also save the raw collected data (no credentials) to this JSON file. A name ending in `.gz` is written gzip-compressed, which is typically a small fraction of the size; `--resume` and `--from-raw` read either form. While collecting, progress is saved to it every minute and whenever the run stops, so the collection can be resumed. On very large vaults, where one save takes many seconds, saves are spaced further apart so they never take more than about a tenth of the run
 - `--resume` Continue an interrupted or failed collection from its `--save-raw` file. Finished work is not fetched again and failed work is retried; progress keeps being saved to the same file (or to `--save-raw`, if given). `--pvwa` defaults to the file's PVWA URL; the password and authentication flags are needed as for any collection
 - `--from-raw` Build the graph from a `--save-raw` file instead of contacting PVWA. Node IDs keep the original PVWA tag. A file from an unfinished collection builds a graph flagged INCOMPLETE
 
@@ -414,9 +428,13 @@ _Queries: [Privilege escalation](#privilege-escalation-cyberark_cangrantaccessto
 **Pattern**: Edges are created from users to accounts they've actually accessed within the specified time window (`--activity-days`). Multiple activities by the same user are aggregated into a single edge showing the most recent action.
 
 **Edge Properties**:
-- `lastUsedTime`: ISO 8601 timestamp of most recent access (e.g., "2025-11-25T14:32:01+00:00")
+- `lastUsedTime`: ISO 8601 timestamp of most recent access (e.g., "2025-11-25T14:32:01Z")
 - `lastActivity`: Most recent action performed (e.g., "CPM Verify Password", "RetrievePassword", "ShowPassword")
-- `usageCount`: Total number of times this user accessed this account in the time window
+- `usageCount`: Total number of activities this user performed on this account in the time window
+- `retrieveCount`: How many of them showed, copied or retrieved the password
+- `connectCount`: How many of them opened a session with the account (e.g. through PSM)
+- `cpmCount`: How many of them were CPM operations (verify, change, reconcile)
+- `credentialAccess`: `true` if a person retrieved the password or connected with the account at least once (`retrieveCount + connectCount > 0`). The CPM user's housekeeping produces edges with `credentialAccess: false`; filter on this property to see people only
 - `inferred`: false (based on actual audit data)
 
 **Technical Details**:
@@ -424,6 +442,7 @@ _Queries: [Privilege escalation](#privilege-escalation-cyberark_cangrantaccessto
 - Only activities within the lookback window are processed
 - If a user performed multiple actions, only the most recent is stored in `lastActivity`
 - The `usageCount` reflects all qualifying activities, not just the latest one
+- Activities are sorted into retrieve / connect / CPM by their action text. Action texts vary between PVWA versions and languages, so an action that is not recognised counts towards `usageCount` only
 - Parallel processing used for activity fetching (50 workers by default)
 
 _Queries: [Actual usage / activity](#actual-usage--activity-cyberark_usedaccount)._
@@ -477,6 +496,7 @@ When `--include-platforms` is not used, the platform policy cannot be checked. I
 
 **Edge Properties on CyberArk_HasAccessTo:**
 - `requiresApproval`: `true` if the member needs approval from a dual control authorizer before retrieving passwords
+- `bypassesApproval`: `true` if dual control applies to the account but this member skips it through `accessWithoutConfirmation`. Present only when true
 - `requiresSessionMonitoring`: `true` if the account's platform requires PSM session monitoring and isolation
 - `recordsSessionActivity`: `true` if the account's platform records and saves session activity
 
@@ -697,9 +717,13 @@ MATCH p=(u:CyberArk_User)-[r:CyberArk_UsedAccount]->(a:CyberArk_Account)
 WHERE a.safeName CONTAINS "prod"
 RETURN p ORDER BY r.lastUsedTime DESC
 
+// People only — leave out the CPM user's verify/change/reconcile housekeeping
+MATCH p=(u:CyberArk_User)-[r:CyberArk_UsedAccount {credentialAccess: true}]->(a:CyberArk_Account)
+RETURN p ORDER BY r.lastUsedTime DESC
+
 // Granted but never used — dormant access worth pruning
 MATCH p=(u:CyberArk_User)-[:CyberArk_HasAccessTo]->(a:CyberArk_Account)
-WHERE NOT (u)-[:CyberArk_UsedAccount]->(a)
+WHERE NOT (u)-[:CyberArk_UsedAccount {credentialAccess: true}]->(a)
 RETURN p
 
 // Used WITHOUT a matching access grant (possible escalation / audit gap)
@@ -898,6 +922,34 @@ RETURN p
 MATCH p=(s:CyberArk_Safe)-[:CyberArk_Contains]->(a:CyberArk_Account)
 WHERE s.managingCPM IS NULL OR s.managingCPM = ""
 RETURN p
+
+// Principals who can grant themselves access to a safe whose accounts they cannot use today (Medium)
+MATCH p=(principal)-[:CyberArk_CanGrantAccessTo]->(s:CyberArk_Safe)-[:CyberArk_Contains]->(a:CyberArk_Account)
+WHERE NOT (principal)-[:CyberArk_HasAccessTo]->(a)
+RETURN p
+
+// Principals who skip the approval an account requires (Medium)
+MATCH p=(principal)-[:CyberArk_HasAccessTo {bypassesApproval: true}]->(a:CyberArk_Account)
+RETURN p
+
+// Accounts that require an approval nobody in their safe can give (Medium)
+MATCH p=(s:CyberArk_Safe)-[:CyberArk_Contains]->(a:CyberArk_Account {dualControlWithoutApprovers: true})
+RETURN p
+
+// Disabled or suspended users that still hold access (Medium)
+MATCH p=(u:CyberArk_User)-[:CyberArk_HasAccessTo|CyberArk_CanGrantAccessTo]->()
+WHERE u.suspended = true OR u.enabled = false
+RETURN p
+
+// Accounts the CPM does not manage (Medium)
+MATCH (a:CyberArk_Account {automaticManagementEnabled: false})
+WHERE a.secretManagement IS NOT NULL
+RETURN a
+
+// Safe members that the user and group lists do not contain (Low)
+MATCH p=(principal {placeholder: true})-[:CyberArk_HasAccessTo|CyberArk_CanGrantAccessTo]->()
+WHERE principal:CyberArk_User OR principal:CyberArk_Group
+RETURN p
 ```
 
 ### Security Findings
@@ -912,9 +964,28 @@ At the end of each run, CyberArkHound logs a **Security Findings** summary deriv
 | Platforms with wildcard AllowedSafes (`.*`) | High | `CyberArk_Platform.allowedSafesIsWildcard` |
 | Reconcile-account hijack paths | High | `CyberArk_CanHijackViaReconcile` edges |
 | PSM-routed accounts without session isolation/recording | Medium | `CyberArk_Account.managedByPSM` + `sessionMonitoringEnabled`/`sessionRecordingEnabled` |
+| Principals who can grant themselves access they do not have | Medium | `CyberArk_CanGrantAccessTo` on a safe without `CyberArk_HasAccessTo` to its accounts |
+| Principals who bypass dual-control approval | Medium | `CyberArk_HasAccessTo.bypassesApproval` |
+| Dual control required but the safe has no approvers | Medium | `CyberArk_Account.dualControlWithoutApprovers` |
+| Disabled or suspended users that still hold access | Medium | `CyberArk_User.enabled` / `suspended` + access or grant edges |
+| Accounts with automatic management disabled | Medium | `CyberArk_Account.automaticManagementEnabled` false |
 | Safes without CPM management | Medium | `CyberArk_Safe.managingCPM` empty |
+| Safe members missing from the user and group lists | Low | placeholder `CyberArk_User`/`CyberArk_Group` with access or grant edges |
+
+Three of these are judged only when the data to judge them is present, so that a gap in the collection is not reported as a misconfiguration: disabled users are reported only when this PVWA returned the `enabled` flag for its users, unmanaged accounts only when the account's secret-management state was returned, and missing approvers only for safes whose members were collected.
 
 Only findings with a non-zero count are shown. For full coverage, run with `--include-applications` and `--include-platforms` (both default-on). An application whose authentication restrictions could not be read is marked `authenticationsUnknown` and is never counted as unrestricted.
+
+`--fail-on <severity>` makes the run exit with code 3 when any finding is at least that severe.
+
+`--findings-output` writes the findings to a file, in the format its extension asks for or the one given with `--findings-format`:
+
+| Format | Extension | Contents |
+|--------|-----------|----------|
+| `json` | any other | The full report, shown below |
+| `sarif` | `.sarif` | SARIF 2.1.0 for code-scanning and vulnerability-management tools: one rule per finding, one result per object, with the vault objects as logical locations |
+| `csv` | `.csv` | One row per object: `finding_id, severity, title, object_id, object_name, target_id, target_name` |
+| `markdown` | `.md` | A readable summary with the first 100 objects of each finding |
 
 With `--findings-output findings.json`, the same findings are also written as JSON, each listing the objects behind it (node `id` and `name`; for relationship-based findings also the `target` and `targetName`), together with the collection's `incomplete` reasons:
 
@@ -1060,6 +1131,49 @@ The three CCP findings (`CCP_UNRESTRICTED_APP`, `CCP_UNRESTRICTED_RETRIEVAL`, `C
   ```
 - **Remediation:** assign a CPM to the safe and enable periodic change/verification on the accounts.
 
+#### `GRANT_WITHOUT_ACCESS` — Principals who can grant themselves access they do not have (Medium)
+
+- **What it is:** a principal with `manageSafe` or `manageSafeMembers` on a safe (`CyberArk_CanGrantAccessTo`) who has no `useAccounts`/`retrieveAccounts` on the accounts in it.
+- **Why it matters:** the principal is one permission change away from every credential in the safe, and an access review that only asks "who can use these accounts" does not list them.
+- **Exploitable when:** you control the principal (or a member of the group). Add yourself, or raise your own permissions, through the safe-members API, then retrieve.
+- **How to assess:** built-in administrative groups (for example Vault Admins) are expected here; look at the others. Changing safe membership is audited, so the escalation is visible to anyone watching the safe's activity.
+- **Remediation:** separate safe administration from account use deliberately, keep the list of safe managers short, and alert on safe-member changes.
+
+#### `DUAL_CONTROL_BYPASS` — Principals who bypass dual-control approval (Medium)
+
+- **What it is:** accounts in the safe require approval before use, but the principal holds `accessWithoutConfirmation` and gets them unapproved (`bypassesApproval: true` on its `CyberArk_HasAccessTo` edges).
+- **Why it matters:** the control that reviewers assume protects these accounts does not apply to these principals.
+- **How to assess:** confirm each bypass is intended (break-glass and automation accounts often are) and that the principals are few and closely held. A group here extends the bypass to all its members.
+- **Remediation:** remove `accessWithoutConfirmation` where it is not needed.
+
+#### `DUAL_CONTROL_NO_APPROVERS` — Dual control required but the safe has no approvers (Medium)
+
+- **What it is:** the account's platform requires dual-control approval, and no current member of its safe holds `requestsAuthorizationLevel1` or `requestsAuthorizationLevel2`.
+- **Why it matters:** either nobody can use the account, because requests can never be confirmed, or the control is not applied in practice. Which one depends on the vault's configuration, so check rather than assume.
+- **How to assess:** try a request as a member without `accessWithoutConfirmation`. Note that the `requiresApproval` edge property is `false` for these accounts, because CyberArkHound treats approval as enforceable only where approvers exist.
+- **Remediation:** add approvers to the safe, or take the platform out of dual control if that was the intent.
+
+#### `INACTIVE_USER_WITH_ACCESS` — Disabled or suspended users that still hold access (Medium)
+
+- **What it is:** a user that is disabled or suspended but is still a safe member with access or grant rights.
+- **Why it matters:** the permissions are dormant, not gone. Re-enabling the user, or the directory account it is synced from, restores them at once, and such accounts are rarely watched.
+- **How to assess:** check whether the user also inherits access through groups (`CyberArk_MemberOf`), which this finding does not count.
+- **Remediation:** remove the safe memberships of users that are not coming back.
+
+#### `ACCOUNT_NOT_MANAGED` — Accounts with automatic management disabled (Medium)
+
+- **What it is:** an account whose `automaticManagementEnabled` is false, so the CPM does not rotate, verify or reconcile its password. `manualManagementReason` records why, when someone filled it in.
+- **Why it matters:** like `SAFE_NO_CPM`, it makes any exposure of the credential durable.
+- **How to assess:** check `lastModifiedTime` for how old the password is, and who can reach the account.
+- **Remediation:** re-enable automatic management, or document the exception and rotate by hand.
+
+#### `UNLISTED_PRINCIPAL_WITH_ACCESS` — Safe members missing from the user and group lists (Low)
+
+- **What it is:** a user or group that holds safe permissions but was not returned by the Users or Groups API, so it exists in the graph only as a placeholder.
+- **Why it matters:** its status, group memberships and directory mapping could not be reviewed. Typical causes are principals deleted from the directory but not from the safe, built-in members, and users the collector is not allowed to see.
+- **How to assess:** expect noise when the collection was limited (`--limit-users`, `--limit-groups`) or user details failed to load; the run's INCOMPLETE reasons say so.
+- **Remediation:** remove memberships of principals that no longer exist, and give the collector visibility of the rest.
+
 ### Deterministic Output
 
 Exports are **deterministic**: nodes are written sorted by `id`, edges by `(kind, start, end, properties)`, and list-valued properties such as `permissions` are sorted. Two collections of the same unchanged environment produce byte-identical exports, so they can be diffed across runs to spot real changes. A graph rebuilt with `--from-raw` is byte-identical to the export of the original run.
@@ -1102,6 +1216,7 @@ Exports are **deterministic**: nodes are written sorted by `id`, edges by `(kind
 - **Safe**: `safeName`, `safeUrlId`
 - **Status**: `status`, `enabled`, `secretType`
 - **Management**: `automaticManagementEnabled`, `manualManagementReason`
+- **Dual control**: `dualControlWithoutApprovers` (set to `true` when the account's platform requires dual-control approval and no member of its safe can confirm requests) — used by the `DUAL_CONTROL_NO_APPROVERS` finding
 - **Timestamps**: `createdTime`, `lastModifiedTime`, `lastVerifiedTime`, `lastReconciledTime`, `categoryModificationTime`
 - **CPM**: `lastModifiedBy`
 - **PSM posture** (set when platform data is available): `managedByPSM` (account is brokered by a PSM server), `sessionMonitoringEnabled`, `sessionRecordingEnabled` — used by the `PSM_BREAKOUT_EXPOSURE` finding
