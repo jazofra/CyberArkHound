@@ -432,6 +432,10 @@ When you add a node or edge kind, register it in `pkg/graph/kinds.go` (edge kind
 3. Keep changes small and focused; update README where behavior changes
 4. Submit PR describing rationale and any edge cases
 
+### License
+
+CyberArkHound is licensed under the [Apache License 2.0](LICENSE): you may use, modify and redistribute it, including commercially, as long as you keep the licence and copyright notices. Contributions are accepted under the same licence.
+
 ### Support
 
 Open issues for bugs or enhancement requests.

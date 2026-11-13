@@ -36,6 +36,7 @@ described by their [release notes](https://github.com/jazofra/CyberArkHound/rele
 - `--save-raw` names ending in `.gz` are written gzip-compressed; `--resume`
   and `--from-raw` read both forms.
 - `go install github.com/jazofra/CyberArkHound/cmd/cyberarkhound@latest`.
+- An Apache-2.0 `LICENSE`; the project had no licence file before.
 - `SECURITY.md`, this changelog, and reference documentation under `docs/`.
 
 ### Fixed
