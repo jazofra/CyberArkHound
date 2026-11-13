@@ -781,3 +781,92 @@ func TestAuthenticateAcceptsSchemelessURL(t *testing.T) {
 		t.Fatalf("logon path = %q", logonPath)
 	}
 }
+
+// pagedServer serves `total` items of a listing in pages of at most
+// serverCap items, whatever limit is asked for, with a nextLink while more
+// remain — as a PVWA that caps the page size does.
+func pagedServer(t *testing.T, path string, total, serverCap int, item func(i int) map[string]interface{}) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != path {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		page := make([]map[string]interface{}, 0, serverCap)
+		for i := offset; i < total && len(page) < serverCap; i++ {
+			page = append(page, item(i))
+		}
+		body := map[string]interface{}{"value": page, "count": total}
+		if offset+len(page) < total {
+			body["nextLink"] = fmt.Sprintf("api/x?offset=%d", offset+len(page))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(body)
+	}))
+}
+
+func TestListingsFollowNextLinkWhenServerCapsPageSize(t *testing.T) {
+	const total, serverCap = 57, 25
+
+	t.Run("safes", func(t *testing.T) {
+		server := pagedServer(t, "/PasswordVault/API/safes", total, serverCap, func(i int) map[string]interface{} {
+			return map[string]interface{}{"safeName": fmt.Sprintf("Safe%d", i)}
+		})
+		defer server.Close()
+		safes, err := testClient(server.URL).ListSafes(nil, nil)
+		if err != nil || len(safes) != total {
+			t.Fatalf("got %d safes (err %v), want %d", len(safes), err, total)
+		}
+		if safes[total-1].SafeName != fmt.Sprintf("Safe%d", total-1) {
+			t.Errorf("last safe is %q", safes[total-1].SafeName)
+		}
+	})
+
+	t.Run("safe members", func(t *testing.T) {
+		server := pagedServer(t, "/PasswordVault/API/Safes/S/Members", total, serverCap, func(i int) map[string]interface{} {
+			return map[string]interface{}{"memberName": fmt.Sprintf("m%d", i)}
+		})
+		defer server.Close()
+		members, err := testClient(server.URL).ListSafeMembers("S", "S")
+		if err != nil || len(members) != total {
+			t.Fatalf("got %d members (err %v), want %d", len(members), err, total)
+		}
+	})
+
+	t.Run("accounts", func(t *testing.T) {
+		server := pagedServer(t, "/PasswordVault/API/Accounts", total, serverCap, func(i int) map[string]interface{} {
+			return map[string]interface{}{"id": strconv.Itoa(i)}
+		})
+		defer server.Close()
+		accounts, err := testClient(server.URL).ListAccounts("S")
+		if err != nil || len(accounts) != total {
+			t.Fatalf("got %d accounts (err %v), want %d", len(accounts), err, total)
+		}
+		seen := make(map[string]bool)
+		for _, a := range accounts {
+			seen[a.ID] = true
+		}
+		if len(seen) != total {
+			t.Errorf("got %d distinct accounts, want %d", len(seen), total)
+		}
+	})
+}
+
+func TestMorePages(t *testing.T) {
+	for _, tc := range []struct {
+		pageLen, limit int
+		nextLink       string
+		want           bool
+	}{
+		{0, 100, "", false},
+		{0, 100, "next", false}, // an empty page ends the listing whatever the link says
+		{40, 100, "", false},
+		{40, 100, "next", true},
+		{100, 100, "", true},
+		{100, 100, "next", true},
+	} {
+		if got := morePages(tc.pageLen, tc.limit, tc.nextLink); got != tc.want {
+			t.Errorf("morePages(%d, %d, %q) = %v, want %v", tc.pageLen, tc.limit, tc.nextLink, got, tc.want)
+		}
+	}
+}

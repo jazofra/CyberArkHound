@@ -17,6 +17,7 @@ var EdgeInfoMap = map[string]EdgeInfo{
 	"CyberArk_HasAccessTo": {
 		Description: "The source principal is a member of the safe containing the target account with one or more account access permissions (useAccounts and/or retrieveAccounts). This is the primary credential access edge in CyberArk. " +
 			"The edge properties provide critical context: requiresApproval indicates whether dual-control enforcement is active (access requires an approval workflow before credentials can be retrieved); " +
+			"bypassesApproval, present only when true, marks a member who skips that approval through accessWithoutConfirmation; " +
 			"requiresSessionMonitoring and recordsSessionActivity indicate whether privileged sessions must be routed through PSM and whether session content is recorded. Expired safe memberships create no edge.",
 		WindowsAbuse: "To retrieve the account password directly (requires retrieveAccounts permission):\n\n" +
 			"$pvwaURL = 'https://<pvwa>'\n" +
@@ -352,7 +353,9 @@ var EdgeInfoMap = map[string]EdgeInfo{
 		Description: "The source CyberArk user has historically accessed the target account, as recorded in CyberArk audit logs. " +
 			"Unlike CyberArk_HasAccessTo (which shows current permissions), this edge confirms actual historical credential use. " +
 			"The lastUsedTime property indicates the most recent access timestamp, lastActivity indicates the action type (e.g. RetrievePassword, Connect), " +
-			"and usageCount shows the total number of recorded access events within the collection window.",
+			"and usageCount shows the total number of recorded activities within the collection window. " +
+			"retrieveCount, connectCount and cpmCount split that total into password retrievals, sessions and CPM operations; " +
+			"credentialAccess is true when a person retrieved the password or connected at least once, and false for CPM housekeeping.",
 		WindowsAbuse: "This edge is primarily forensic and investigative rather than directly exploitable. " +
 			"Use it to identify which accounts are operationally active, which users have the broadest credential access history, " +
 			"and which credentials are most likely to be cached or in active use by target users:\n\n" +

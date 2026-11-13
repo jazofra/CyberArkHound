@@ -3,7 +3,7 @@ package graph
 import (
 	"testing"
 
-	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
+	"github.com/jazofra/CyberArkHound/pkg/models"
 	"github.com/sirupsen/logrus"
 )
 

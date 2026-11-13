@@ -104,7 +104,7 @@ var EdgeTraversability = map[string]bool{
 	// reconcile account can reset the dependent, not the reverse). Marking it
 	// traversable made pathfinding report false paths such as
 	// "access to any account -> its Domain Admin reconcile account". Use the
-	// Cypher in the README to walk these chains in the attack direction.
+	// Cypher in docs/queries.md to walk these chains in the attack direction.
 	"CyberArk_LinkedTo": false,
 	// PSM infrastructure mapping only.
 	"CyberArk_UsesPSMServer": false,

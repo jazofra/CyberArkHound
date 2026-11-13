@@ -42,12 +42,25 @@ jobs:
       - name: Test (race + coverage)
         run: go test -race -coverprofile=coverage.out ./...
 
+      # Fails when total statement coverage drops below the floor. Raise the
+      # floor as coverage grows; do not lower it to make a change pass.
+      - name: Check coverage
+        env:
+          MIN_COVERAGE: "75.0"
+        run: |
+          total="$(go tool cover -func=coverage.out | awk '/^total:/ { sub("%", "", $3); print $3 }')"
+          echo "Total coverage: ${total}% (minimum ${MIN_COVERAGE}%)"
+          if ! awk -v t="$total" -v m="$MIN_COVERAGE" 'BEGIN { exit !(t >= m) }'; then
+            echo "::error::Total coverage ${total}% is below the minimum of ${MIN_COVERAGE}%."
+            exit 1
+          fi
+
       - name: Validate JSON artifacts
         run: |
           python3 -c "import json; json.load(open('extension/schema.json')); json.load(open('cyberark_model.json')); print('JSON valid')"
 
-  staticcheck:
-    name: Staticcheck
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -59,8 +72,37 @@ jobs:
           go-version: stable
           cache: true
 
-      - name: Staticcheck
-        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+      # Runs staticcheck, errcheck, govet, gosec and the other linters
+      # enabled in .golangci.yml.
+      - name: golangci-lint
+        run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./...
+
+  fuzz:
+    name: Fuzz (short)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # A few seconds per target catches regressions in the parsers that
+      # handle PVWA-supplied text; run a target for longer locally with
+      #   go test ./pkg/graph -run '^$' -fuzz '^FuzzParseDN$' -fuzztime 5m
+      - name: Fuzz each target briefly
+        run: |
+          set -euo pipefail
+          for pkg in ./pkg/graph ./pkg/client; do
+            for target in $(go test "$pkg" -list '^Fuzz' | grep '^Fuzz'); do
+              echo "::group::$pkg $target"
+              go test "$pkg" -run '^$' -fuzz "^${target}\$" -fuzztime 10s
+              echo "::endgroup::"
+            done
+          done
 
   govulncheck:
     name: Vulnerability scan

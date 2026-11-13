@@ -23,8 +23,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/siemens-healthineers/cyberarkhound/internal/parallel"
-	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
+	ntlmssp "github.com/Azure/go-ntlmssp"
+	"github.com/jazofra/CyberArkHound/internal/parallel"
+	"github.com/jazofra/CyberArkHound/pkg/models"
 	"github.com/sirupsen/logrus"
 )
 
@@ -145,6 +146,11 @@ type Client struct {
 	// members (Master, Vault Admins, Auditors, ...), which the Safe members API
 	// omits by default.
 	IncludePredefinedSafeMembers bool
+	// ChallengePrompt, when set, is asked for the answer to a RADIUS
+	// challenge (typically a one-time code); it is given the challenge text.
+	// Without it a logon that is challenged fails. A re-authentication in
+	// the middle of a collection asks again.
+	ChallengePrompt func(challenge string) (string, error)
 
 	// authMu serialises re-authentication so only one goroutine re-auths at a time.
 	authMu sync.Mutex
@@ -362,6 +368,10 @@ func retryAfterDelay(header string, now time.Time) (time.Duration, bool) {
 	if secs, err := strconv.Atoi(header); err == nil {
 		if secs < 0 {
 			return 0, false
+		}
+		// Cap before converting: a huge value would overflow the duration.
+		if secs > int(maxRetryAfter/time.Second) {
+			return maxRetryAfter, true
 		}
 		return time.Duration(secs) * time.Second, true
 	}
@@ -619,6 +629,17 @@ func lowerSafePageLimit(limit int) int {
 	return limit / 2
 }
 
+// morePages reports whether a paged listing has more to fetch after a page of
+// pageLen items requested with the given limit. PVWA's nextLink says so
+// directly. A page shorter than the limit therefore does not end the listing
+// while a nextLink is present: some PVWA versions cap the page size below the
+// limit asked for, and stopping there would silently drop everything after
+// the first page. Without a nextLink (older versions), a full page means
+// there may be more. An empty page always ends the listing.
+func morePages(pageLen, limit int, nextLink string) bool {
+	return pageLen > 0 && (nextLink != "" || pageLen >= limit)
+}
+
 // previewBody truncates a response body so it can be logged safely.
 func previewBody(body string) string {
 	const maxPreview = 200
@@ -728,7 +749,7 @@ func (c *Client) authenticateIdentity() error {
 	// 2. Interactive username/password — StartAuthentication → AdvanceAuthentication.
 	token, err := c.identityInteractiveToken()
 	if err != nil {
-		return fmt.Errorf("CyberArk Identity authentication failed (OAuth2 client_credentials grant rejected: %v): %w", ccErr, err)
+		return fmt.Errorf("CyberArk Identity authentication failed (OAuth2 client_credentials grant rejected: %w): %w", ccErr, err)
 	}
 	c.setToken(token)
 	c.Logger.Infof("Authenticated to CyberArk Identity via username/password (token length: %d chars)", len(token))
@@ -972,46 +993,46 @@ func (c *Client) authenticateSelfHosted() error {
 	}
 	segment := selfHostedLogonPathSegment[method]
 	authURL := fmt.Sprintf("%s/PasswordVault/API/Auth/%s/Logon", c.BaseURL, segment)
-	payload := map[string]string{
-		"username": c.Username,
-		"password": c.Password,
-	}
-
 	c.Logger.Debugf("Authenticating to %s as user %s (method %s)", c.BaseURL, c.Username, segment)
 
-	// Don't use retry logic for initial auth request to avoid infinite recursion
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal auth payload: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", authURL, bytes.NewReader(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to create auth request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	ctx, cancel := context.WithTimeout(c.context(), c.AuthTimeout)
-	defer cancel()
-	req = req.WithContext(ctx)
-
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("authentication request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		bodyBytes, readErr := io.ReadAll(resp.Body)
-		if readErr != nil {
-			return fmt.Errorf("authentication failed with HTTP %d: failed to read error response: %w", resp.StatusCode, readErr)
+	// The logon request does not go through the retry logic: that logic
+	// re-authenticates on HTTP 401, which would recurse.
+	password := c.Password
+	var bodyBytes []byte
+	for round := 0; ; round++ {
+		status, body, err := c.logonRequest(authURL, method, password)
+		if err != nil {
+			return err
 		}
-		return fmt.Errorf("authentication failed with HTTP %d: %s", resp.StatusCode, string(bodyBytes))
-	}
+		if status < 400 {
+			bodyBytes = body
+			break
+		}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read auth response: %w", err)
+		// RADIUS servers can answer the password with a challenge (typically
+		// a one-time code). PVWA reports it as error ITATS542I, and the
+		// answer is sent as the password of a repeated logon.
+		challenge, isChallenge := radiusChallenge(body)
+		if method != AuthMethodRADIUS || !isChallenge {
+			if method == AuthMethodWindows && status == http.StatusUnauthorized {
+				return fmt.Errorf("authentication failed with HTTP 401: %s (Windows authentication needs NTLM or Negotiate enabled for the PVWA in IIS, and the account in DOMAIN\\user or user@domain form)", previewBody(string(body)))
+			}
+			return fmt.Errorf("authentication failed with HTTP %d: %s", status, string(body))
+		}
+		if round >= maxRADIUSChallenges {
+			return fmt.Errorf("authentication failed: RADIUS asked for more than %d challenge responses", maxRADIUSChallenges)
+		}
+		if c.ChallengePrompt == nil {
+			return fmt.Errorf("RADIUS asked for a challenge response (%s), which needs an interactive terminal; run interactively, or use a method without a challenge", challenge)
+		}
+		answer, err := c.ChallengePrompt(challenge)
+		if err != nil {
+			return fmt.Errorf("read RADIUS challenge response: %w", err)
+		}
+		if answer == "" {
+			return errors.New("authentication failed: empty RADIUS challenge response")
+		}
+		password = answer
 	}
 
 	if len(bodyBytes) == 0 {
@@ -1053,6 +1074,90 @@ func (c *Client) authenticateSelfHosted() error {
 	c.setToken(token)
 	c.Logger.Infof("Authenticated successfully (token length: %d chars)", len(token))
 	return nil
+}
+
+// maxRADIUSChallenges is how many challenge rounds one RADIUS logon may take.
+const maxRADIUSChallenges = 5
+
+// logonRequest sends one self-hosted logon request and returns the response
+// status and body.
+//
+// CyberArk, LDAP and RADIUS logons carry the credentials in the JSON body.
+// Windows logon is integrated authentication: IIS authenticates the HTTP
+// request itself with NTLM (or Negotiate carrying NTLM), so the credentials
+// answer that handshake and are never put in the body.
+func (c *Client) logonRequest(authURL, method, password string) (int, []byte, error) {
+	payload := map[string]string{}
+	if method != AuthMethodWindows {
+		payload["username"] = c.Username
+		payload["password"] = password
+	}
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to marshal auth payload: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(c.context(), c.AuthTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "POST", authURL, bytes.NewReader(jsonData))
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to create auth request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	httpClient := c.HTTPClient
+	if method == AuthMethodWindows {
+		// The negotiator takes the credentials from the request and answers
+		// the server's NTLM challenge with them; it never sends them as
+		// Basic authentication.
+		req.SetBasicAuth(c.Username, password)
+		httpClient = c.ntlmHTTPClient()
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("authentication request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to read auth response (HTTP %d): %w", resp.StatusCode, err)
+	}
+	return resp.StatusCode, body, nil
+}
+
+// ntlmHTTPClient returns an HTTP client that answers NTLM challenges. It
+// shares the cookie jar of the main client, so affinity cookies set during
+// logon apply to the API requests that follow. NTLM authenticates a
+// connection, not a request, so HTTP/2 (which multiplexes requests) is off.
+func (c *Client) ntlmHTTPClient() *http.Client {
+	rt := c.HTTPClient.Transport
+	if t, ok := rt.(*http.Transport); ok {
+		t = t.Clone()
+		t.ForceAttemptHTTP2 = false
+		t.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+		rt = t
+	}
+	return &http.Client{
+		Transport: ntlmssp.Negotiator{RoundTripper: rt},
+		Jar:       c.HTTPClient.Jar,
+		Timeout:   c.HTTPClient.Timeout,
+	}
+}
+
+// radiusChallenge reports whether a failed logon response is a RADIUS
+// challenge (PVWA error ITATS542I) and returns the challenge text to show.
+func radiusChallenge(body []byte) (string, bool) {
+	if !bytes.Contains(body, []byte("ITATS542I")) {
+		return "", false
+	}
+	var e struct {
+		ErrorMessage string `json:"ErrorMessage"`
+	}
+	if json.Unmarshal(body, &e) == nil && strings.TrimSpace(e.ErrorMessage) != "" {
+		return strings.TrimSpace(e.ErrorMessage), true
+	}
+	return "RADIUS challenge", true
 }
 
 // reauthIfNeeded performs single-flight re-authentication.  The caller passes
@@ -1129,6 +1234,7 @@ func (c *Client) ListSafes(limitCount *int, search *string) ([]models.Safe, erro
 	offset := 0
 	skipped := 0
 	consecutiveSkips := 0
+	reportedCount := 0
 
 	for {
 		safeURL := fmt.Sprintf("%s/PasswordVault/API/safes?limit=%d&offset=%d", c.BaseURL, limit, offset)
@@ -1167,7 +1273,9 @@ func (c *Client) ListSafes(limitCount *int, search *string) ([]models.Safe, erro
 		}
 
 		var data struct {
-			Value []models.Safe `json:"value"`
+			Value    []models.Safe `json:"value"`
+			Count    int           `json:"count"`
+			NextLink string        `json:"nextLink"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 			resp.Body.Close()
@@ -1184,7 +1292,10 @@ func (c *Client) ListSafes(limitCount *int, search *string) ([]models.Safe, erro
 			break
 		}
 
-		if len(data.Value) < limit {
+		if data.Count > reportedCount {
+			reportedCount = data.Count
+		}
+		if !morePages(len(data.Value), limit, data.NextLink) {
 			break
 		}
 
@@ -1202,6 +1313,9 @@ func (c *Client) ListSafes(limitCount *int, search *string) ([]models.Safe, erro
 		}
 	}
 
+	if limitCount == nil && reportedCount > len(safes)+skipped {
+		c.Logger.Warnf("PVWA reports %d safes but returned %d; the others may not be visible to this user", reportedCount, len(safes))
+	}
 	if skipped > 0 {
 		c.Logger.Warnf("Collected %d safes; skipped %d safe(s) PVWA could not return", len(safes), skipped)
 		c.noteIncomplete("%d safe(s) could not be returned by PVWA and are missing, along with their members and accounts", skipped)
@@ -1289,7 +1403,8 @@ func (c *Client) listSafeMembers(segment string, includePredefined bool) ([]mode
 		}
 
 		var data struct {
-			Value []models.SafeMember `json:"value"`
+			Value    []models.SafeMember `json:"value"`
+			NextLink string              `json:"nextLink"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 			resp.Body.Close()
@@ -1299,11 +1414,11 @@ func (c *Client) listSafeMembers(segment string, includePredefined bool) ([]mode
 
 		members = append(members, data.Value...)
 
-		if len(data.Value) < limit {
+		if !morePages(len(data.Value), limit, data.NextLink) {
 			break
 		}
 
-		offset += limit
+		offset += len(data.Value)
 	}
 
 	return members, nil
@@ -1330,8 +1445,9 @@ func (c *Client) ListAccounts(safeName string) ([]models.Account, error) {
 		}
 
 		var data struct {
-			Value []models.Account `json:"value"`
-			Count int              `json:"count"`
+			Value    []models.Account `json:"value"`
+			Count    int              `json:"count"`
+			NextLink string           `json:"nextLink"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 			resp.Body.Close()
@@ -1348,11 +1464,11 @@ func (c *Client) ListAccounts(safeName string) ([]models.Account, error) {
 
 		accounts = append(accounts, data.Value...)
 
-		if len(data.Value) < limit {
+		if !morePages(len(data.Value), limit, data.NextLink) {
 			break
 		}
 
-		offset += limit
+		offset += len(data.Value)
 	}
 
 	if totalAPICount > 0 && len(accounts) < totalAPICount {

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
+	"github.com/jazofra/CyberArkHound/pkg/models"
 )
 
 // externalEdge returns the single external edge of kind starting at start,
