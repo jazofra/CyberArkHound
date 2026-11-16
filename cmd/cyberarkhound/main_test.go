@@ -407,3 +407,118 @@ func TestVersionFlag(t *testing.T) {
 		t.Fatal("toolVersion is empty")
 	}
 }
+
+func TestFailOnSetsExitCode(t *testing.T) {
+	f := newFakePVWA(t)
+	// The fake vault's worst finding is High: its platform allows any safe.
+	for threshold, want := range map[string]int{"low": exitFindings, "medium": exitFindings, "high": exitFindings, "critical": exitOK} {
+		cfg := mustParse(t, liveArgs(f, t.TempDir(), "--fail-on", threshold)...)
+		if code := run(context.Background(), cfg, quietLogger()); code != want {
+			t.Errorf("--fail-on %s: exit code = %d, want %d", threshold, code, want)
+		}
+	}
+	if _, err := parseFlags([]string{"--from-raw", "x", "--output", "o", "--target-domains", "d", "--fail-on", "severe"}); err == nil {
+		t.Error("an unknown --fail-on severity should be rejected")
+	}
+}
+
+func TestFindingsReportFormats(t *testing.T) {
+	f := newFakePVWA(t)
+	dir := t.TempDir()
+	raw := filepath.Join(dir, "raw.json.gz")
+	if code := run(context.Background(), mustParse(t, liveArgs(f, dir, "--save-raw", raw)...), quietLogger()); code != exitOK {
+		t.Fatalf("collection exit code = %d", code)
+	}
+	// The compressed raw file is gzip, and rebuilds like an uncompressed one.
+	if head, err := os.ReadFile(raw); err != nil || len(head) < 2 || head[0] != 0x1f || head[1] != 0x8b {
+		t.Fatalf("%s is not gzip-compressed (err %v)", raw, err)
+	}
+	rebuild := func(extra ...string) string {
+		t.Helper()
+		args := append([]string{"--from-raw", raw, "--output", filepath.Join(dir, "rebuilt.json"), "--target-domains", "corp.local"}, extra...)
+		if code := run(context.Background(), mustParse(t, args...), quietLogger()); code != exitOK {
+			t.Fatalf("rebuild %v: exit code = %d", extra, code)
+		}
+		data, err := os.ReadFile(extra[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+
+	sarif := rebuild("--findings-output", filepath.Join(dir, "f.sarif"))
+	var log struct {
+		Version string `json:"version"`
+		Runs    []struct {
+			Tool struct {
+				Driver struct {
+					Rules []struct {
+						ID string `json:"id"`
+					} `json:"rules"`
+				} `json:"driver"`
+			} `json:"tool"`
+			Results []struct {
+				RuleID    string `json:"ruleId"`
+				Level     string `json:"level"`
+				Locations []struct {
+					LogicalLocations []struct {
+						FullyQualifiedName string `json:"fullyQualifiedName"`
+					} `json:"logicalLocations"`
+				} `json:"locations"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal([]byte(sarif), &log); err != nil {
+		t.Fatalf("SARIF report is not JSON: %v", err)
+	}
+	if log.Version != "2.1.0" || len(log.Runs) != 1 || len(log.Runs[0].Tool.Driver.Rules) == 0 {
+		t.Fatalf("unexpected SARIF document: %s", sarif)
+	}
+	var noCPM bool
+	for _, r := range log.Runs[0].Results {
+		if r.RuleID == "SAFE_NO_CPM" && r.Level == "warning" && r.Locations[0].LogicalLocations[0].FullyQualifiedName == "CASAFE-PROD-"+pvwaTag(mustParse(t, liveArgs(f, dir)...)) {
+			noCPM = true
+		}
+	}
+	if !noCPM {
+		t.Errorf("SARIF report lacks the SAFE_NO_CPM result for safe Prod: %s", sarif)
+	}
+
+	csvReport := rebuild("--findings-output", filepath.Join(dir, "f.csv"))
+	if !strings.HasPrefix(csvReport, "finding_id,severity,title,object_id,object_name,target_id,target_name\n") ||
+		!strings.Contains(csvReport, "SAFE_NO_CPM,Medium,Safes without CPM management,CASAFE-PROD-") {
+		t.Errorf("unexpected CSV report:\n%s", csvReport)
+	}
+
+	md := rebuild("--findings-output", filepath.Join(dir, "f.md"))
+	if !strings.Contains(md, "# CyberArkHound security findings") || !strings.Contains(md, "`SAFE_NO_CPM`") || !strings.Contains(md, "- Prod (CASAFE-PROD-") {
+		t.Errorf("unexpected Markdown report:\n%s", md)
+	}
+
+	// An explicit format wins over the file extension.
+	asJSON := rebuild("--findings-output", filepath.Join(dir, "g.csv"), "--findings-format", "json")
+	if !strings.HasPrefix(strings.TrimSpace(asJSON), "{") {
+		t.Errorf("--findings-format json wrote: %s", asJSON)
+	}
+}
+
+func TestFindingsFormatResolution(t *testing.T) {
+	for _, tc := range []struct{ format, path, want string }{
+		{formatAuto, "out.json", formatJSON},
+		{formatAuto, "out", formatJSON},
+		{formatAuto, "out.SARIF", formatSARIF},
+		{formatAuto, "out.sarif.json", formatSARIF},
+		{formatAuto, "dir.csv/out.md", formatMarkdown},
+		{formatCSV, "out.md", formatCSV},
+	} {
+		if got := findingsFormat(tc.format, tc.path); got != tc.want {
+			t.Errorf("findingsFormat(%q, %q) = %q, want %q", tc.format, tc.path, got, tc.want)
+		}
+	}
+	if _, ok := normalizeFindingsFormat("xml"); ok {
+		t.Error("xml should not be a valid findings format")
+	}
+	if got := csvText("=cmd()"); got != "'=cmd()" {
+		t.Errorf("csvText did not neutralise a formula: %q", got)
+	}
+}

@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/siemens-healthineers/cyberarkhound/pkg/snapshot"
+	"github.com/jazofra/CyberArkHound/pkg/snapshot"
 )
 
 // multiSafePVWA is a fake PVWA with several safes ("Safe0", "Safe1", ...),
@@ -313,9 +313,10 @@ func TestResumeRetriesFailedSafe(t *testing.T) {
 	dir := t.TempDir()
 	raw := filepath.Join(dir, "raw.json")
 	cfg := mustParse(t, multiArgs(f, filepath.Join(dir, "first.json"), "--save-raw", raw)...)
-	if code := run(context.Background(), cfg, quietLogger()); code != exitOK {
+	if code := run(context.Background(), cfg, quietLogger()); code != exitIncomplete {
 		t.Fatalf("first run exit code = %d", code)
 	}
+	// A run that exports but misses part of the vault says so in its exit code.
 	first := loadProgress(t, raw)
 	if !strings.Contains(strings.Join(first.Incomplete, "\n"), "members could not be fetched for 1 of 3 safes") {
 		t.Fatalf("first run should report the failed safe: %v", first.Incomplete)
@@ -412,7 +413,7 @@ func TestResumeDetailsAccountsOfRetriedSafe(t *testing.T) {
 	f.failAccounts["Safe1"] = true
 	dir := t.TempDir()
 	raw := filepath.Join(dir, "raw.json")
-	if code := run(context.Background(), mustParse(t, multiArgs(f, filepath.Join(dir, "first.json"), "--save-raw", raw)...), quietLogger()); code != exitOK {
+	if code := run(context.Background(), mustParse(t, multiArgs(f, filepath.Join(dir, "first.json"), "--save-raw", raw)...), quietLogger()); code != exitIncomplete {
 		t.Fatalf("first run exit code = %d", code)
 	}
 	if first := loadProgress(t, raw); !strings.Contains(strings.Join(first.Incomplete, "\n"), "accounts could not be listed for 1 of 3 safes") {

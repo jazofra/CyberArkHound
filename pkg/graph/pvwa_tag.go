@@ -123,11 +123,13 @@ func splitTokens(label string) []string {
 	return tokens
 }
 
+// keepAlphaNum keeps the ASCII letters and digits of s. Other letters are
+// dropped as well: the tag becomes part of every node ID and is cut by bytes.
 func keepAlphaNum(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+		if r < unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
 			b.WriteRune(r)
 		}
 	}

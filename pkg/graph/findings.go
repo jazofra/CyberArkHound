@@ -16,7 +16,7 @@ import "sort"
 type Finding struct {
 	ID       string          `json:"id"`
 	Title    string          `json:"title"`
-	Severity string          `json:"severity"` // Critical, High, or Medium
+	Severity string          `json:"severity"` // Critical, High, Medium or Low
 	Count    int             `json:"count"`
 	Detail   string          `json:"detail"`
 	Objects  []FindingObject `json:"objects"`
@@ -41,8 +41,10 @@ func severityRank(sev string) int {
 		return 1
 	case "Medium":
 		return 2
-	default:
+	case "Low":
 		return 3
+	default:
+		return 4
 	}
 }
 
@@ -93,7 +95,60 @@ func ComputeFindings(og *OpenGraph) []Finding {
 		})
 	}
 
+	// Index the relationships the findings below reason about.
+	type pair struct{ principal, safe string }
+	safeOfAccount := make(map[string]string) // account node ID -> safe node ID
+	accountsInSafe := make(map[string]int)   // safe node ID -> number of accounts
+	for _, e := range og.InternalEdges {
+		if e.Kind == "CyberArk_Contains" {
+			safeOfAccount[e.End.Value] = e.Start.Value
+			accountsInSafe[e.Start.Value]++
+		}
+	}
+	holdsPermissions := make(map[string]bool) // principals with access or grant rights
+	accessTo := make(map[pair]bool)           // principal can use accounts of the safe
+	bypasses := make(map[pair]bool)           // ... and skips the approval they require
+	for _, e := range og.InternalEdges {
+		switch e.Kind {
+		case "CyberArk_HasAccessTo":
+			holdsPermissions[e.Start.Value] = true
+			p := pair{e.Start.Value, safeOfAccount[e.End.Value]}
+			accessTo[p] = true
+			if boolProp(e.Props, "bypassesApproval") {
+				bypasses[p] = true
+			}
+		case "CyberArk_CanGrantAccessTo":
+			holdsPermissions[e.Start.Value] = true
+		}
+	}
+	addPair := func(findingID string, p pair) {
+		objects[findingID] = append(objects[findingID], FindingObject{
+			ID: p.principal, Name: nodeName(p.principal),
+			Target: p.safe, TargetName: nodeName(p.safe),
+		})
+	}
+	for p := range bypasses {
+		addPair("DUAL_CONTROL_BYPASS", p)
+	}
+
+	// A user's enabled flag is only meaningful when this PVWA reported it:
+	// the basic user list leaves it out, and it then reads as false for
+	// everyone.
+	enabledReported := false
 	for _, n := range og.Nodes {
+		if nodeHasKind(n, "CyberArk_User") && boolProp(n.Properties, "enabled") {
+			enabledReported = true
+			break
+		}
+	}
+
+	for _, n := range og.Nodes {
+		// A principal that holds permissions but is missing from the user
+		// and group lists cannot be reviewed like the others.
+		if boolProp(n.Properties, "placeholder") && holdsPermissions[n.ID] &&
+			(nodeHasKind(n, "CyberArk_User") || nodeHasKind(n, "CyberArk_Group")) {
+			addNode("UNLISTED_PRINCIPAL_WITH_ACCESS", n)
+		}
 		// Placeholders stand for objects that were referenced but never
 		// collected, so their (absent) settings say nothing.
 		if boolProp(n.Properties, "placeholder") {
@@ -115,7 +170,20 @@ func ComputeFindings(og *OpenGraph) []Finding {
 			if stringProp(n.Properties, "managingCPM") == "" {
 				addNode("SAFE_NO_CPM", n)
 			}
+		case nodeHasKind(n, "CyberArk_User"):
+			if holdsPermissions[n.ID] && (boolProp(n.Properties, "suspended") ||
+				(enabledReported && !boolProp(n.Properties, "enabled"))) {
+				addNode("INACTIVE_USER_WITH_ACCESS", n)
+			}
 		case nodeHasKind(n, "CyberArk_Account"):
+			if boolProp(n.Properties, "dualControlWithoutApprovers") {
+				addNode("DUAL_CONTROL_NO_APPROVERS", n)
+			}
+			// Only judged when PVWA returned the account's secret-management
+			// state; without it the flag is unknown, not off.
+			if _, known := n.Properties["secretManagement"]; known && !boolProp(n.Properties, "automaticManagementEnabled") {
+				addNode("ACCOUNT_NOT_MANAGED", n)
+			}
 			// PSM-breakout exposure: an account routed through a PSM server whose
 			// platform has session isolation OR recording disabled — a quieter /
 			// easier target for escaping the brokered session. Only count when the
@@ -139,6 +207,12 @@ func ComputeFindings(og *OpenGraph) []Finding {
 			}
 		case "CyberArk_CanHijackViaReconcile":
 			addEdge("RECONCILE_HIJACK_EXPOSURE", e)
+		case "CyberArk_CanGrantAccessTo":
+			// The principal cannot use the safe's accounts today, but can
+			// give itself (or anyone) that access.
+			if accountsInSafe[e.End.Value] > 0 && !accessTo[pair{e.Start.Value, e.End.Value}] {
+				addEdge("GRANT_WITHOUT_ACCESS", e)
+			}
 		}
 	}
 
@@ -180,10 +254,46 @@ func ComputeFindings(og *OpenGraph) []Finding {
 			Detail:   "Accounts brokered by a PSM server whose platform has session isolation or recording disabled — a quieter and easier target for breaking out of the published session to reach the PSM host and the credentials it brokers.",
 		},
 		{
+			ID:       "GRANT_WITHOUT_ACCESS",
+			Title:    "Principals who can grant themselves access they do not have",
+			Severity: "Medium",
+			Detail:   "Principal->safe pairs where the principal can manage the safe or its members (CyberArk_CanGrantAccessTo) but has no access to the accounts in it. The access is one self-service permission change away, and reviews of who can use the accounts miss it.",
+		},
+		{
+			ID:       "DUAL_CONTROL_BYPASS",
+			Title:    "Principals who bypass dual-control approval",
+			Severity: "Medium",
+			Detail:   "Principal->safe pairs where accounts require approval (dual control) but the principal holds accessWithoutConfirmation and can use them unapproved.",
+		},
+		{
+			ID:       "DUAL_CONTROL_NO_APPROVERS",
+			Title:    "Dual control required but the safe has no approvers",
+			Severity: "Medium",
+			Detail:   "Accounts whose platform requires dual-control approval while no member of their safe can confirm requests. Check whether access to them is blocked or the control is not applied in practice.",
+		},
+		{
+			ID:       "INACTIVE_USER_WITH_ACCESS",
+			Title:    "Disabled or suspended users that still hold access",
+			Severity: "Medium",
+			Detail:   "Users that are disabled or suspended but remain safe members with access or grant rights. The permissions come back the moment the user is re-enabled.",
+		},
+		{
+			ID:       "ACCOUNT_NOT_MANAGED",
+			Title:    "Accounts with automatic management disabled",
+			Severity: "Medium",
+			Detail:   "Accounts the CPM does not manage (automaticManagementEnabled=false): their passwords are not rotated, verified or reconciled automatically.",
+		},
+		{
 			ID:       "SAFE_NO_CPM",
 			Title:    "Safes without CPM management",
 			Severity: "Medium",
 			Detail:   "Safes with no managing CPM do not have automated password rotation; stored credentials may be stale or unrotated.",
+		},
+		{
+			ID:       "UNLISTED_PRINCIPAL_WITH_ACCESS",
+			Title:    "Safe members missing from the user and group lists",
+			Severity: "Low",
+			Detail:   "Users and groups that hold safe permissions but were not returned by the Users or Groups API (placeholder nodes), for example deleted directory principals or ones the collector may not see. Their memberships and status could not be reviewed.",
 		},
 	}
 

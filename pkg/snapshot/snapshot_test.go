@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
+	"github.com/jazofra/CyberArkHound/pkg/models"
 )
 
 func TestSaveLoadRoundTrip(t *testing.T) {
@@ -62,5 +62,40 @@ func TestLoadRejectsOtherFormatVersions(t *testing.T) {
 	}
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "format version 99") {
 		t.Fatalf("expected a format version error, got %v", err)
+	}
+}
+
+func TestSaveCompressesGzPaths(t *testing.T) {
+	dir := t.TempDir()
+	snap := &Snapshot{FormatVersion: FormatVersion, PVWATag: "TEST"}
+	for i := 0; i < 500; i++ {
+		snap.Safes = append(snap.Safes, models.Safe{SafeName: "Safe", Description: "the same description for every safe"})
+	}
+	plain, packed := filepath.Join(dir, "raw.json"), filepath.Join(dir, "raw.json.gz")
+	for _, path := range []string{plain, packed} {
+		if err := Save(path, snap); err != nil {
+			t.Fatal(err)
+		}
+		got, err := Load(path)
+		if err != nil {
+			t.Fatalf("load %s: %v", path, err)
+		}
+		if len(got.Safes) != 500 || got.PVWATag != "TEST" {
+			t.Errorf("%s did not round-trip: %d safes, tag %q", path, len(got.Safes), got.PVWATag)
+		}
+	}
+	plainInfo, _ := os.Stat(plain)
+	packedInfo, _ := os.Stat(packed)
+	if packedInfo.Size()*5 > plainInfo.Size() {
+		t.Errorf("compressed file is %d bytes, uncompressed %d", packedInfo.Size(), plainInfo.Size())
+	}
+
+	// Compression is recognised from the content, so a renamed file loads.
+	renamed := filepath.Join(dir, "renamed.json")
+	if err := os.Rename(packed, renamed); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Load(renamed); err != nil || len(got.Safes) != 500 {
+		t.Errorf("renamed compressed file: %v", err)
 	}
 }

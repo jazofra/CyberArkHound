@@ -12,8 +12,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/siemens-healthineers/cyberarkhound/internal/atomicfile"
-	"github.com/siemens-healthineers/cyberarkhound/pkg/graph"
+	"github.com/jazofra/CyberArkHound/internal/atomicfile"
+	"github.com/jazofra/CyberArkHound/pkg/graph"
 	"github.com/sirupsen/logrus"
 )
 

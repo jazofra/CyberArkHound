@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
+	"github.com/jazofra/CyberArkHound/pkg/models"
 )
 
 // These drift-guard tests keep the hand-maintained extension/schema.json,

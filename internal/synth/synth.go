@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"math/rand"
 
-	"github.com/siemens-healthineers/cyberarkhound/pkg/graph"
-	"github.com/siemens-healthineers/cyberarkhound/pkg/models"
+	"github.com/jazofra/CyberArkHound/pkg/graph"
+	"github.com/jazofra/CyberArkHound/pkg/models"
 )
 
 // Vault returns graph-builder input for a vault with the given number of
